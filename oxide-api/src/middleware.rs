@@ -5,7 +5,7 @@
 //! authentication, CORS, etc.
 
 use oxide_core::{
-    event::{Event, EventBus},
+    BeforeEventContext, BeforeEventType, EventBus,
     AppError,
 };
 use std::sync::Arc;
@@ -31,16 +31,28 @@ impl LoggingMiddleware {
     ) -> Result<(), AppError> {
         debug!("Processing {} {}", method, path);
 
+        // Create context for BeforeApiRequest event
+        let mut context = BeforeEventContext {
+            collection: "api".to_string(),
+            data: serde_json::json!({
+                "method": method,
+                "path": path,
+                "headers": headers
+            }),
+            metadata: serde_json::json!({}),
+            record_id: None,
+            old_data: None,
+        };
+
         // Dispatch BeforeApiRequest event
         self.event_bus
-            .dispatch(Event::BeforeApiRequest {
-                method: method.clone(),
-                path: path.clone(),
-                headers,
-            })
+            .dispatch_before(BeforeEventType::ApiRequest, &mut context)
             .await?;
 
-        info!("Incoming request: {} {}", method, path);
+        info!("Incoming request: {} {}", 
+            context.data.get("method").and_then(|m| m.as_str()).unwrap_or("UNKNOWN"),
+            context.data.get("path").and_then(|p| p.as_str()).unwrap_or("/")
+        );
         Ok(())
     }
 }

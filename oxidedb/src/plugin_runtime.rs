@@ -6,7 +6,7 @@
 //! - Memory management for host-plugin communication
 
 use oxide_core::{
-    host_functions, EventPayload, PluginError, PluginResponse, PluginResult, PluginRuntime,
+    plugin_api::{host_functions, EventPayload, PluginError, PluginResponse, PluginResult, PluginRuntime},
 };
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};

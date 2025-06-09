@@ -12,3 +12,7 @@ pub mod sqlite;
 pub use db::Db;
 pub use record::Record;
 pub use sqlite::SqliteDb;
+// Note: register_auth_listener is deprecated in favor of the system hooks in oxide-core
+
+/// Simple alias for SqliteDb using in-memory database
+pub type SimpleDb = SqliteDb;

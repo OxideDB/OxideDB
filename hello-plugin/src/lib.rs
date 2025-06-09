@@ -141,15 +141,35 @@ pub extern "C" fn on_before_create() -> i32 {
         payload.event_type, payload.collection, payload.data
     ));
 
-    // For the PoC, let's set an error message as requested in the requirements
-    host_set_error("Hello Wasm plugin test error message");
+    // Parse the incoming data to potentially modify it
+    let mut data_value: serde_json::Value = match serde_json::from_str(&payload.data) {
+        Ok(value) => value,
+        Err(e) => {
+            let error_msg = format!("Failed to parse incoming data: {}", e);
+            host_set_error(&error_msg);
+            return -1;
+        }
+    };
 
-    // Create a response
+    // Add a plugin marker to the data
+    if let Some(obj) = data_value.as_object_mut() {
+        obj.insert("plugin_processed".to_string(), serde_json::json!(true));
+        obj.insert("processed_by".to_string(), serde_json::json!("hello-plugin"));
+        obj.insert("processed_at".to_string(), serde_json::json!("2025-06-09T06:54:52Z"));
+        
+        host_log_info("✅ Plugin added metadata to record");
+    }
+
+    // Create a response that allows the operation and returns modified data
     let response = PluginResponse {
-        allow: false, // Don't allow the operation due to test error
-        modified_data: None,
-        error_message: Some("Plugin test error".to_string()),
-        metadata: serde_json::json!({ "plugin": "hello-plugin", "version": "0.1.0" }),
+        allow: true, // Allow the operation
+        modified_data: Some(data_value.to_string()),
+        error_message: None,
+        metadata: serde_json::json!({ 
+            "plugin": "hello-plugin", 
+            "version": "0.1.0",
+            "action": "data_enrichment"
+        }),
     };
 
     // Serialize response
@@ -160,6 +180,7 @@ pub extern "C" fn on_before_create() -> i32 {
                 RESPONSE_BUFFER.clear();
                 RESPONSE_BUFFER.extend_from_slice(bytes);
             }
+            host_log_info("✅ Plugin processed record successfully");
             0 // Success
         }
         Err(_) => {

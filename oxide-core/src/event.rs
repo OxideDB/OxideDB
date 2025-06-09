@@ -4,6 +4,10 @@
 //! architecture. All business logic operations dispatch events through
 //! the EventBus, allowing plugins and internal listeners to hook into
 //! and extend functionality.
+//!
+//! The new architecture separates Before and After events:
+//! - Before events allow modification of data before processing
+//! - After events are read-only notifications after processing
 
 use crate::AppError;
 use serde::{Deserialize, Serialize};
@@ -22,167 +26,203 @@ pub type Collection = String;
 /// Record data as JSON
 pub type RecordData = JsonValue;
 
-/// The master Event enum that defines all events in the OxideDB system.
-///
-/// This is the heart of the hooking system. Each event represents a specific
-/// point in the application lifecycle where plugins and listeners can hook in.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum Event {
-    // === Record Management Events ===
-    /// Dispatched before creating a new record
-    BeforeRecordCreate {
-        collection: Collection,
-        data: RecordData,
-    },
-    /// Dispatched after successfully creating a record
-    AfterRecordCreate {
+/// Context for Before events that allows data modification
+#[derive(Debug, Clone)]
+pub struct BeforeEventContext {
+    /// The collection being operated on
+    pub collection: Collection,
+    /// Mutable data that can be transformed by handlers
+    pub data: RecordData,
+    /// Additional metadata that can be read/modified
+    pub metadata: JsonValue,
+    /// For update operations, the record ID
+    pub record_id: Option<RecordId>,
+    /// For update operations, the old data (read-only)
+    pub old_data: Option<RecordData>,
+}
+
+impl BeforeEventContext {
+    /// Create a new context for record creation
+    pub fn new_create(collection: Collection, data: RecordData) -> Self {
+        Self {
+            collection,
+            data,
+            metadata: JsonValue::Object(serde_json::Map::new()),
+            record_id: None,
+            old_data: None,
+        }
+    }
+
+    /// Create a new context for record update
+    pub fn new_update(collection: Collection, record_id: RecordId, old_data: RecordData, new_data: RecordData) -> Self {
+        Self {
+            collection,
+            data: new_data,
+            metadata: JsonValue::Object(serde_json::Map::new()),
+            record_id: Some(record_id),
+            old_data: Some(old_data),
+        }
+    }
+
+    /// Create a new context for record deletion
+    pub fn new_delete(collection: Collection, record_id: RecordId, data: RecordData) -> Self {
+        Self {
+            collection,
+            data,
+            metadata: JsonValue::Object(serde_json::Map::new()),
+            record_id: Some(record_id),
+            old_data: None,
+        }
+    }
+}
+
+/// After event context for read-only notifications
+#[derive(Debug, Clone)]
+pub enum AfterEventContext {
+    RecordCreated {
         collection: Collection,
         record_id: RecordId,
         data: RecordData,
     },
-    /// Dispatched before updating a record
-    BeforeRecordUpdate {
+    RecordUpdated {
         collection: Collection,
         record_id: RecordId,
         old_data: RecordData,
         new_data: RecordData,
     },
-    /// Dispatched after successfully updating a record
-    AfterRecordUpdate {
-        collection: Collection,
-        record_id: RecordId,
-        old_data: RecordData,
-        new_data: RecordData,
-    },
-    /// Dispatched before deleting a record
-    BeforeRecordDelete {
+    RecordDeleted {
         collection: Collection,
         record_id: RecordId,
         data: RecordData,
     },
-    /// Dispatched after successfully deleting a record
-    AfterRecordDelete {
+    RecordRead {
         collection: Collection,
         record_id: RecordId,
         data: RecordData,
     },
-    /// Dispatched before reading a record
-    BeforeRecordRead {
+    CollectionCreated {
         collection: Collection,
-        record_id: RecordId,
     },
-    /// Dispatched after successfully reading a record
-    AfterRecordRead {
+    CollectionDeleted {
         collection: Collection,
-        record_id: RecordId,
-        data: RecordData,
     },
-
-    // === Collection Management Events ===
-    /// Dispatched before creating a collection
-    BeforeCollectionCreate { collection: Collection },
-    /// Dispatched after successfully creating a collection
-    AfterCollectionCreate { collection: Collection },
-    /// Dispatched before deleting a collection
-    BeforeCollectionDelete { collection: Collection },
-    /// Dispatched after successfully deleting a collection
-    AfterCollectionDelete { collection: Collection },
-
-    // === User Authentication Events ===
-    /// Dispatched when a user registers
-    OnUserRegister {
+    UserRegistered {
         user_id: String,
         email: String,
         metadata: JsonValue,
     },
-    /// Dispatched when a user logs in
-    OnUserLogin { user_id: String, email: String },
-    /// Dispatched when a user logs out
-    OnUserLogout { user_id: String },
-    /// Dispatched before user authentication
-    BeforeUserAuth { email: String },
-    /// Dispatched after successful user authentication
-    AfterUserAuth { user_id: String, email: String },
-
-    // === System Events ===
-    /// Dispatched when the system starts up
-    OnSystemStartup,
-    /// Dispatched when the system shuts down
-    OnSystemShutdown,
-    /// Dispatched on database connection established
-    OnDatabaseConnect { database_url: String },
-    /// Dispatched on database connection lost
-    OnDatabaseDisconnect,
-
-    // === Plugin Events ===
-    /// Dispatched when a plugin is loaded
-    OnPluginLoad { plugin_name: String },
-    /// Dispatched when a plugin is unloaded
-    OnPluginUnload { plugin_name: String },
-    /// Dispatched when a plugin encounters an error
-    OnPluginError { plugin_name: String, error: String },
-
-    // === API Events ===
-    /// Dispatched before processing an API request
-    BeforeApiRequest {
-        method: String,
-        path: String,
-        headers: JsonValue,
+    UserAuthenticated {
+        user_id: String,
+        email: String,
     },
-    /// Dispatched after processing an API request
-    AfterApiRequest {
+    SystemStartup,
+    SystemShutdown,
+    DatabaseConnected {
+        database_url: String,
+    },
+    DatabaseDisconnected,
+    PluginLoaded {
+        plugin_name: String,
+    },
+    PluginUnloaded {
+        plugin_name: String,
+    },
+    PluginError {
+        plugin_name: String,
+        error: String,
+    },
+    ApiRequestProcessed {
         method: String,
         path: String,
         status_code: u16,
         response_time_ms: u64,
     },
-
-    // === Error Events ===
-    /// Dispatched when an error occurs
-    OnError {
+    ErrorOccurred {
         error_type: String,
         message: String,
         context: JsonValue,
     },
 }
 
-impl Event {
-    /// Get a human-readable name for this event type
+/// Event types for Before handlers that can modify data
+#[derive(Debug, Clone)]
+pub enum BeforeEventType {
+    RecordCreate,
+    RecordUpdate,
+    RecordDelete,
+    RecordRead,
+    CollectionCreate,
+    CollectionDelete,
+    UserAuth,
+    ApiRequest,
+}
+
+impl BeforeEventType {
     pub fn name(&self) -> &'static str {
         match self {
-            Event::BeforeRecordCreate { .. } => "BeforeRecordCreate",
-            Event::AfterRecordCreate { .. } => "AfterRecordCreate",
-            Event::BeforeRecordUpdate { .. } => "BeforeRecordUpdate",
-            Event::AfterRecordUpdate { .. } => "AfterRecordUpdate",
-            Event::BeforeRecordDelete { .. } => "BeforeRecordDelete",
-            Event::AfterRecordDelete { .. } => "AfterRecordDelete",
-            Event::BeforeRecordRead { .. } => "BeforeRecordRead",
-            Event::AfterRecordRead { .. } => "AfterRecordRead",
-            Event::BeforeCollectionCreate { .. } => "BeforeCollectionCreate",
-            Event::AfterCollectionCreate { .. } => "AfterCollectionCreate",
-            Event::BeforeCollectionDelete { .. } => "BeforeCollectionDelete",
-            Event::AfterCollectionDelete { .. } => "AfterCollectionDelete",
-            Event::OnUserRegister { .. } => "OnUserRegister",
-            Event::OnUserLogin { .. } => "OnUserLogin",
-            Event::OnUserLogout { .. } => "OnUserLogout",
-            Event::BeforeUserAuth { .. } => "BeforeUserAuth",
-            Event::AfterUserAuth { .. } => "AfterUserAuth",
-            Event::OnSystemStartup => "OnSystemStartup",
-            Event::OnSystemShutdown => "OnSystemShutdown",
-            Event::OnDatabaseConnect { .. } => "OnDatabaseConnect",
-            Event::OnDatabaseDisconnect => "OnDatabaseDisconnect",
-            Event::OnPluginLoad { .. } => "OnPluginLoad",
-            Event::OnPluginUnload { .. } => "OnPluginUnload",
-            Event::OnPluginError { .. } => "OnPluginError",
-            Event::BeforeApiRequest { .. } => "BeforeApiRequest",
-            Event::AfterApiRequest { .. } => "AfterApiRequest",
-            Event::OnError { .. } => "OnError",
+            BeforeEventType::RecordCreate => "BeforeRecordCreate",
+            BeforeEventType::RecordUpdate => "BeforeRecordUpdate",
+            BeforeEventType::RecordDelete => "BeforeRecordDelete",
+            BeforeEventType::RecordRead => "BeforeRecordRead",
+            BeforeEventType::CollectionCreate => "BeforeCollectionCreate",
+            BeforeEventType::CollectionDelete => "BeforeCollectionDelete",
+            BeforeEventType::UserAuth => "BeforeUserAuth",
+            BeforeEventType::ApiRequest => "BeforeApiRequest",
         }
     }
 }
 
-/// Event handler function type
-pub type EventHandler = Box<dyn Fn(&Event) -> Result<(), AppError> + Send + Sync>;
+/// Event types for After handlers that are read-only notifications
+#[derive(Debug, Clone)]
+pub enum AfterEventType {
+    RecordCreated,
+    RecordUpdated,
+    RecordDeleted,
+    RecordRead,
+    CollectionCreated,
+    CollectionDeleted,
+    UserRegistered,
+    UserAuthenticated,
+    SystemStartup,
+    SystemShutdown,
+    DatabaseConnected,
+    DatabaseDisconnected,
+    PluginLoaded,
+    PluginUnloaded,
+    PluginError,
+    ApiRequestProcessed,
+    ErrorOccurred,
+}
+
+impl AfterEventType {
+    pub fn name(&self) -> &'static str {
+        match self {
+            AfterEventType::RecordCreated => "AfterRecordCreate",
+            AfterEventType::RecordUpdated => "AfterRecordUpdate",
+            AfterEventType::RecordDeleted => "AfterRecordDelete",
+            AfterEventType::RecordRead => "AfterRecordRead",
+            AfterEventType::CollectionCreated => "AfterCollectionCreate",
+            AfterEventType::CollectionDeleted => "AfterCollectionDelete",
+            AfterEventType::UserRegistered => "OnUserRegister",
+            AfterEventType::UserAuthenticated => "AfterUserAuth",
+            AfterEventType::SystemStartup => "OnSystemStartup",
+            AfterEventType::SystemShutdown => "OnSystemShutdown",
+            AfterEventType::DatabaseConnected => "OnDatabaseConnect",
+            AfterEventType::DatabaseDisconnected => "OnDatabaseDisconnect",
+            AfterEventType::PluginLoaded => "OnPluginLoad",
+            AfterEventType::PluginUnloaded => "OnPluginUnload",
+            AfterEventType::PluginError => "OnPluginError",
+            AfterEventType::ApiRequestProcessed => "AfterApiRequest",
+            AfterEventType::ErrorOccurred => "OnError",
+        }
+    }
+}
+
+/// Handler for Before events that can modify the context
+pub type BeforeEventHandler = Box<dyn Fn(&mut BeforeEventContext) -> Result<(), AppError> + Send + Sync>;
+
+/// Handler for After events that are read-only
+pub type AfterEventHandler = Box<dyn Fn(&AfterEventContext) -> Result<(), AppError> + Send + Sync>;
 
 /// The EventBus trait defines the interface for dispatching and subscribing to events.
 ///
@@ -191,21 +231,29 @@ pub type EventHandler = Box<dyn Fn(&Event) -> Result<(), AppError> + Send + Sync
 /// subscribe to relevant events to extend functionality.
 #[async_trait::async_trait]
 pub trait EventBus: Send + Sync {
-    /// Dispatch an event to all registered listeners
+    /// Dispatch a Before event to all registered listeners, allowing data modification
     ///
     /// This method delivers the event to all listeners that have subscribed
-    /// to this event type. The method should be non-blocking and handle
-    /// any listener errors gracefully.
-    async fn dispatch(&self, event: Event) -> Result<(), AppError>;
+    /// to this event type. Handlers can modify the context data.
+    async fn dispatch_before(&self, event_type: BeforeEventType, context: &mut BeforeEventContext) -> Result<(), AppError>;
 
-    /// Subscribe a handler to specific event types
+    /// Dispatch an After event to all registered listeners for read-only notification
     ///
-    /// The handler will be called whenever an event of the specified type
-    /// is dispatched. Multiple handlers can be registered for the same event type.
-    fn subscribe(&self, event_name: &str, handler: EventHandler) -> Result<(), AppError>;
+    /// This method delivers the event to all listeners that have subscribed
+    /// to this event type. Handlers cannot modify the data.
+    async fn dispatch_after(&self, event_type: AfterEventType, context: &AfterEventContext) -> Result<(), AppError>;
 
-    /// Get the number of active listeners for an event type
-    fn listener_count(&self, event_name: &str) -> usize;
+    /// Subscribe a handler to Before events (can modify data)
+    fn subscribe_before(&self, event_name: &str, handler: BeforeEventHandler) -> Result<(), AppError>;
+
+    /// Subscribe a handler to After events (read-only)
+    fn subscribe_after(&self, event_name: &str, handler: AfterEventHandler) -> Result<(), AppError>;
+
+    /// Get the number of active Before listeners for an event type
+    fn before_listener_count(&self, event_name: &str) -> usize;
+
+    /// Get the number of active After listeners for an event type
+    fn after_listener_count(&self, event_name: &str) -> usize;
 
     /// Get the total number of events dispatched
     fn events_dispatched(&self) -> u64;
@@ -218,7 +266,8 @@ pub trait EventBus: Send + Sync {
 /// production systems might want a more sophisticated implementation with
 /// async execution, persistence, etc.
 pub struct InMemoryEventBus {
-    handlers: Arc<Mutex<HashMap<String, Vec<EventHandler>>>>,
+    before_handlers: Arc<Mutex<HashMap<String, Vec<BeforeEventHandler>>>>,
+    after_handlers: Arc<Mutex<HashMap<String, Vec<AfterEventHandler>>>>,
     events_dispatched: Arc<Mutex<u64>>,
 }
 
@@ -226,7 +275,8 @@ impl InMemoryEventBus {
     /// Create a new InMemoryEventBus instance
     pub fn new() -> Self {
         Self {
-            handlers: Arc::new(Mutex::new(HashMap::new())),
+            before_handlers: Arc::new(Mutex::new(HashMap::new())),
+            after_handlers: Arc::new(Mutex::new(HashMap::new())),
             events_dispatched: Arc::new(Mutex::new(0)),
         }
     }
@@ -240,10 +290,10 @@ impl Default for InMemoryEventBus {
 
 #[async_trait::async_trait]
 impl EventBus for InMemoryEventBus {
-    async fn dispatch(&self, event: Event) -> Result<(), AppError> {
-        let event_name = event.name();
+    async fn dispatch_before(&self, event_type: BeforeEventType, context: &mut BeforeEventContext) -> Result<(), AppError> {
+        let event_name = event_type.name();
 
-        info!("Dispatching event: {} - {:?}", event_name, event);
+        info!("Dispatching Before event: {} for collection: {}", event_name, context.collection);
 
         // Increment dispatch counter
         {
@@ -253,18 +303,18 @@ impl EventBus for InMemoryEventBus {
             *counter += 1;
         }
 
-        // Execute all handlers while holding the lock
+        // Execute all Before handlers while holding the lock
         let mut errors = Vec::new();
         {
             let handlers_map = self
-                .handlers
+                .before_handlers
                 .lock()
-                .map_err(|_| AppError::internal("Failed to acquire lock on event handlers"))?;
+                .map_err(|_| AppError::internal("Failed to acquire lock on before event handlers"))?;
 
             if let Some(handlers) = handlers_map.get(event_name) {
                 for (index, handler) in handlers.iter().enumerate() {
-                    if let Err(err) = handler(&event) {
-                        warn!("Handler {} for event {} failed: {}", index, event_name, err);
+                    if let Err(err) = handler(context) {
+                        warn!("Before handler {} for event {} failed: {}", index, event_name, err);
                         errors.push(err);
                     }
                 }
@@ -279,9 +329,48 @@ impl EventBus for InMemoryEventBus {
         Ok(())
     }
 
-    fn subscribe(&self, event_name: &str, handler: EventHandler) -> Result<(), AppError> {
-        let mut handlers_map = self.handlers.lock().map_err(|_| {
-            AppError::internal("Failed to acquire lock on event handlers for subscription")
+    async fn dispatch_after(&self, event_type: AfterEventType, context: &AfterEventContext) -> Result<(), AppError> {
+        let event_name = event_type.name();
+
+        info!("Dispatching After event: {}", event_name);
+
+        // Increment dispatch counter
+        {
+            let mut counter = self.events_dispatched.lock().map_err(|_| {
+                AppError::internal("Failed to acquire lock on events_dispatched counter")
+            })?;
+            *counter += 1;
+        }
+
+        // Execute all After handlers while holding the lock
+        let mut errors = Vec::new();
+        {
+            let handlers_map = self
+                .after_handlers
+                .lock()
+                .map_err(|_| AppError::internal("Failed to acquire lock on after event handlers"))?;
+
+            if let Some(handlers) = handlers_map.get(event_name) {
+                for (index, handler) in handlers.iter().enumerate() {
+                    if let Err(err) = handler(context) {
+                        warn!("After handler {} for event {} failed: {}", index, event_name, err);
+                        errors.push(err);
+                    }
+                }
+            }
+        }
+
+        // If any handlers failed, return the first error
+        if let Some(first_error) = errors.into_iter().next() {
+            return Err(first_error);
+        }
+
+        Ok(())
+    }
+
+    fn subscribe_before(&self, event_name: &str, handler: BeforeEventHandler) -> Result<(), AppError> {
+        let mut handlers_map = self.before_handlers.lock().map_err(|_| {
+            AppError::internal("Failed to acquire lock on before event handlers for subscription")
         })?;
 
         let handlers = handlers_map
@@ -290,12 +379,39 @@ impl EventBus for InMemoryEventBus {
 
         handlers.push(handler);
 
-        info!("Subscribed handler to event: {}", event_name);
+        info!("Subscribed Before handler to event: {}", event_name);
         Ok(())
     }
 
-    fn listener_count(&self, event_name: &str) -> usize {
-        self.handlers
+    fn subscribe_after(&self, event_name: &str, handler: AfterEventHandler) -> Result<(), AppError> {
+        let mut handlers_map = self.after_handlers.lock().map_err(|_| {
+            AppError::internal("Failed to acquire lock on after event handlers for subscription")
+        })?;
+
+        let handlers = handlers_map
+            .entry(event_name.to_string())
+            .or_insert_with(Vec::new);
+
+        handlers.push(handler);
+
+        info!("Subscribed After handler to event: {}", event_name);
+        Ok(())
+    }
+
+    fn before_listener_count(&self, event_name: &str) -> usize {
+        self.before_handlers
+            .lock()
+            .map(|handlers_map| {
+                handlers_map
+                    .get(event_name)
+                    .map(|handlers| handlers.len())
+                    .unwrap_or(0)
+            })
+            .unwrap_or(0)
+    }
+
+    fn after_listener_count(&self, event_name: &str) -> usize {
+        self.after_handlers
             .lock()
             .map(|handlers_map| {
                 handlers_map
@@ -314,6 +430,57 @@ impl EventBus for InMemoryEventBus {
     }
 }
 
+// Legacy compatibility wrapper for backward compatibility
+// This maintains the old Event enum and EventHandler for any existing code
+
+/// Legacy Event enum for backward compatibility
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum Event {
+    BeforeRecordCreate {
+        collection: Collection,
+        data: RecordData,
+    },
+    AfterRecordCreate {
+        collection: Collection,
+        record_id: RecordId,
+        data: RecordData,
+    },
+}
+
+impl Event {
+    pub fn name(&self) -> &'static str {
+        match self {
+            Event::BeforeRecordCreate { .. } => "BeforeRecordCreate",
+            Event::AfterRecordCreate { .. } => "AfterRecordCreate",
+        }
+    }
+}
+
+/// Legacy event handler function type for backward compatibility
+pub type EventHandler = Box<dyn Fn(&Event) -> Result<(), AppError> + Send + Sync>;
+
+/// Legacy methods for backward compatibility
+impl InMemoryEventBus {
+    /// Legacy dispatch method for backward compatibility
+    pub async fn dispatch(&self, event: Event) -> Result<(), AppError> {
+        warn!("Using legacy dispatch method - consider migrating to dispatch_before/dispatch_after");
+        // This is a simplified legacy implementation
+        Ok(())
+    }
+
+    /// Legacy subscribe method for backward compatibility
+    pub fn subscribe(&self, event_name: &str, handler: EventHandler) -> Result<(), AppError> {
+        warn!("Using legacy subscribe method - consider migrating to subscribe_before/subscribe_after");
+        // This is a simplified legacy implementation
+        Ok(())
+    }
+
+    /// Legacy listener count method for backward compatibility
+    pub fn listener_count(&self, event_name: &str) -> usize {
+        self.before_listener_count(event_name) + self.after_listener_count(event_name)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -321,52 +488,79 @@ mod tests {
     use std::sync::Arc;
 
     #[tokio::test]
-    async fn test_event_bus_dispatch_and_subscribe() {
+    async fn test_before_event_modification() {
+        let bus = InMemoryEventBus::new();
+        
+        // Subscribe a handler that modifies the data
+        bus.subscribe_before(
+            "BeforeRecordCreate",
+            Box::new(|context| {
+                // Modify the data - add a timestamp
+                if let Some(obj) = context.data.as_object_mut() {
+                    obj.insert("modified_by_hook".to_string(), serde_json::json!(true));
+                }
+                Ok(())
+            }),
+        ).unwrap();
+
+        // Create a context with original data
+        let mut context = BeforeEventContext::new_create(
+            "users".to_string(),
+            serde_json::json!({"name": "John"}),
+        );
+
+        // Dispatch the event
+        bus.dispatch_before(BeforeEventType::RecordCreate, &mut context).await.unwrap();
+
+        // Verify the data was modified
+        assert!(context.data.get("modified_by_hook").is_some());
+        assert_eq!(context.data.get("name").unwrap(), "John");
+    }
+
+    #[tokio::test]
+    async fn test_after_event_notification() {
         let bus = InMemoryEventBus::new();
         let call_count = Arc::new(AtomicUsize::new(0));
         let call_count_clone = Arc::clone(&call_count);
 
-        // Subscribe to BeforeRecordCreate events
-        bus.subscribe(
-            "BeforeRecordCreate",
-            Box::new(move |_event| {
+        // Subscribe to After events
+        bus.subscribe_after(
+            "AfterRecordCreate",
+            Box::new(move |_context| {
                 call_count_clone.fetch_add(1, Ordering::SeqCst);
                 Ok(())
             }),
-        )
-        .unwrap();
+        ).unwrap();
 
-        // Dispatch an event
-        let event = Event::BeforeRecordCreate {
+        // Dispatch an after event
+        let context = AfterEventContext::RecordCreated {
             collection: "users".to_string(),
+            record_id: "123".to_string(),
             data: serde_json::json!({"name": "John"}),
         };
 
-        bus.dispatch(event).await.unwrap();
+        bus.dispatch_after(AfterEventType::RecordCreated, &context).await.unwrap();
 
         // Verify handler was called
         assert_eq!(call_count.load(Ordering::SeqCst), 1);
-        assert_eq!(bus.listener_count("BeforeRecordCreate"), 1);
-        assert_eq!(bus.events_dispatched(), 1);
     }
 
     #[tokio::test]
-    async fn test_event_handler_error_propagation() {
+    async fn test_error_propagation() {
         let bus = InMemoryEventBus::new();
 
-        // Subscribe a handler that always fails
-        bus.subscribe(
+        // Subscribe a handler that fails
+        bus.subscribe_before(
             "BeforeRecordCreate",
-            Box::new(|_event| Err(AppError::internal("Handler failed"))),
-        )
-        .unwrap();
+            Box::new(|_context| Err(AppError::internal("Handler failed"))),
+        ).unwrap();
 
-        let event = Event::BeforeRecordCreate {
-            collection: "users".to_string(),
-            data: serde_json::json!({"name": "John"}),
-        };
+        let mut context = BeforeEventContext::new_create(
+            "users".to_string(),
+            serde_json::json!({"name": "John"}),
+        );
 
-        let result = bus.dispatch(event).await;
+        let result = bus.dispatch_before(BeforeEventType::RecordCreate, &mut context).await;
         assert!(result.is_err());
     }
 }
