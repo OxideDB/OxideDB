@@ -1,0 +1,21 @@
+[package]
+name = "oxidedb"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "oxidedb"
+path = "src/main.rs"
+
+[dependencies]
+oxide-core = { path = "../oxide-core" }
+oxide-db = { path = "../oxide-db" }
+oxide-api = { path = "../oxide-api" }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+serde_json = { workspace = true }
+wasmtime = "25.0"
+wasmtime-wasi = "25.0"

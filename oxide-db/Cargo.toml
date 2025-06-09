@@ -1,0 +1,17 @@
+[package]
+name = "oxide-db"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+oxide-core = { path = "../oxide-core" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+rusqlite = { version = "0.30", features = ["bundled"] }
+async-trait = "0.1"
+uuid = { version = "1.0", features = ["v4"] }
