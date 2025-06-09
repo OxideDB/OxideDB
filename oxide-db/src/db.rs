@@ -4,6 +4,7 @@ use crate::Record;
 use oxide_core::{
     event::{RecordData, RecordId},
     AppError,
+    CollectionSchema,
 };
 
 /// Query parameters for listing records
@@ -127,6 +128,30 @@ pub trait Db: Send + Sync {
     /// # Arguments
     /// * `collection` - The name of the collection to create
     async fn create_collection(&self, collection: &str) -> Result<(), AppError>;
+
+    /// Create a new collection with schema
+    ///
+    /// This method dispatches `BeforeCollectionCreate` and `AfterCollectionCreate` events.
+    ///
+    /// # Arguments
+    /// * `schema` - The schema definition for the collection
+    async fn create_collection_with_schema(&self, schema: CollectionSchema) -> Result<(), AppError>;
+
+    /// Get the schema for a collection
+    ///
+    /// # Arguments
+    /// * `collection` - The name of the collection
+    ///
+    /// # Returns
+    /// The collection schema if found
+    async fn get_collection_schema(&self, collection: &str) -> Result<CollectionSchema, AppError>;
+
+    /// Update the schema for a collection
+    ///
+    /// # Arguments
+    /// * `collection` - The name of the collection
+    /// * `schema` - The new schema definition
+    async fn update_collection_schema(&self, collection: &str, schema: CollectionSchema) -> Result<(), AppError>;
 
     /// Delete a collection and all its records
     ///

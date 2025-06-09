@@ -68,7 +68,7 @@ async fn main() -> Result<(), AppError> {
         Arc::clone(&database),
         Arc::clone(&event_bus),
         "127.0.0.1".to_string(),
-        8080,
+        3000,
     );
     
     info!("🎉 Milestone 4 startup completed successfully!");
