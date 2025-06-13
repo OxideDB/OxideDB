@@ -13,6 +13,11 @@ version = "0.1.0"
 edition = "2021"
 authors = ["bangprovn"]
 license = "MIT"
+description = "OxideDB - A hook-first database with plugin architecture"
+repository = "https://github.com/bangprovn/oxidebase"
+readme = "README.md"
+keywords = ["database", "plugin", "wasm", "hooks", "admin-ui"]
+categories = ["database", "web-programming"]
 
 [workspace.dependencies]
 tokio = { version = "1.0", features = ["full"] }

@@ -20,6 +20,7 @@ use crate::handlers::{
     CollectionHandlers, CollectionStats, HealthHandlers, HealthStatus, RecordHandlers,
 };
 use oxide_core::event::{RecordData, RecordId};
+use oxide_core::CollectionSchema;
 use oxide_db::db::ListParams;
 
 /// Shared application state
@@ -80,6 +81,7 @@ impl ApiServer {
             )
             .route("/collections/:collection", delete(delete_collection))
             .route("/collections/:collection/stats", get(collection_stats))
+            .route("/collections/:collection/schema", get(collection_schema))
             // Record endpoints
             .route(
                 "/collections/:collection/records",
@@ -208,6 +210,17 @@ async fn collection_stats(
 ) -> Result<Json<CollectionStats>, (StatusCode, String)> {
     match CollectionHandlers::get_collection_stats(state.db, collection).await {
         Ok(stats) => Ok(Json(stats)),
+        Err(e) => Err((StatusCode::NOT_FOUND, e.to_string())),
+    }
+}
+
+/// Get collection schema
+async fn collection_schema(
+    State(state): State<AppState>,
+    Path(collection): Path<String>,
+) -> Result<Json<CollectionSchema>, (StatusCode, String)> {
+    match CollectionHandlers::get_collection_schema(state.db, collection).await {
+        Ok(schema) => Ok(Json(schema)),
         Err(e) => Err((StatusCode::NOT_FOUND, e.to_string())),
     }
 }

@@ -5,7 +5,7 @@
 //! returns appropriate HTTP responses.
 
 use oxide_core::event::{RecordData, RecordId};
-use oxide_core::AppError;
+use oxide_core::{AppError, CollectionSchema};
 use oxide_db::{db::ListParams, Db, Record};
 use serde::Serialize;
 use std::sync::Arc;
@@ -177,6 +177,21 @@ impl CollectionHandlers {
 
         debug!("Retrieved stats for collection: {:?}", stats);
         Ok(stats)
+    }
+
+    /// Get collection schema
+    ///
+    /// GET /collections/{collection}/schema
+    pub async fn get_collection_schema(
+        db: Arc<dyn Db>,
+        collection: String,
+    ) -> Result<CollectionSchema, AppError> {
+        debug!("Getting schema for collection: {}", collection);
+
+        let schema = db.get_collection_schema(&collection).await?;
+
+        debug!("Retrieved schema for collection: {}", collection);
+        Ok(schema)
     }
 }
 

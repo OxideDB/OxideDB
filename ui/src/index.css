@@ -1,0 +1,116 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html, body {
+    @apply h-full;
+  }
+  
+  #root {
+    @apply h-full;
+  }
+  :root {
+    /* Custom OxideDB Color Palette - Light Mode */
+    --background: 0 0% 100%;
+    --foreground: 222.2 84% 4.9%;
+
+    --card: 0 0% 100%;
+    --card-foreground: 222.2 84% 4.9%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 222.2 84% 4.9%;
+
+    /* Primary: Deep Teal */
+    --primary: 176 100% 29%;
+    --primary-foreground: 0 0% 98%;
+
+    /* Secondary: Light Gray */
+    --secondary: 210 40% 98%;
+    --secondary-foreground: 222.2 84% 4.9%;
+
+    /* Muted: Subtle Gray */
+    --muted: 210 40% 96%;
+    --muted-foreground: 215.4 16.3% 46.9%;
+
+    /* Accent: Vibrant Orange */
+    --accent: 24 95% 53%;
+    --accent-foreground: 0 0% 98%;
+
+    /* Destructive: Modern Red */
+    --destructive: 0 84.2% 60.2%;
+    --destructive-foreground: 0 0% 98%;
+
+    /* Borders and inputs */
+    --border: 214.3 31.8% 91.4%;
+    --input: 214.3 31.8% 91.4%;
+    --ring: 176 100% 29%;
+
+    /* Chart colors - Database themed */
+    --chart-1: 176 100% 29%; /* Primary teal */
+    --chart-2: 24 95% 53%;   /* Accent orange */
+    --chart-3: 262 83% 58%;  /* Purple */
+    --chart-4: 142 76% 36%;  /* Green */
+    --chart-5: 346 87% 43%;  /* Pink */
+
+    --radius: 0.75rem;
+  }
+  .dark {
+    /* Custom OxideDB Color Palette - Dark Mode */
+    --background: 222.2 84% 4.9%;
+    --foreground: 210 40% 98%;
+
+    --card: 222.2 84% 4.9%;
+    --card-foreground: 210 40% 98%;
+
+    --popover: 222.2 84% 4.9%;
+    --popover-foreground: 210 40% 98%;
+
+    /* Primary: Bright Teal */
+    --primary: 176 100% 44%;
+    --primary-foreground: 222.2 84% 4.9%;
+
+    /* Secondary: Dark Gray */
+    --secondary: 217.2 32.6% 17.5%;
+    --secondary-foreground: 210 40% 98%;
+
+    /* Muted: Medium Dark Gray */
+    --muted: 217.2 32.6% 17.5%;
+    --muted-foreground: 215 20.2% 65.1%;
+
+    /* Accent: Bright Orange */
+    --accent: 24 95% 63%;
+    --accent-foreground: 222.2 84% 4.9%;
+
+    /* Destructive: Bright Red */
+    --destructive: 0 75% 60%;
+    --destructive-foreground: 210 40% 98%;
+
+    /* Borders and inputs */
+    --border: 217.2 32.6% 17.5%;
+    --input: 217.2 32.6% 17.5%;
+    --ring: 176 100% 44%;
+
+    /* Chart colors - Database themed (dark mode) */
+    --chart-1: 176 100% 44%; /* Primary bright teal */
+    --chart-2: 24 95% 63%;   /* Accent bright orange */
+    --chart-3: 262 83% 68%;  /* Bright purple */
+    --chart-4: 142 76% 46%;  /* Bright green */
+    --chart-5: 346 87% 53%;  /* Bright pink */
+  }
+}
+
+@layer components {
+  /* Legacy components - gradually being replaced by shadcn/ui */
+}
+
+
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+}
