@@ -69,8 +69,8 @@ class ApiService {
   }
 
   // Collection methods
-  async getCollections(): Promise<string[]> {
-    return this.request<string[]>('/collections');
+  async getCollections(): Promise<CollectionSchema[]> {
+    return this.request<CollectionSchema[]>('/collections');
   }
 
   async createCollection(schema: CreateCollectionRequest): Promise<void> {
@@ -84,6 +84,11 @@ class ApiService {
     return this.request<void>(`/collections/${encodeURIComponent(collection)}`, {
       method: 'DELETE',
     });
+  }
+
+  // Helper method to check if a collection is a system collection
+  isSystemCollection(schema: CollectionSchema): boolean {
+    return schema.collection_type === 'auth';
   }
 
   async getCollectionStats(collection: string): Promise<CollectionStats> {

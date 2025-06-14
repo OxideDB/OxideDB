@@ -10,6 +10,7 @@ use oxide_db::{db::ListParams, Db, Record};
 use serde::Serialize;
 use std::sync::Arc;
 use tracing::{debug, info};
+use ts_rs::TS;
 
 /// Handlers for record operations
 pub struct RecordHandlers;
@@ -135,6 +136,12 @@ impl CollectionHandlers {
     pub async fn delete_collection(db: Arc<dyn Db>, collection: String) -> Result<(), AppError> {
         debug!("Deleting collection: {}", collection);
 
+        // Check if this is a system collection and prevent deletion
+        let schema = db.get_collection_schema(&collection).await?;
+        if schema.collection_type == oxide_core::collection::CollectionType::Auth {
+            return Err(AppError::auth("System collections cannot be deleted"));
+        }
+
         db.delete_collection(&collection).await?;
 
         info!("Deleted collection: {}", collection);
@@ -144,14 +151,13 @@ impl CollectionHandlers {
     /// List all collections
     ///
     /// GET /collections
-    pub async fn list_collections(db: Arc<dyn Db>) -> Result<Vec<String>, AppError> {
+    pub async fn list_collections(db: Arc<dyn Db>) -> Result<Vec<CollectionSchema>, AppError> {
         debug!("Listing collections");
 
         let collection_schemas = db.list_collections().await?;
-        let collections: Vec<String> = collection_schemas.into_iter().map(|schema| schema.name).collect();
 
-        debug!("Listed {} collections", collections.len());
-        Ok(collections)
+        debug!("Listed {} collections", collection_schemas.len());
+        Ok(collection_schemas)
     }
 
     /// Get collection statistics
@@ -213,7 +219,8 @@ impl CollectionHandlers {
 }
 
 /// Collection statistics response
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, TS)]
+#[ts(export)]
 pub struct CollectionStats {
     pub name: String,
     pub record_count: usize,
@@ -251,7 +258,8 @@ impl HealthHandlers {
 }
 
 /// Health status response
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, TS)]
+#[ts(export)]
 pub struct HealthStatus {
     pub status: String,
     pub database: String,

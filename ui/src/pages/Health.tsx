@@ -108,10 +108,7 @@ const Health: React.FC = () => {
                     {health.status}
                   </span>
                 </div>
-                <div className="flex justify-between">
-                  <span className="text-gray-600">Version:</span>
-                  <span className="font-medium text-gray-900">{health.version}</span>
-                </div>
+
               </div>
             </div>
 

@@ -4,6 +4,7 @@ members = [
     "oxide-core",
     "oxide-db", 
     "oxide-api",
+    "oxide-typegen",
     "oxidedb",
     "hello-plugin"
 ]

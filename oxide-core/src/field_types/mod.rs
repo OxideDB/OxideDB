@@ -21,6 +21,7 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
+use ts_rs::TS;
 
 // Field type modules
 pub mod text;
@@ -66,7 +67,8 @@ pub trait FieldTypeDefinition {
 }
 
 /// Supported field types in collection schemas
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
+#[ts(export)]
 #[serde(rename_all = "lowercase")]
 pub enum FieldType {
     /// Text/string field

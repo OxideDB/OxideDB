@@ -29,6 +29,7 @@ const Layout: React.FC = () => {
           <h1 className="text-xl font-bold text-primary">OxideDB Admin</h1>
         </div>
         <Separator />
+        
         <nav className="flex-1 px-3 py-4 space-y-1">
           {navigation.map((item) => {
             const Icon = item.icon;
@@ -53,6 +54,7 @@ const Layout: React.FC = () => {
             );
           })}
         </nav>
+
         <Separator />
         <div className="p-3 space-y-2">
           <div className="flex justify-center">

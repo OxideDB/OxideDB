@@ -36,7 +36,7 @@ export const RecordTable: React.FC<RecordTableProps> = ({
     return Array.from(allKeys).sort();
   };
 
-  const formatCellValue = (value: any, fieldName?: string): React.ReactNode => {
+  const formatCellValue = (value: any): React.ReactNode => {
     if (value === null || value === undefined) {
       return <span className="text-muted-foreground italic">null</span>;
     }
@@ -120,7 +120,7 @@ export const RecordTable: React.FC<RecordTableProps> = ({
             </TableCell>
             {displayColumns.map(column => (
               <TableCell key={column}>
-                {formatCellValue(record.data?.[column], column)}
+                {formatCellValue(record.data?.[column])}
               </TableCell>
             ))}
             {hasMoreColumns && (

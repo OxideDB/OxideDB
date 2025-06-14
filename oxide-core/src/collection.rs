@@ -8,9 +8,11 @@ use crate::field_types::FieldType;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use std::collections::HashMap;
+use ts_rs::TS;
 
 /// The type of a collection
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
+#[ts(export)]
 #[serde(rename_all = "lowercase")]
 pub enum CollectionType {
     /// Base collections are user-defined collections for storing application data
@@ -29,7 +31,8 @@ impl std::fmt::Display for CollectionType {
 }
 
 /// Index definition for database optimization
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
+#[ts(export)]
 pub struct IndexDefinition {
     /// Name of the index
     pub name: String,
@@ -40,7 +43,8 @@ pub struct IndexDefinition {
 }
 
 /// Field definition within a collection schema
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
 pub struct FieldDefinition {
     /// The type of this field
     pub field_type: FieldType,
@@ -49,13 +53,16 @@ pub struct FieldDefinition {
     /// Whether this field must be unique
     pub unique: bool,
     /// Default value for this field (optional)
+    #[ts(type = "any")]
     pub default: Option<JsonValue>,
     /// Validation rules (optional)
+    #[ts(type = "any")]
     pub validation: Option<JsonValue>,
 }
 
 /// Complete schema definition for a collection
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
 pub struct CollectionSchema {
     /// Collection identifier
     pub id: String,

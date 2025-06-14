@@ -20,3 +20,4 @@ jsonwebtoken = { workspace = true }
 chrono = { workspace = true }
 regex = "1.0"
 unicode-normalization = "0.1"
+ts-rs = { version = "10.1", features = ["serde-compat"] }

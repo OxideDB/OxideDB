@@ -1,0 +1,16 @@
+[package]
+name = "oxide-typegen"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "TypeScript type generation for OxideDB"
+
+[[bin]]
+name = "generate-types"
+path = "src/main.rs"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+ts-rs = { version = "10.1", features = ["serde-compat"] }

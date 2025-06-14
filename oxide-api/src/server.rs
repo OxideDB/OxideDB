@@ -169,7 +169,7 @@ async fn health_check(
 /// List all collections
 async fn list_collections(
     State(state): State<AppState>,
-) -> Result<Json<Vec<String>>, (StatusCode, String)> {
+) -> Result<Json<Vec<CollectionSchema>>, (StatusCode, String)> {
     match CollectionHandlers::list_collections(state.db).await {
         Ok(collections) => Ok(Json(collections)),
         Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),

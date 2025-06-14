@@ -2,18 +2,21 @@
 
 use oxide_core::event::{RecordData, RecordId};
 use serde::{Deserialize, Serialize};
+use ts_rs::TS;
 
 /// A record in the database
 ///
 /// This represents a single record/document in a collection, containing
 /// an ID, the collection it belongs to, and its JSON data.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
+#[ts(export)]
 pub struct Record {
     /// Unique identifier for this record
     pub id: RecordId,
     /// The collection this record belongs to
     pub collection: String,
     /// The record's data as JSON
+    #[ts(type = "Record<string, any>")]
     pub data: RecordData,
     /// Timestamp when the record was created (Unix timestamp in seconds)
     pub created_at: i64,
