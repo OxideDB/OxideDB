@@ -12,7 +12,7 @@ import Settings from './pages/Settings';
 function App() {
   return (
     <ThemeProvider defaultTheme="system" storageKey="oxidedb-ui-theme">
-      <Router>
+      <Router basename="/admin">
         <Routes>
           <Route path="/" element={<Layout />}>
             <Route index element={<Navigate to="/collections" replace />} />

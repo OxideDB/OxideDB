@@ -226,8 +226,10 @@ async fn main() -> Result<(), AppError> {
     info!("  ✅ WASM Plugin system with hello-plugin integration");
     info!("");
     info!("🌐 API server is running at: http://127.0.0.1:8080");
+    info!("🎨 Admin UI is available at: http://127.0.0.1:8080/admin");
     info!("📋 Available endpoints:");
     info!("  - GET  /health                              - Health check");
+    info!("  - GET  /admin                               - Admin UI");
     info!("  - GET  /collections                         - List collections");
     info!("  - POST /collections                         - Create collection");
     info!("  - DEL  /collections/{{collection}}            - Delete collection");

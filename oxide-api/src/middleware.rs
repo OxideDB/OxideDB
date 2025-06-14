@@ -2,14 +2,19 @@
 //!
 //! This module contains middleware functions that process HTTP requests
 //! and responses. Middleware handles cross-cutting concerns like logging,
-//! authentication, CORS, etc.
+//! authentication, CORS, rate limiting, etc.
+//!
+//! ## Available Middleware
+//!
+//! - [`LoggingMiddleware`] - Request/response logging with event dispatch
+//! - [`RequestIdMiddleware`] - Request ID generation and tracking
+//! - [`TimingMiddleware`] - Request timing and performance metrics
 
-use oxide_core::{
-    BeforeEventContext, BeforeEventType, EventBus,
-    AppError,
-};
+use oxide_core::{BeforeEventContext, BeforeEventType, EventBus};
 use std::sync::Arc;
 use tracing::{debug, info};
+
+use crate::errors::ApiError;
 
 /// Logging middleware that dispatches API events
 pub struct LoggingMiddleware {
@@ -28,7 +33,7 @@ impl LoggingMiddleware {
         method: String,
         path: String,
         headers: serde_json::Value,
-    ) -> Result<(), AppError> {
+    ) -> Result<(), ApiError> {
         debug!("Processing {} {}", method, path);
 
         // Create context for BeforeApiRequest event

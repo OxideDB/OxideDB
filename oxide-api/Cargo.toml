@@ -10,7 +10,7 @@ oxide-core = { path = "../oxide-core" }
 oxide-db = { path = "../oxide-db" }
 axum = "0.7"
 tower = "0.4"
-tower-http = { version = "0.5", features = ["cors", "trace"] }
+tower-http = { version = "0.5", features = ["cors", "trace", "fs"] }
 hyper = { version = "1.0", features = ["full"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -18,3 +18,5 @@ thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 ts-rs = { version = "10.1", features = ["serde-compat"] }
+include_dir = "0.7"
+mime_guess = "2.0"

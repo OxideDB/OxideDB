@@ -4,8 +4,17 @@ class ApiService {
   private baseUrl: string;
   private token: string | null = null;
 
-  constructor(baseUrl: string = 'http://localhost:8080') {
-    this.baseUrl = baseUrl;
+  constructor(baseUrl?: string) {
+    // Auto-detect base URL based on environment
+    if (baseUrl) {
+      this.baseUrl = baseUrl;
+    } else if (window.location.pathname.startsWith('/admin')) {
+      // Running in production, served from the same origin
+      this.baseUrl = window.location.origin;
+    } else {
+      // Development mode
+      this.baseUrl = 'http://localhost:8080';
+    }
     this.token = localStorage.getItem('auth_token');
   }
 
@@ -118,7 +127,7 @@ class ApiService {
     return this.request<DbRecord[]>(endpoint);
   }
 
-  async createRecord(collection: string, data: Record<string, any>): Promise<DbRecord> {
+  async createRecord(collection: string, data: Record<string, unknown>): Promise<DbRecord> {
     return this.request<DbRecord>(`/collections/${encodeURIComponent(collection)}/records`, {
       method: 'POST',
       body: JSON.stringify(data),
@@ -129,7 +138,7 @@ class ApiService {
     return this.request<DbRecord>(`/collections/${encodeURIComponent(collection)}/records/${encodeURIComponent(id)}`);
   }
 
-  async updateRecord(collection: string, id: string, data: Record<string, any>): Promise<DbRecord> {
+  async updateRecord(collection: string, id: string, data: Record<string, unknown>): Promise<DbRecord> {
     return this.request<DbRecord>(`/collections/${encodeURIComponent(collection)}/records/${encodeURIComponent(id)}`, {
       method: 'PUT',
       body: JSON.stringify(data),
