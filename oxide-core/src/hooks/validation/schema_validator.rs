@@ -250,6 +250,13 @@ impl SchemaValidatorHook {
                 // JSON type accepts any valid JSON value
                 Ok(value.clone())
             }
+            FieldType::Password => {
+                // Password fields should be strings
+                match value {
+                    serde_json::Value::String(_) => Ok(value.clone()),
+                    _ => Err("Password must be a string".to_string()),
+                }
+            }
         }
     }
 
@@ -305,6 +312,7 @@ mod tests {
             required: true,
             default: None,
             validation: None,
+            unique: false,
         });
         
         fields.insert("age".to_string(), FieldDefinition {
@@ -312,6 +320,7 @@ mod tests {
             required: false,
             default: Some(json!(0)),
             validation: None,
+            unique: false,
         });
         
         schema.fields = fields;

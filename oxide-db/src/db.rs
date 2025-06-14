@@ -1,44 +1,50 @@
-//! Database abstraction trait
+//! Database abstraction layer
+//!
+//! This module defines the core database traits and types used throughout OxideDB.
+//! The main `Db` trait provides a database-agnostic interface for CRUD operations,
+//! while the `SchemaAdapter` trait handles database-specific schema operations.
 
 use crate::Record;
-use oxide_core::{
-    event::{RecordData, RecordId},
-    AppError,
-    CollectionSchema,
-};
+use oxide_core::{AppError, CollectionSchema};
+use oxide_core::event::{RecordData, RecordId};
 
-/// Query parameters for listing records
-#[derive(Debug, Clone, serde::Deserialize)]
+/// Parameters for listing records
+#[derive(Debug, Clone, Default, serde::Deserialize)]
 pub struct ListParams {
     /// Maximum number of records to return
     pub limit: Option<usize>,
-    /// Number of records to skip
+    /// Number of records to skip (for pagination)
     pub offset: Option<usize>,
     /// Field to sort by
     pub sort_field: Option<String>,
-    /// Sort direction (true for ascending, false for descending)
+    /// Whether to sort in ascending order (default: true)
     pub sort_ascending: Option<bool>,
 }
 
-impl Default for ListParams {
-    fn default() -> Self {
-        Self {
-            limit: None,
-            offset: None,
-            sort_field: None,
-            sort_ascending: Some(true),
-        }
-    }
+/// Trait for database-specific schema operations
+///
+/// This trait abstracts the database-specific logic for handling collection schemas,
+/// allowing different database implementations to provide their own SQL generation
+/// and schema management logic.
+pub trait SchemaAdapter {
+    /// Get the table name for a collection
+    fn get_table_name(&self, collection_name: &str) -> String;
+    
+    /// Generate SQL DDL for creating a collection's table
+    fn generate_create_table_sql(&self, schema: &CollectionSchema) -> String;
+    
+    /// Generate SQL statements for creating indexes
+    fn generate_index_sql(&self, schema: &CollectionSchema) -> Vec<String>;
+    
+    /// Convert a field type to the appropriate SQL column type
+    fn field_type_to_sql(&self, field_type: &oxide_core::FieldType) -> &'static str;
 }
 
-/// The database abstraction trait
+/// Main database trait for CRUD operations
 ///
-/// This trait defines the interface for all database operations in OxideDB.
-/// All implementations must integrate with the EventBus to dispatch events
-/// before and after each operation, enabling the hook-first architecture.
-///
-/// The trait is designed to be async-first and error-safe, with all operations
-/// returning `Result<T, AppError>`.
+/// This trait defines the core database operations that all database implementations
+/// must provide. It follows the Hook-First Principle by dispatching events for
+/// all operations, allowing plugins and listeners to hook into the process.
 #[async_trait::async_trait]
 pub trait Db: Send + Sync {
     /// Initialize the database connection and schema
@@ -101,41 +107,29 @@ pub trait Db: Send + Sync {
     ///
     /// # Returns
     /// The deleted record
-    async fn delete_record(
-        &self,
-        collection: &str,
-        record_id: &RecordId,
-    ) -> Result<Record, AppError>;
+    async fn delete_record(&self, collection: &str, record_id: &RecordId)
+        -> Result<Record, AppError>;
 
-    /// List records in a collection with optional filtering and pagination
+    /// List records from the specified collection
+    ///
+    /// This method dispatches `BeforeRecordList` and `AfterRecordList` events.
     ///
     /// # Arguments
     /// * `collection` - The name of the collection
-    /// * `params` - Query parameters for filtering, pagination, and sorting
+    /// * `params` - Parameters for filtering, sorting, and pagination
     ///
     /// # Returns
     /// A vector of records matching the criteria
-    async fn list_records(
-        &self,
-        collection: &str,
-        params: ListParams,
-    ) -> Result<Vec<Record>, AppError>;
+    async fn list_records(&self, collection: &str, params: ListParams)
+        -> Result<Vec<Record>, AppError>;
 
-    /// Create a new collection
+    /// Create a new collection with the given schema
     ///
     /// This method dispatches `BeforeCollectionCreate` and `AfterCollectionCreate` events.
     ///
     /// # Arguments
-    /// * `collection` - The name of the collection to create
-    async fn create_collection(&self, collection: &str) -> Result<(), AppError>;
-
-    /// Create a new collection with schema
-    ///
-    /// This method dispatches `BeforeCollectionCreate` and `AfterCollectionCreate` events.
-    ///
-    /// # Arguments
-    /// * `schema` - The schema definition for the collection
-    async fn create_collection_with_schema(&self, schema: CollectionSchema) -> Result<(), AppError>;
+    /// * `schema` - The collection schema definition
+    async fn create_collection(&self, schema: CollectionSchema) -> Result<(), AppError>;
 
     /// Get the schema for a collection
     ///
@@ -147,6 +141,8 @@ pub trait Db: Send + Sync {
     async fn get_collection_schema(&self, collection: &str) -> Result<CollectionSchema, AppError>;
 
     /// Update the schema for a collection
+    ///
+    /// This method dispatches `BeforeCollectionUpdate` and `AfterCollectionUpdate` events.
     ///
     /// # Arguments
     /// * `collection` - The name of the collection
@@ -161,11 +157,11 @@ pub trait Db: Send + Sync {
     /// * `collection` - The name of the collection to delete
     async fn delete_collection(&self, collection: &str) -> Result<(), AppError>;
 
-    /// List all collections in the database
+    /// List all collections
     ///
     /// # Returns
-    /// A vector of collection names
-    async fn list_collections(&self) -> Result<Vec<String>, AppError>;
+    /// A vector of collection schemas
+    async fn list_collections(&self) -> Result<Vec<CollectionSchema>, AppError>;
 
     /// Check if a collection exists
     ///

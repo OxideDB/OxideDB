@@ -117,15 +117,15 @@ impl RecordHandlers {
 pub struct CollectionHandlers;
 
 impl CollectionHandlers {
-    /// Create a new collection
+    /// Create a new collection with schema
     ///
     /// POST /collections
-    pub async fn create_collection(db: Arc<dyn Db>, collection: String) -> Result<(), AppError> {
-        debug!("Creating collection: {}", collection);
+    pub async fn create_collection(db: Arc<dyn Db>, schema: CollectionSchema) -> Result<(), AppError> {
+        debug!("Creating collection with schema: {}", schema.name);
 
-        db.create_collection(&collection).await?;
+        db.create_collection(schema.clone()).await?;
 
-        info!("Created collection: {}", collection);
+        info!("Created collection with schema: {}", schema.name);
         Ok(())
     }
 
@@ -147,7 +147,8 @@ impl CollectionHandlers {
     pub async fn list_collections(db: Arc<dyn Db>) -> Result<Vec<String>, AppError> {
         debug!("Listing collections");
 
-        let collections = db.list_collections().await?;
+        let collection_schemas = db.list_collections().await?;
+        let collections: Vec<String> = collection_schemas.into_iter().map(|schema| schema.name).collect();
 
         debug!("Listed {} collections", collections.len());
         Ok(collections)
@@ -192,6 +193,22 @@ impl CollectionHandlers {
 
         debug!("Retrieved schema for collection: {}", collection);
         Ok(schema)
+    }
+
+    /// Update collection schema
+    ///
+    /// PUT /collections/{collection}/schema
+    pub async fn update_collection_schema(
+        db: Arc<dyn Db>,
+        collection: String,
+        schema: CollectionSchema,
+    ) -> Result<(), AppError> {
+        debug!("Updating schema for collection: {}", collection);
+
+        db.update_collection_schema(&collection, schema).await?;
+
+        info!("Updated schema for collection: {}", collection);
+        Ok(())
     }
 }
 

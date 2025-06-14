@@ -50,6 +50,12 @@ pub struct HookRegistry {
     auth_service: Option<Arc<AuthService>>,
 }
 
+impl Default for HookRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl HookRegistry {
     /// Create a new hook registry with default configuration
     pub fn new() -> Self {
@@ -144,7 +150,7 @@ impl HookRegistry {
     /// Register user validation hooks
     fn register_user_validation_hooks(&self, event_bus: &dyn EventBus) -> Result<(), AppError> {
         let hook = Arc::new(UserValidationHook::new()
-            .map_err(|e| AppError::internal(&format!("Failed to create user validation hook: {}", e)))?);
+            .map_err(|e| AppError::internal(format!("Failed to create user validation hook: {}", e)))?);
 
         // Register for record creation
         let hook_create = Arc::clone(&hook);
@@ -216,7 +222,7 @@ impl HookRegistry {
     /// Register data sanitization hooks
     fn register_data_sanitization_hooks(&self, event_bus: &dyn EventBus) -> Result<(), AppError> {
         let hook = Arc::new(DataSanitizerHook::new()
-            .map_err(|e| AppError::internal(&format!("Failed to create data sanitizer hook: {}", e)))?);
+            .map_err(|e| AppError::internal(format!("Failed to create data sanitizer hook: {}", e)))?);
 
         // Register for record creation
         let hook_create = Arc::clone(&hook);

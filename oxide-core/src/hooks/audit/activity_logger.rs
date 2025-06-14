@@ -7,7 +7,7 @@
 use crate::{BeforeEventContext, AfterEventContext, AppError};
 use serde_json::Value as JsonValue;
 use std::collections::HashSet;
-use tracing::{info, debug, warn, error};
+use tracing::{info, debug, error};
 
 /// Configuration for activity logging
 #[derive(Debug, Clone)]
@@ -31,8 +31,7 @@ pub struct ActivityLoggerConfig {
 impl Default for ActivityLoggerConfig {
     fn default() -> Self {
         let mut sensitive_fields = HashSet::new();
-        sensitive_fields.insert("password".to_string());
-        sensitive_fields.insert("passwordHash".to_string());
+        sensitive_fields.insert("password".to_string()); // Contains hash after processing
         sensitive_fields.insert("token".to_string());
         sensitive_fields.insert("apiKey".to_string());
         sensitive_fields.insert("secret".to_string());
@@ -140,7 +139,7 @@ impl ActivityLoggerHook {
                     );
                 }
             }
-            AfterEventContext::RecordDeleted { collection, record_id, data } => {
+            AfterEventContext::RecordDeleted { collection, record_id, data: _ } => {
                 if self.should_log_collection(collection) {
                     info!(
                         "🗑️ [AFTER] {} | Collection: '{}' | Record ID: {} | Deleted data logged separately",

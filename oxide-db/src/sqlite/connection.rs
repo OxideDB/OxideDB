@@ -1,11 +1,12 @@
 //! SQLite database connection and core structure
 
-use crate::Record;
+use crate::db::SchemaAdapter;
+use super::schema_adapter::SqliteSchemaAdapter;
 use oxide_core::{
     AppError, AuthService, EventBus,
     event::RecordId,
 };
-use rusqlite::{Connection, Row};
+use rusqlite::Connection;
 use std::sync::{Arc, Mutex};
 use tokio::task::spawn_blocking;
 use tracing::{info, debug};
@@ -20,6 +21,7 @@ pub struct SqliteDb {
     pub(super) connection: Arc<Mutex<Connection>>,
     pub(super) event_bus: Arc<dyn EventBus>,
     pub(super) auth_service: Arc<AuthService>,
+    pub(super) schema_adapter: SqliteSchemaAdapter,
 }
 
 impl SqliteDb {
@@ -37,28 +39,13 @@ impl SqliteDb {
             connection: Arc::new(Mutex::new(connection)),
             event_bus,
             auth_service,
+            schema_adapter: SqliteSchemaAdapter::new(),
         })
     }
 
     /// Generate a new UUID for a record
     pub(super) fn generate_record_id() -> RecordId {
         Uuid::new_v4().to_string()
-    }
-
-    /// Convert a SQLite row to a Record
-    pub(super) fn row_to_record(row: &Row) -> Result<Record, rusqlite::Error> {
-        let data_str: String = row.get("data")?;
-        let data = serde_json::from_str(&data_str).map_err(|e| {
-            rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e))
-        })?;
-
-        Ok(Record {
-            id: row.get("id")?,
-            collection: row.get("collection")?,
-            data,
-            created_at: row.get("created_at")?,
-            updated_at: row.get("updated_at")?,
-        })
     }
 
     /// Initialize database tables and system collections
@@ -133,6 +120,9 @@ impl SqliteDb {
         // Create database tables
         self.create_tables().await?;
 
+        // Run migrations for existing data
+        self.migrate_to_collection_tables().await?;
+
         // Dispatch OnSystemStartup event
         self.event_bus
             .dispatch_after(AfterEventType::SystemStartup, &AfterEventContext::SystemStartup)
@@ -144,6 +134,184 @@ impl SqliteDb {
         // Initialize authentication collections
         self.initialize_auth_collections().await?;
 
+        Ok(())
+    }
+
+    /// Migrate existing data from centralized records table to collection-specific tables
+    async fn migrate_to_collection_tables(&self) -> Result<(), AppError> {
+        let connection = self.connection.clone();
+        
+        // First, check if we have any data in the old records table
+        let has_old_data = spawn_blocking({
+            let connection = connection.clone();
+            move || {
+                let conn = connection
+                    .lock()
+                    .map_err(|_| AppError::database("Failed to acquire database lock"))?;
+
+                // Check if records table exists and has data
+                let table_exists: bool = conn
+                    .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='records'")
+                    .map_err(|e| AppError::database(format!("Failed to check table existence: {}", e)))?
+                    .query_row([], |_| Ok(true))
+                    .unwrap_or(false);
+
+                if !table_exists {
+                    return Ok(false);
+                }
+
+                let count: i64 = conn
+                    .prepare("SELECT COUNT(*) FROM records")
+                    .map_err(|e| AppError::database(format!("Failed to count old records: {}", e)))?
+                    .query_row([], |row| row.get(0))
+                    .unwrap_or(0);
+
+                Ok::<bool, AppError>(count > 0)
+            }
+        })
+        .await
+        .map_err(|e| AppError::internal(format!("Task join error: {}", e)))??;
+
+        if !has_old_data {
+            debug!("No migration needed - no data in old records table");
+            return Ok(());
+        }
+
+        info!("🔄 Starting migration from centralized records table to collection-specific tables");
+
+        // Get all collections that need migration
+        let collections = self.list_collections().await?;
+        
+        for schema in collections {
+            if schema.name.starts_with('_') {
+                // Skip system collections for now
+                continue;
+            }
+
+            info!("Migrating collection: {}", schema.name);
+
+            // Create the new collection table using a local schema adapter
+            let schema_adapter = SqliteSchemaAdapter::new();
+            let create_table_sql = schema_adapter.generate_create_table_sql(&schema);
+            let index_sql_statements = schema_adapter.generate_index_sql(&schema);
+
+            let collection_name_for_migration = schema.name.clone();
+            let connection_for_migration = connection.clone();
+
+            spawn_blocking(move || {
+                let conn = connection_for_migration
+                    .lock()
+                    .map_err(|_| AppError::database("Failed to acquire database lock"))?;
+
+                // Start transaction
+                let tx = conn.unchecked_transaction()
+                    .map_err(|e| AppError::database(format!("Failed to start transaction: {}", e)))?;
+
+                // Create the new table
+                tx.execute(&create_table_sql, [])
+                    .map_err(|e| AppError::database(format!("Failed to create table during migration: {}", e)))?;
+
+                // Create indexes
+                for index_sql in index_sql_statements {
+                    tx.execute(&index_sql, [])
+                        .map_err(|e| AppError::database(format!("Failed to create index during migration: {}", e)))?;
+                }
+
+                // Migrate data from old records table
+                let old_records = {
+                    let mut select_stmt = tx
+                        .prepare("SELECT id, data, created_at, updated_at FROM records WHERE collection = ?1")
+                        .map_err(|e| AppError::database(format!("Failed to prepare select statement: {}", e)))?;
+
+                    let records = select_stmt
+                        .query_map([&collection_name_for_migration], |row| {
+                            let id: String = row.get(0)?;
+                            let data_str: String = row.get(1)?;
+                            let created_at: i64 = row.get(2)?;
+                            let updated_at: i64 = row.get(3)?;
+                            
+                            let data: serde_json::Value = serde_json::from_str(&data_str)
+                                .map_err(|e| rusqlite::Error::FromSqlConversionFailure(1, rusqlite::types::Type::Text, Box::new(e)))?;
+                            
+                            Ok((id, data, created_at, updated_at))
+                        })
+                        .map_err(|e| AppError::database(format!("Failed to query old records: {}", e)))?
+                        .collect::<Result<Vec<_>, _>>()
+                        .map_err(|e| AppError::database(format!("Failed to collect old records: {}", e)))?;
+                    
+                    // Drop the statement before continuing
+                    drop(select_stmt);
+                    records
+                };
+
+                // Insert migrated data into new table
+                let table_name = SqliteSchemaAdapter::new().get_table_name(&schema.name);
+                for (id, data, created_at, updated_at) in old_records {
+                    // Convert data to SQL values
+                    let mut field_names = vec!["id".to_string(), "created_at".to_string(), "updated_at".to_string()];
+                    let mut placeholders = vec!["?1".to_string(), "?2".to_string(), "?3".to_string()];
+                    let mut bind_values: Vec<Box<dyn rusqlite::ToSql>> = vec![
+                        Box::new(id.clone()),
+                        Box::new(created_at),
+                        Box::new(updated_at),
+                    ];
+
+                    // Add schema fields
+                    for (field_name, field_def) in &schema.fields {
+                        if let Some(value) = data.get(field_name) {
+                            field_names.push(field_name.clone());
+                            placeholders.push(format!("?{}", field_names.len()));
+                            
+                            match field_def.field_type {
+                                oxide_core::FieldType::Text | oxide_core::FieldType::Email | oxide_core::FieldType::Url => {
+                                    bind_values.push(Box::new(value.as_str().unwrap_or("").to_string()));
+                                }
+                                oxide_core::FieldType::Number => {
+                                    bind_values.push(Box::new(value.as_f64().unwrap_or(0.0)));
+                                }
+                                oxide_core::FieldType::Boolean => {
+                                    bind_values.push(Box::new(if value.as_bool().unwrap_or(false) { 1i64 } else { 0i64 }));
+                                }
+                                oxide_core::FieldType::Date => {
+                                    bind_values.push(Box::new(value.as_i64().unwrap_or(0)));
+                                }
+                                oxide_core::FieldType::Json => {
+                                    bind_values.push(Box::new(value.to_string()));
+                                }
+                                oxide_core::FieldType::Password => {
+                                    bind_values.push(Box::new(value.as_str().unwrap_or("").to_string()));
+                                }
+                            }
+                        }
+                    }
+
+                    let insert_sql = format!(
+                        "INSERT INTO {} ({}) VALUES ({})",
+                        table_name,
+                        field_names.join(", "),
+                        placeholders.join(", ")
+                    );
+
+                    tx.execute(&insert_sql, rusqlite::params_from_iter(bind_values.iter().map(|v| v.as_ref())))
+                        .map_err(|e| AppError::database(format!("Failed to insert migrated record: {}", e)))?;
+                }
+
+                // Remove migrated records from old table
+                tx.execute("DELETE FROM records WHERE collection = ?1", [&collection_name_for_migration])
+                    .map_err(|e| AppError::database(format!("Failed to delete old records: {}", e)))?;
+
+                // Commit transaction
+                tx.commit()
+                    .map_err(|e| AppError::database(format!("Failed to commit migration transaction: {}", e)))?;
+
+                info!("✅ Migrated collection: {}", collection_name_for_migration);
+                Ok::<(), AppError>(())
+            })
+            .await
+            .map_err(|e| AppError::internal(format!("Migration task join error: {}", e)))??;
+        }
+
+        info!("✅ Migration completed successfully");
         Ok(())
     }
 
@@ -216,7 +384,11 @@ impl SqliteDb {
 
     /// Count records in a collection
     pub async fn count_records(&self, collection: &str) -> Result<usize, AppError> {
-        let collection_name = collection.to_string();
+        // Get collection schema to determine table name
+        let schema = self.get_collection_schema(collection).await?;
+        let table_name = self.schema_adapter.get_table_name(&schema.name);
+        let table_name_for_logging = table_name.clone();
+
         let connection = self.connection.clone();
 
         let count = spawn_blocking(move || {
@@ -224,12 +396,13 @@ impl SqliteDb {
                 .lock()
                 .map_err(|_| AppError::database("Failed to acquire database lock"))?;
 
+            let count_sql = format!("SELECT COUNT(*) FROM {}", table_name);
             let mut stmt = conn
-                .prepare("SELECT COUNT(*) FROM records WHERE collection = ?1")
+                .prepare(&count_sql)
                 .map_err(|e| AppError::database(format!("Failed to prepare statement: {}", e)))?;
 
             let count: i64 = stmt
-                .query_row([&collection_name], |row| row.get(0))
+                .query_row([], |row| row.get(0))
                 .map_err(|e| AppError::database(format!("Failed to count records: {}", e)))?;
 
             Ok::<usize, AppError>(count as usize)
@@ -237,7 +410,7 @@ impl SqliteDb {
         .await
         .map_err(|e| AppError::internal(format!("Task join error: {}", e)))??;
 
-        debug!("Counted {} records in collection {}", count, collection);
+        debug!("Counted {} records in collection table {}", count, table_name_for_logging);
         Ok(count)
     }
 }

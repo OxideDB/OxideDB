@@ -5,9 +5,10 @@
 
 use crate::AppError;
 use argon2::{
-    password_hash::{rand_core::OsRng, PasswordHash, PasswordHasher, PasswordVerifier, SaltString},
+    password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString},
     Argon2,
 };
+use rand_core::OsRng;
 use chrono::{Duration, Utc};
 use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
 use serde::{Deserialize, Serialize};
@@ -132,7 +133,8 @@ impl AuthService {
 
 /// Create default auth collections schemas
 pub fn create_auth_collections() -> (crate::collection::CollectionSchema, crate::collection::CollectionSchema) {
-    use crate::collection::{CollectionSchema, CollectionType, FieldDefinition, FieldType};
+    use crate::collection::{CollectionSchema, CollectionType, FieldDefinition};
+use crate::field_types::FieldType;
     use std::collections::HashMap;
     
     // Users collection schema
@@ -142,13 +144,15 @@ pub fn create_auth_collections() -> (crate::collection::CollectionSchema, crate:
     users_fields.insert("email".to_string(), FieldDefinition {
         field_type: FieldType::Email,
         required: true,
+        unique: true, // Email must be unique
         default: None,
         validation: None,
     });
     
-    users_fields.insert("passwordHash".to_string(), FieldDefinition {
-        field_type: FieldType::Text,
+    users_fields.insert("password".to_string(), FieldDefinition {
+        field_type: FieldType::Password,
         required: true,
+        unique: false,
         default: None,
         validation: None,
     });
@@ -156,6 +160,7 @@ pub fn create_auth_collections() -> (crate::collection::CollectionSchema, crate:
     users_fields.insert("verified".to_string(), FieldDefinition {
         field_type: FieldType::Boolean,
         required: false,
+        unique: false,
         default: Some(serde_json::json!(false)),
         validation: None,
     });
@@ -169,13 +174,15 @@ pub fn create_auth_collections() -> (crate::collection::CollectionSchema, crate:
     superusers_fields.insert("email".to_string(), FieldDefinition {
         field_type: FieldType::Email,
         required: true,
+        unique: true, // Email must be unique
         default: None,
         validation: None,
     });
     
-    superusers_fields.insert("passwordHash".to_string(), FieldDefinition {
-        field_type: FieldType::Text,
+    superusers_fields.insert("password".to_string(), FieldDefinition {
+        field_type: FieldType::Password,
         required: true,
+        unique: false,
         default: None,
         validation: None,
     });
@@ -183,6 +190,7 @@ pub fn create_auth_collections() -> (crate::collection::CollectionSchema, crate:
     superusers_fields.insert("verified".to_string(), FieldDefinition {
         field_type: FieldType::Boolean,
         required: false,
+        unique: false,
         default: Some(serde_json::json!(true)),
         validation: None,
     });

@@ -17,13 +17,15 @@ pub mod auth;
 pub mod collection;
 pub mod error;
 pub mod event;
+pub mod field_types;
 pub mod plugin_api;
 pub mod hooks;
 
 // Re-export commonly used types for convenience
 pub use auth::{AuthService, UserRole};
-pub use collection::{CollectionSchema, CollectionType, FieldDefinition, FieldType};
+pub use collection::{CollectionSchema, CollectionType, FieldDefinition};
 pub use error::AppError;
+pub use field_types::FieldType;
 pub use event::{
     // New event system
     BeforeEventContext, AfterEventContext, BeforeEventType, AfterEventType,

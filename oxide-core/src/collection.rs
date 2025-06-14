@@ -4,6 +4,7 @@
 //! in OxideDB. Collections can be either 'base' (user-defined) or 'auth' 
 //! (system authentication collections).
 
+use crate::field_types::FieldType;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use std::collections::HashMap;
@@ -27,38 +28,15 @@ impl std::fmt::Display for CollectionType {
     }
 }
 
-/// Supported field types in collection schemas
+/// Index definition for database optimization
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "lowercase")]
-pub enum FieldType {
-    /// Text/string field
-    Text,
-    /// Numeric field (integer or float)
-    Number,
-    /// Boolean field
-    Boolean,
-    /// Date/timestamp field
-    Date,
-    /// JSON object field
-    Json,
-    /// Email field (text with email validation)
-    Email,
-    /// URL field (text with URL validation)
-    Url,
-}
-
-impl std::fmt::Display for FieldType {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            FieldType::Text => write!(f, "text"),
-            FieldType::Number => write!(f, "number"),
-            FieldType::Boolean => write!(f, "boolean"),
-            FieldType::Date => write!(f, "date"),
-            FieldType::Json => write!(f, "json"),
-            FieldType::Email => write!(f, "email"),
-            FieldType::Url => write!(f, "url"),
-        }
-    }
+pub struct IndexDefinition {
+    /// Name of the index
+    pub name: String,
+    /// Fields to index (can be multiple for composite indexes)
+    pub fields: Vec<String>,
+    /// Whether this is a unique index
+    pub unique: bool,
 }
 
 /// Field definition within a collection schema
@@ -68,6 +46,8 @@ pub struct FieldDefinition {
     pub field_type: FieldType,
     /// Whether this field is required
     pub required: bool,
+    /// Whether this field must be unique
+    pub unique: bool,
     /// Default value for this field (optional)
     pub default: Option<JsonValue>,
     /// Validation rules (optional)
@@ -85,6 +65,8 @@ pub struct CollectionSchema {
     pub collection_type: CollectionType,
     /// Field definitions for this collection
     pub fields: HashMap<String, FieldDefinition>,
+    /// Index definitions for performance optimization
+    pub indexes: Vec<IndexDefinition>,
     /// Timestamp when collection was created
     pub created_at: i64,
     /// Timestamp when collection was last updated
@@ -104,6 +86,7 @@ impl CollectionSchema {
             name,
             collection_type,
             fields: HashMap::new(),
+            indexes: Vec::new(),
             created_at: now,
             updated_at: now,
         }
@@ -118,6 +101,23 @@ impl CollectionSchema {
     /// Remove a field from the schema
     pub fn remove_field(&mut self, name: &str) -> bool {
         let removed = self.fields.remove(name).is_some();
+        if removed {
+            self.update_timestamp();
+        }
+        removed
+    }
+
+    /// Add an index to the schema
+    pub fn add_index(&mut self, index: IndexDefinition) {
+        self.indexes.push(index);
+        self.update_timestamp();
+    }
+
+    /// Remove an index from the schema
+    pub fn remove_index(&mut self, index_name: &str) -> bool {
+        let original_len = self.indexes.len();
+        self.indexes.retain(|idx| idx.name != index_name);
+        let removed = self.indexes.len() < original_len;
         if removed {
             self.update_timestamp();
         }
@@ -207,6 +207,17 @@ impl CollectionSchema {
                     return Err(format!("Field '{}' must be a string", field_name));
                 }
             }
+            FieldType::Password => {
+                if !value.is_string() {
+                    return Err(format!("Field '{}' must be a string", field_name));
+                }
+                if let Some(password) = value.as_str() {
+                    if password.is_empty() {
+                        return Err(format!("Field '{}' cannot be empty", field_name));
+                    }
+                    // Note: Password will be hashed by the password hashing hook
+                }
+            }
         }
 
         Ok(())
@@ -223,6 +234,7 @@ mod tests {
         assert_eq!(schema.name, "users");
         assert_eq!(schema.collection_type, CollectionType::Base);
         assert!(schema.fields.is_empty());
+        assert!(schema.indexes.is_empty());
     }
 
     #[test]
@@ -233,6 +245,7 @@ mod tests {
             FieldDefinition {
                 field_type: FieldType::Text,
                 required: true,
+                unique: false,
                 default: None,
                 validation: None,
             },
@@ -249,5 +262,65 @@ mod tests {
         // Wrong type
         let invalid_data = serde_json::json!({"name": 123});
         assert!(schema.validate_data(&invalid_data).is_err());
+    }
+
+    #[test]
+    fn test_password_field_type() {
+        let mut schema = CollectionSchema::new("users".to_string(), CollectionType::Base);
+        schema.add_field(
+            "email".to_string(),
+            FieldDefinition {
+                field_type: FieldType::Email,
+                required: true,
+                unique: true,
+                default: None,
+                validation: None,
+            },
+        );
+        schema.add_field(
+            "password".to_string(),
+            FieldDefinition {
+                field_type: FieldType::Password,
+                required: true,
+                unique: false,
+                default: None,
+                validation: None,
+            },
+        );
+        schema.add_field(
+            "backup_password".to_string(),
+            FieldDefinition {
+                field_type: FieldType::Password,
+                required: false,
+                unique: false,
+                default: None,
+                validation: None,
+            },
+        );
+
+        // Test password field validation
+        let valid_data = serde_json::json!({
+            "email": "test@example.com", 
+            "password": "secret123",
+            "backup_password": "backup456"
+        });
+        assert!(schema.validate_data(&valid_data).is_ok());
+
+        // Test empty password validation fails
+        let invalid_data = serde_json::json!({
+            "email": "test@example.com", 
+            "password": "",
+            "backup_password": "backup456"
+        });
+        assert!(schema.validate_data(&invalid_data).is_err());
+
+        // Test missing required password field
+        let missing_password = serde_json::json!({
+            "email": "test@example.com"
+        });
+        assert!(schema.validate_data(&missing_password).is_err());
+
+        // Test password field type requirements
+        assert!(FieldType::Password.requires_hashing());
     }
 } 

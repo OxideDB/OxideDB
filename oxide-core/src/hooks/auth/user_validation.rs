@@ -171,17 +171,14 @@ impl UserValidationHook {
     /// Validate that required fields are present
     fn validate_required_fields(&self, context: &BeforeEventContext) -> Result<(), AppError> {
         // For auth collections, email is always required
-        if !context.data.get("email").is_some() {
+        if context.data.get("email").is_none() {
             return Err(AppError::validation("email", "Email is required"));
         }
 
-        // For new records, either password or passwordHash must be present
+        // For new records, password field must be present (it will contain hash after password hashing hook runs)
         if context.record_id.is_none() { // This is a create operation
-            let has_password = context.data.get("password").is_some();
-            let has_password_hash = context.data.get("passwordHash").is_some();
-            
-            if !has_password && !has_password_hash {
-                return Err(AppError::validation("password", "Password or passwordHash is required"));
+            if context.data.get("password").is_none() {
+                return Err(AppError::validation("password", "Password is required"));
             }
         }
 
@@ -303,5 +300,95 @@ mod tests {
         });
 
         assert!(hook.handle_before_record_create(&mut context).is_err());
+    }
+
+    #[test]
+    fn test_validation_with_password_hash() {
+        let hook = UserValidationHook::new().unwrap();
+
+        // Test data that would result from password hashing hook running
+        // The password field now contains the hash directly
+        let mut context = BeforeEventContext {
+            collection: "superusers".to_string(),
+            data: json!({
+                "email": "admin@example.com",
+                "password": "$argon2id$v=19$m=65536,t=3,p=4$abcdef..."
+            }),
+            metadata: json!({}),
+            record_id: None,
+            old_data: None,
+        };
+
+        // This should pass since password field is present (even though it contains a hash)
+        assert!(hook.handle_before_record_create(&mut context).is_ok());
+
+        // Test that missing password still fails
+        context.data = json!({
+            "email": "admin3@example.com"
+        });
+
+        assert!(hook.handle_before_record_create(&mut context).is_err());
+    }
+
+    #[test]
+    fn test_integration_password_hashing_then_validation() {
+        use crate::AuthService;
+        use crate::hooks::auth::password_hash::PasswordHashingHook;
+        use std::sync::Arc;
+
+        // Simulate the exact scenario from the error:
+        // 1. Password hashing hook runs first
+        // 2. User validation hook runs second
+        // 3. Should NOT fail with "Required field 'password' is missing"
+
+        let auth_service = Arc::new(AuthService::new("test_secret".to_string()));
+        let password_hook = PasswordHashingHook::new(auth_service);
+        let validation_hook = UserValidationHook::new().unwrap();
+
+        // Create auth collection schema (like superusers)
+        let mut schema = crate::CollectionSchema::new("superusers".to_string(), crate::CollectionType::Auth);
+        schema.add_field("email".to_string(), crate::FieldDefinition {
+            field_type: crate::FieldType::Email,
+            required: true,
+            unique: true,
+            default: None,
+            validation: None,
+        });
+        schema.add_field("password".to_string(), crate::FieldDefinition {
+            field_type: crate::FieldType::Password,
+            required: true,
+            unique: false,
+            default: None,
+            validation: None,
+        });
+
+        // Register the schema with the password hashing hook
+        assert!(password_hook.register_schema("superusers".to_string(), schema).is_ok());
+
+        // Original data with plain text password
+        let mut context = BeforeEventContext {
+            collection: "superusers".to_string(),
+            data: json!({
+                "email": "admin@example.com",
+                "password": "securepassword123"
+            }),
+            metadata: json!({}),
+            record_id: None,
+            old_data: None,
+        };
+
+        // Step 1: Password hashing hook processes the data
+        assert!(password_hook.handle_before_record_create(&mut context).is_ok());
+        
+        // Verify password was hashed and stored in the same field
+        assert!(context.data.get("password").is_some());
+        let password_value = context.data.get("password").unwrap().as_str().unwrap();
+        assert_ne!(password_value, "securepassword123"); // Should be hashed
+        assert!(password_value.starts_with("$argon2")); // Should be argon2 hash
+        assert!(context.data.get("email").is_some());
+
+        // Step 2: User validation hook should NOT fail
+        let validation_result = validation_hook.handle_before_record_create(&mut context);
+        assert!(validation_result.is_ok(), "User validation should pass after password hashing: {:?}", validation_result);
     }
 } 

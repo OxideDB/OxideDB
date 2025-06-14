@@ -19,7 +19,13 @@ export interface HealthStatus {
 }
 
 export interface CreateCollectionRequest {
+  id: string;
   name: string;
+  collection_type: CollectionType;
+  fields: Record<string, FieldDefinition>;
+  indexes: IndexDefinition[];
+  created_at: number;
+  updated_at: number;
 }
 
 export interface AuthResponse {
@@ -42,13 +48,20 @@ export interface ApiError {
 // Collection Schema Types
 export type CollectionType = 'base' | 'auth';
 
-export type FieldType = 'text' | 'number' | 'boolean' | 'date' | 'json' | 'email' | 'url';
+export type FieldType = 'text' | 'number' | 'boolean' | 'date' | 'json' | 'email' | 'url' | 'password';
 
 export interface FieldDefinition {
   field_type: FieldType;
   required: boolean;
+  unique: boolean;
   default?: any;
   validation?: any;
+}
+
+export interface IndexDefinition {
+  name: string;
+  fields: string[];
+  unique: boolean;
 }
 
 export interface CollectionSchema {
@@ -56,6 +69,7 @@ export interface CollectionSchema {
   name: string;
   collection_type: CollectionType;
   fields: Record<string, FieldDefinition>;
+  indexes: IndexDefinition[];
   created_at: number;
   updated_at: number;
 } 

@@ -31,7 +31,7 @@ pub struct DataSanitizerConfig {
 impl Default for DataSanitizerConfig {
     fn default() -> Self {
         let mut excluded_fields = HashSet::new();
-        excluded_fields.insert("passwordHash".to_string());
+        excluded_fields.insert("password".to_string()); // Contains hash after processing, should not be sanitized
         excluded_fields.insert("content".to_string()); // Preserve rich content
         excluded_fields.insert("html".to_string());
 
@@ -70,12 +70,12 @@ impl DataSanitizerHook {
         // Compile regex patterns
         let html_regex = Arc::new(
             Regex::new(r"<[^>]*>")
-                .map_err(|e| AppError::internal(&format!("Failed to compile HTML regex: {}", e)))?
+                .map_err(|e| AppError::internal(format!("Failed to compile HTML regex: {}", e)))?
         );
 
         let whitespace_regex = Arc::new(
             Regex::new(r"\s+")
-                .map_err(|e| AppError::internal(&format!("Failed to compile whitespace regex: {}", e)))?
+                .map_err(|e| AppError::internal(format!("Failed to compile whitespace regex: {}", e)))?
         );
 
         Ok(Self {

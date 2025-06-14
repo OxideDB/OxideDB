@@ -4,12 +4,12 @@ use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
     response::Json,
-    routing::{delete, get, post, put},
+    routing::{delete, get},
     Router,
 };
 use oxide_core::{event::EventBus, AppError};
 use oxide_db::Db;
-use serde::Deserialize;
+
 use std::sync::Arc;
 use tokio::net::TcpListener;
 use tower::ServiceBuilder;
@@ -81,7 +81,7 @@ impl ApiServer {
             )
             .route("/collections/:collection", delete(delete_collection))
             .route("/collections/:collection/stats", get(collection_stats))
-            .route("/collections/:collection/schema", get(collection_schema))
+            .route("/collections/:collection/schema", get(collection_schema).put(update_collection_schema))
             // Record endpoints
             .route(
                 "/collections/:collection/records",
@@ -99,14 +99,14 @@ impl ApiServer {
             .with_state(state);
 
         let listener = TcpListener::bind(&self.address()).await.map_err(|e| {
-            AppError::internal(&format!("Failed to bind to {}: {}", self.address(), e))
+            AppError::internal(format!("Failed to bind to {}: {}", self.address(), e))
         })?;
 
         info!("✅ API server listening on {}", self.address());
 
         axum::serve(listener, app)
             .await
-            .map_err(|e| AppError::internal(&format!("Server error: {}", e)))?;
+            .map_err(|e| AppError::internal(format!("Server error: {}", e)))?;
 
         Ok(())
     }
@@ -177,16 +177,11 @@ async fn list_collections(
 }
 
 /// Create a new collection
-#[derive(Deserialize)]
-struct CreateCollectionRequest {
-    name: String,
-}
-
 async fn create_collection(
     State(state): State<AppState>,
-    Json(payload): Json<CreateCollectionRequest>,
+    Json(schema): Json<CollectionSchema>,
 ) -> Result<StatusCode, (StatusCode, String)> {
-    match CollectionHandlers::create_collection(state.db, payload.name).await {
+    match CollectionHandlers::create_collection(state.db, schema).await {
         Ok(()) => Ok(StatusCode::CREATED),
         Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
     }
@@ -222,6 +217,18 @@ async fn collection_schema(
     match CollectionHandlers::get_collection_schema(state.db, collection).await {
         Ok(schema) => Ok(Json(schema)),
         Err(e) => Err((StatusCode::NOT_FOUND, e.to_string())),
+    }
+}
+
+/// Update collection schema
+async fn update_collection_schema(
+    State(state): State<AppState>,
+    Path(collection): Path<String>,
+    Json(schema): Json<CollectionSchema>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    match CollectionHandlers::update_collection_schema(state.db, collection, schema).await {
+        Ok(()) => Ok(StatusCode::OK),
+        Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
     }
 }
 

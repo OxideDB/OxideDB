@@ -39,13 +39,19 @@ impl SqliteDb {
     pub async fn authenticate_user(&self, email: &str, password: &str) -> Result<(String, String), AppError> {
         info!("🔑 Authenticating user: {}", email);
         
-        // Create context for BeforeUserAuth event
+        // Try to find user in users collection first, then superusers
+        let user_record = match self.find_user_by_email(email, "users").await {
+            Ok(record) => record,
+            Err(_) => self.find_user_by_email(email, "superusers").await?,
+        };
+
+        // Create context for BeforeUserAuth event with the actual collection found
         let mut auth_context = BeforeEventContext {
-            collection: "auth".to_string(),
+            collection: user_record.collection.clone(),
             data: serde_json::json!({"email": email}),
             metadata: serde_json::json!({}),
-            record_id: None,
-            old_data: None,
+            record_id: Some(user_record.id.clone()),
+            old_data: Some(user_record.data.clone()),
         };
         
         // Dispatch BeforeUserAuth event
@@ -53,16 +59,10 @@ impl SqliteDb {
             .dispatch_before(BeforeEventType::UserAuth, &mut auth_context)
             .await?;
 
-        // Try to find user in users collection first
-        let user_record = match self.find_user_by_email(email, "users").await {
-            Ok(record) => record,
-            Err(_) => self.find_user_by_email(email, "superusers").await?,
-        };
-
-        // Verify password
-        let password_hash = user_record.data.get("passwordHash")
+        // Verify password - hash is stored directly in the password field
+        let password_hash = user_record.data.get("password")
             .and_then(|h| h.as_str())
-            .ok_or_else(|| AppError::auth("Invalid user data: missing password hash"))?;
+            .ok_or_else(|| AppError::auth("Invalid user data: missing password"))?;
 
         if !self.auth_service.verify_password(password, password_hash)? {
             return Err(AppError::auth("Invalid email or password"));

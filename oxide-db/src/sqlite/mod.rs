@@ -7,5 +7,7 @@ mod auth;
 mod collections;
 mod connection;
 mod operations;
+mod schema_adapter;
 
-pub use connection::SqliteDb; 
+pub use connection::SqliteDb;
+pub use schema_adapter::SqliteSchemaAdapter; 

@@ -85,7 +85,7 @@ impl Default for PluginResponse {
 /// Host functions that plugins can call
 /// These are implemented by the host and made available to the plugin runtime
 pub mod host_functions {
-    use super::*;
+
 
     /// Function signature for getting the current event payload
     /// Returns JSON-serialized EventPayload

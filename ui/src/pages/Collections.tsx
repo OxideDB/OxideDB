@@ -1,11 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
-import { Plus, Trash2, BarChart3, Database } from 'lucide-react';
+import { Plus, Trash2, BarChart3, Database, Settings } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
 import { apiService } from '../services/api';
 import type { CollectionStats } from '../types/api';
 
@@ -14,9 +11,6 @@ const Collections: React.FC = () => {
   const [collectionStats, setCollectionStats] = useState<Record<string, CollectionStats>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [showCreateModal, setShowCreateModal] = useState(false);
-  const [newCollectionName, setNewCollectionName] = useState('');
-  const [creating, setCreating] = useState(false);
 
   useEffect(() => {
     fetchCollections();
@@ -48,23 +42,6 @@ const Collections: React.FC = () => {
     }
   };
 
-  const handleCreateCollection = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!newCollectionName.trim()) return;
-
-    try {
-      setCreating(true);
-      await apiService.createCollection({ name: newCollectionName.trim() });
-      setNewCollectionName('');
-      setShowCreateModal(false);
-      await fetchCollections(); // Refresh the list
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to create collection');
-    } finally {
-      setCreating(false);
-    }
-  };
-
   const handleDeleteCollection = async (collectionName: string) => {
     if (!confirm(`Are you sure you want to delete the collection "${collectionName}"? This action cannot be undone.`)) {
       return;
@@ -93,51 +70,12 @@ const Collections: React.FC = () => {
           <h1 className="text-2xl font-bold text-foreground">Collections</h1>
           <p className="text-muted-foreground mt-1">Manage your database collections</p>
         </div>
-        <Dialog open={showCreateModal} onOpenChange={setShowCreateModal}>
-          <DialogTrigger asChild>
-            <Button>
-              <Plus className="h-4 w-4 mr-2" />
-              New Collection
-            </Button>
-          </DialogTrigger>
-          <DialogContent className="sm:max-w-[425px]">
-            <DialogHeader>
-              <DialogTitle>Create New Collection</DialogTitle>
-            </DialogHeader>
-            <form onSubmit={handleCreateCollection} className="space-y-4">
-              <div className="space-y-2">
-                <Label htmlFor="collectionName">Collection Name</Label>
-                <Input
-                  id="collectionName"
-                  value={newCollectionName}
-                  onChange={(e) => setNewCollectionName(e.target.value)}
-                  placeholder="Enter collection name"
-                  autoFocus
-                  required
-                />
-              </div>
-              <div className="flex justify-end space-x-2">
-                <Button
-                  type="button"
-                  variant="outline"
-                  onClick={() => {
-                    setShowCreateModal(false);
-                    setNewCollectionName('');
-                  }}
-                  disabled={creating}
-                >
-                  Cancel
-                </Button>
-                <Button
-                  type="submit"
-                  disabled={creating || !newCollectionName.trim()}
-                >
-                  {creating ? 'Creating...' : 'Create'}
-                </Button>
-              </div>
-            </form>
-          </DialogContent>
-        </Dialog>
+        <Button asChild>
+          <Link to="/collections/new">
+            <Plus className="h-4 w-4 mr-2" />
+            New Collection
+          </Link>
+        </Button>
       </div>
 
       {error && (
@@ -161,10 +99,12 @@ const Collections: React.FC = () => {
           <CardContent className="text-center py-12">
             <Database className="mx-auto h-12 w-12 text-muted-foreground" />
             <CardTitle className="mt-4 text-lg">No collections</CardTitle>
-            <CardDescription className="mt-2">Get started by creating a new collection.</CardDescription>
+            <CardDescription className="mt-2">Get started by creating a new collection with a defined schema.</CardDescription>
             <div className="mt-6">
-              <Button onClick={() => setShowCreateModal(true)}>
-                Create Collection
+              <Button asChild>
+                <Link to="/collections/new">
+                  Create Collection
+                </Link>
               </Button>
             </div>
           </CardContent>
@@ -184,12 +124,21 @@ const Collections: React.FC = () => {
                         variant="ghost"
                         size="icon"
                         className="h-8 w-8 text-primary hover:text-primary/80"
+                        title="View records"
                       >
-                        <Link
-                          to={`/collections/${encodeURIComponent(collection)}`}
-                          title="View records"
-                        >
+                        <Link to={`/collections/${encodeURIComponent(collection)}`}>
                           <BarChart3 className="h-4 w-4" />
+                        </Link>
+                      </Button>
+                      <Button
+                        asChild
+                        variant="ghost"
+                        size="icon"
+                        className="h-8 w-8 text-muted-foreground hover:text-foreground"
+                        title="Edit schema"
+                      >
+                        <Link to={`/collections/${encodeURIComponent(collection)}/edit`}>
+                          <Settings className="h-4 w-4" />
                         </Link>
                       </Button>
                       <Button
@@ -207,7 +156,7 @@ const Collections: React.FC = () => {
                     <CardDescription>
                       <div className="space-y-1">
                         <p>Records: {stats.record_count}</p>
-                        <p>Created: {new Date(stats.created_at).toLocaleDateString()}</p>
+                        <p>Status: Active</p>
                       </div>
                     </CardDescription>
                   )}

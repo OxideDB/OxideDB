@@ -1,29 +1,23 @@
 import React, { useState, useEffect } from 'react';
-import { useParams, Link } from 'react-router-dom';
-import { Plus, Edit, Trash2, ChevronLeft, Database, Info } from 'lucide-react';
+import { useParams, Link, useNavigate } from 'react-router-dom';
+import { Plus, ChevronLeft, Database, Info } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardTitle } from '@/components/ui/card';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Label } from '@/components/ui/label';
-import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import { RecordTable } from '@/components/RecordTable';
 import { apiService } from '../services/api';
 import type { DbRecord, CollectionSchema, FieldDefinition } from '../types/api';
 
 const Records: React.FC = () => {
   const { collection } = useParams<{ collection: string }>();
+  const navigate = useNavigate();
   const [records, setRecords] = useState<DbRecord[]>([]);
   const [schema, setSchema] = useState<CollectionSchema | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [showCreateModal, setShowCreateModal] = useState(false);
-  const [showEditModal, setShowEditModal] = useState(false);
   const [showSchemaModal, setShowSchemaModal] = useState(false);
-  const [editingRecord, setEditingRecord] = useState<DbRecord | null>(null);
-  const [newRecordData, setNewRecordData] = useState('{}');
-  const [creating, setCreating] = useState(false);
-  const [updating, setUpdating] = useState(false);
 
   useEffect(() => {
     if (collection) {
@@ -53,43 +47,6 @@ const Records: React.FC = () => {
     }
   };
 
-  const handleCreateRecord = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!collection || !newRecordData.trim()) return;
-
-    try {
-      setCreating(true);
-      const data = JSON.parse(newRecordData);
-      await apiService.createRecord(collection, data);
-      setNewRecordData('{}');
-      setShowCreateModal(false);
-      await fetchData();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to create record');
-    } finally {
-      setCreating(false);
-    }
-  };
-
-  const handleEditRecord = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!collection || !editingRecord || !newRecordData.trim()) return;
-
-    try {
-      setUpdating(true);
-      const data = JSON.parse(newRecordData);
-      await apiService.updateRecord(collection, editingRecord.id, data);
-      setEditingRecord(null);
-      setNewRecordData('{}');
-      setShowEditModal(false);
-      await fetchData();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to update record');
-    } finally {
-      setUpdating(false);
-    }
-  };
-
   const handleDeleteRecord = async (recordId: string) => {
     if (!collection || !confirm('Are you sure you want to delete this record?')) return;
 
@@ -101,17 +58,9 @@ const Records: React.FC = () => {
     }
   };
 
-  const openEditModal = (record: DbRecord) => {
-    setEditingRecord(record);
-    setNewRecordData(JSON.stringify(record.data, null, 2));
-    setShowEditModal(true);
-  };
-
-  const formatJson = (obj: any): string => {
-    try {
-      return JSON.stringify(obj, null, 2);
-    } catch {
-      return String(obj);
+  const handleCreateRecord = () => {
+    if (collection) {
+      navigate(`/collections/${encodeURIComponent(collection)}/new`);
     }
   };
 
@@ -129,6 +78,8 @@ const Records: React.FC = () => {
         return 'secondary';
       case 'json':
         return 'outline';
+      case 'password':
+        return 'destructive';
       default:
         return 'outline';
     }
@@ -154,22 +105,20 @@ const Records: React.FC = () => {
 
   return (
     <div>
-      <div className="flex items-center mb-8">
-        <Button
-          asChild
-          variant="ghost"
-          size="icon"
-          className="mr-4"
-        >
-          <Link to="/collections">
-            <ChevronLeft className="h-4 w-4" />
-          </Link>
-        </Button>
-        <div className="flex-1">
-          <h1 className="text-2xl font-bold text-foreground">
-            Records in "{collection}"
-          </h1>
-          <p className="text-muted-foreground mt-1">Manage records in this collection</p>
+      <div className="flex justify-between items-center mb-8">
+        <div className="flex items-center space-x-4">
+          <Button
+            onClick={() => navigate('/collections')}
+            variant="ghost"
+            size="sm"
+          >
+            <ChevronLeft className="h-4 w-4 mr-2" />
+            Collections
+          </Button>
+          <div>
+            <h1 className="text-2xl font-bold text-foreground">{collection}</h1>
+            <p className="text-muted-foreground">Manage records in this collection</p>
+          </div>
         </div>
         <div className="flex space-x-2">
           {schema && (
@@ -178,15 +127,16 @@ const Records: React.FC = () => {
               variant="outline"
             >
               <Info className="h-4 w-4 mr-2" />
-              Schema
+              Schema Info
             </Button>
           )}
-          <Button
-            onClick={() => {
-              setNewRecordData('{}');
-              setShowCreateModal(true);
-            }}
-          >
+          <Button asChild variant="outline">
+            <Link to={`/collections/${encodeURIComponent(collection!)}/edit`}>
+              <Database className="h-4 w-4 mr-2" />
+              Edit Schema
+            </Link>
+          </Button>
+          <Button onClick={handleCreateRecord}>
             <Plus className="h-4 w-4 mr-2" />
             New Record
           </Button>
@@ -216,12 +166,7 @@ const Records: React.FC = () => {
             <CardTitle className="mt-4 text-lg">No records</CardTitle>
             <CardDescription className="mt-2">Get started by creating a new record.</CardDescription>
             <div className="mt-6">
-              <Button
-                onClick={() => {
-                  setNewRecordData('{}');
-                  setShowCreateModal(true);
-                }}
-              >
+              <Button onClick={handleCreateRecord}>
                 Create Record
               </Button>
             </div>
@@ -229,55 +174,12 @@ const Records: React.FC = () => {
         </Card>
       ) : (
         <Card>
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>ID</TableHead>
-                <TableHead>Data</TableHead>
-                <TableHead>Created</TableHead>
-                <TableHead>Updated</TableHead>
-                <TableHead className="text-right">Actions</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {records.map((record) => (
-                <TableRow key={record.id}>
-                  <TableCell className="font-medium">{record.id}</TableCell>
-                  <TableCell>
-                    <pre className="text-xs bg-muted p-2 rounded max-w-md overflow-x-auto">
-                      {formatJson(record.data)}
-                    </pre>
-                  </TableCell>
-                  <TableCell className="text-muted-foreground">
-                    {new Date(record.created_at).toLocaleString()}
-                  </TableCell>
-                  <TableCell className="text-muted-foreground">
-                    {new Date(record.updated_at).toLocaleString()}
-                  </TableCell>
-                  <TableCell className="text-right">
-                    <div className="flex justify-end space-x-2">
-                      <Button
-                        onClick={() => openEditModal(record)}
-                        variant="ghost"
-                        size="icon"
-                        className="h-8 w-8"
-                      >
-                        <Edit className="h-4 w-4" />
-                      </Button>
-                      <Button
-                        onClick={() => handleDeleteRecord(record.id)}
-                        variant="ghost"
-                        size="icon"
-                        className="h-8 w-8 text-destructive hover:text-destructive/80"
-                      >
-                        <Trash2 className="h-4 w-4" />
-                      </Button>
-                    </div>
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
+          <RecordTable
+            records={records}
+            schema={schema}
+            collection={collection || ''}
+            onDelete={handleDeleteRecord}
+          />
         </Card>
       )}
 
@@ -325,90 +227,6 @@ const Records: React.FC = () => {
                 )}
               </div>
             </div>
-          </DialogContent>
-        </Dialog>
-      )}
-
-      {/* Create Record Modal */}
-      <Dialog open={showCreateModal} onOpenChange={setShowCreateModal}>
-        <DialogContent className="sm:max-w-[600px]">
-          <DialogHeader>
-            <DialogTitle>Create New Record</DialogTitle>
-          </DialogHeader>
-          <form onSubmit={handleCreateRecord} className="space-y-4">
-            <div className="space-y-2">
-              <Label htmlFor="recordData">Record Data (JSON)</Label>
-              <Textarea
-                id="recordData"
-                value={newRecordData}
-                onChange={(e) => setNewRecordData(e.target.value)}
-                className="min-h-[200px] font-mono text-sm"
-                placeholder='{"key": "value"}'
-                required
-              />
-            </div>
-            <div className="flex justify-end space-x-2">
-              <Button
-                type="button"
-                variant="outline"
-                onClick={() => {
-                  setShowCreateModal(false);
-                  setNewRecordData('{}');
-                }}
-                disabled={creating}
-              >
-                Cancel
-              </Button>
-              <Button
-                type="submit"
-                disabled={creating || !newRecordData.trim()}
-              >
-                {creating ? 'Creating...' : 'Create'}
-              </Button>
-            </div>
-          </form>
-        </DialogContent>
-      </Dialog>
-
-      {/* Edit Record Modal */}
-      {editingRecord && (
-        <Dialog open={showEditModal} onOpenChange={setShowEditModal}>
-          <DialogContent className="sm:max-w-[600px]">
-            <DialogHeader>
-              <DialogTitle>Edit Record {editingRecord.id}</DialogTitle>
-            </DialogHeader>
-            <form onSubmit={handleEditRecord} className="space-y-4">
-              <div className="space-y-2">
-                <Label htmlFor="editRecordData">Record Data (JSON)</Label>
-                <Textarea
-                  id="editRecordData"
-                  value={newRecordData}
-                  onChange={(e) => setNewRecordData(e.target.value)}
-                  className="min-h-[200px] font-mono text-sm"
-                  required
-                />
-              </div>
-              <div className="flex justify-end space-x-2">
-                <Button
-                  type="button"
-                  variant="outline"
-                  onClick={() => {
-                    setShowEditModal(false);
-                    setEditingRecord(null);
-                    setNewRecordData('{}');
-                  }}
-                  disabled={updating}
-                >
-                  Cancel
-                </Button>
-                <Button
-                  type="submit"
-                  disabled={updating || !newRecordData.trim()}
-                >
-                  {updating ? 'Updating...' : 'Update'}
-                </Button>
-              </div>
-            </form>
           </DialogContent>
         </Dialog>
       )}

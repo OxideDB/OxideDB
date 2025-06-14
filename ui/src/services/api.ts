@@ -73,10 +73,10 @@ class ApiService {
     return this.request<string[]>('/collections');
   }
 
-  async createCollection(data: CreateCollectionRequest): Promise<void> {
+  async createCollection(schema: CreateCollectionRequest): Promise<void> {
     return this.request<void>('/collections', {
       method: 'POST',
-      body: JSON.stringify(data),
+      body: JSON.stringify(schema),
     });
   }
 
@@ -92,6 +92,13 @@ class ApiService {
 
   async getCollectionSchema(collection: string): Promise<CollectionSchema> {
     return this.request<CollectionSchema>(`/collections/${encodeURIComponent(collection)}/schema`);
+  }
+
+  async updateCollectionSchema(collection: string, schema: CollectionSchema): Promise<void> {
+    return this.request<void>(`/collections/${encodeURIComponent(collection)}/schema`, {
+      method: 'PUT',
+      body: JSON.stringify(schema),
+    });
   }
 
   // Record methods

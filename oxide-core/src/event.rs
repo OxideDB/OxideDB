@@ -462,14 +462,14 @@ pub type EventHandler = Box<dyn Fn(&Event) -> Result<(), AppError> + Send + Sync
 /// Legacy methods for backward compatibility
 impl InMemoryEventBus {
     /// Legacy dispatch method for backward compatibility
-    pub async fn dispatch(&self, event: Event) -> Result<(), AppError> {
+    pub async fn dispatch(&self, _event: Event) -> Result<(), AppError> {
         warn!("Using legacy dispatch method - consider migrating to dispatch_before/dispatch_after");
         // This is a simplified legacy implementation
         Ok(())
     }
 
     /// Legacy subscribe method for backward compatibility
-    pub fn subscribe(&self, event_name: &str, handler: EventHandler) -> Result<(), AppError> {
+    pub fn subscribe(&self, _event_name: &str, _handler: EventHandler) -> Result<(), AppError> {
         warn!("Using legacy subscribe method - consider migrating to subscribe_before/subscribe_after");
         // This is a simplified legacy implementation
         Ok(())

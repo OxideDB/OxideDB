@@ -14,7 +14,7 @@ use tracing::{debug, error, info, warn};
 use wasmtime::{Caller, Engine, Instance, Linker, Module, Store};
 
 /// Shared state between host and plugin for communication
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 struct HostState {
     /// Current event payload being processed
     current_payload: Option<String>,
@@ -29,16 +29,7 @@ struct HostState {
     result_buffer: Vec<u8>,
 }
 
-impl Default for HostState {
-    fn default() -> Self {
-        Self {
-            current_payload: None,
-            log_messages: Vec::new(),
-            error_message: None,
-            result_buffer: Vec::new(),
-        }
-    }
-}
+
 
 /// Wasmtime-based implementation of the PluginRuntime trait
 pub struct WasmtimePluginRuntime {
@@ -106,7 +97,7 @@ impl WasmtimePluginRuntime {
 
                                                 // Store the pointer and length in result buffer for get_result_ptr/len
                                                 let mut state = caller.data().lock().unwrap();
-                                                state.result_buffer = vec![
+                                                state.result_buffer = [
                                                     (ptr as u32).to_le_bytes().to_vec(),
                                                     (payload_bytes.len() as u32)
                                                         .to_le_bytes()
@@ -409,7 +400,7 @@ impl PluginRuntime for WasmtimePluginRuntime {
         Ok(response)
     }
 
-    fn has_function(&self, plugin_name: &str, function_name: &str) -> bool {
+    fn has_function(&self, plugin_name: &str, _function_name: &str) -> bool {
         // For now, we'll assume the function exists if the plugin is loaded
         // A more robust implementation would check the exports
         self.instances.contains_key(plugin_name)

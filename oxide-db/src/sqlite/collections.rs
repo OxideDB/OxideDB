@@ -1,5 +1,6 @@
 //! Collection management operations for SQLite database
 
+use crate::db::SchemaAdapter;
 use super::connection::SqliteDb;
 use oxide_core::{
     AppError,
@@ -25,9 +26,10 @@ impl SqliteDb {
         Ok(())
     }
 
-    /// Create a collection with a default base schema
+    /// Create a collection with a default base schema (deprecated)
+    #[deprecated(note = "Use create_collection_with_schema instead to enforce schema requirement")]
     pub async fn create_collection(&self, collection: &str) -> Result<(), AppError> {
-        // Create a default base collection schema
+        // Create a default base collection schema with no fields (discouraged)
         let schema = CollectionSchema::new(collection.to_string(), CollectionType::Base);
         self.create_collection_with_schema(schema).await
     }
@@ -54,12 +56,22 @@ impl SqliteDb {
         let schema_json = serde_json::to_string(&schema)
             .map_err(|e| AppError::database(format!("Failed to serialize schema: {}", e)))?;
 
+        // Generate SQL for the collection table and indexes using schema adapter
+        let schema_adapter = super::schema_adapter::SqliteSchemaAdapter::new();
+        let create_table_sql = schema_adapter.generate_create_table_sql(&schema);
+        let index_sql_statements = schema_adapter.generate_index_sql(&schema);
+
         spawn_blocking(move || {
             let conn = connection
                 .lock()
                 .map_err(|_| AppError::database("Failed to acquire database lock"))?;
 
-            conn.execute(
+            // Start a transaction for atomicity
+            let tx = conn.unchecked_transaction()
+                .map_err(|e| AppError::database(format!("Failed to start transaction: {}", e)))?;
+
+            // Insert collection metadata
+            tx.execute(
                 "INSERT INTO collections (id, name, type, schema, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                 [
                     &schema.id,
@@ -77,9 +89,23 @@ impl SqliteDb {
                         ..
                     },
                     _,
-                ) => AppError::conflict(&format!("Collection '{}' already exists", &schema_name)),
+                ) => AppError::conflict(format!("Collection '{}' already exists", &schema_name)),
                 _ => AppError::database(format!("Failed to create collection: {}", e)),
             })?;
+
+            // Create the dedicated table for this collection
+            tx.execute(&create_table_sql, [])
+                .map_err(|e| AppError::database(format!("Failed to create collection table: {}", e)))?;
+
+            // Create indexes for the collection table
+            for index_sql in index_sql_statements {
+                tx.execute(&index_sql, [])
+                    .map_err(|e| AppError::database(format!("Failed to create index: {}", e)))?;
+            }
+
+            // Commit the transaction
+            tx.commit()
+                .map_err(|e| AppError::database(format!("Failed to commit transaction: {}", e)))?;
 
             Ok::<(), AppError>(())
         })
@@ -93,7 +119,7 @@ impl SqliteDb {
             })
             .await?;
 
-        info!("Created collection with schema: {}", schema_name_for_events);
+        info!("Created collection with dedicated table: {}", schema_name_for_events);
         Ok(())
     }
 
@@ -186,6 +212,11 @@ impl SqliteDb {
             .dispatch_before(BeforeEventType::CollectionDelete, &mut context)
             .await?;
 
+        // Get the schema to determine the table name
+        let schema = self.get_collection_schema(collection).await?;
+        let schema_adapter = super::schema_adapter::SqliteSchemaAdapter::new();
+        let table_name = schema_adapter.get_table_name(&schema.name);
+
         let collection_name = collection.to_string();
         let collection_clone = collection_name.clone();
         let connection = self.connection.clone();
@@ -195,19 +226,28 @@ impl SqliteDb {
                 .lock()
                 .map_err(|_| AppError::database("Failed to acquire database lock"))?;
 
-            // Delete all records in the collection first
-            conn.execute(
-                "DELETE FROM records WHERE collection = ?1",
-                [&collection_name],
-            )
-            .map_err(|e| AppError::database(format!("Failed to delete records: {}", e)))?;
+            // Start a transaction for atomicity
+            let tx = conn.unchecked_transaction()
+                .map_err(|e| AppError::database(format!("Failed to start transaction: {}", e)))?;
 
-            // Delete the collection entry
-            conn.execute(
+            // Drop the dedicated collection table
+            tx.execute(&format!("DROP TABLE IF EXISTS {}", table_name), [])
+                .map_err(|e| AppError::database(format!("Failed to drop collection table: {}", e)))?;
+
+            // Delete the collection metadata entry
+            let rows_affected = tx.execute(
                 "DELETE FROM collections WHERE name = ?1",
                 [&collection_name],
             )
             .map_err(|e| AppError::database(format!("Failed to delete collection: {}", e)))?;
+
+            if rows_affected == 0 {
+                return Err(AppError::not_found("collection", &collection_name));
+            }
+
+            // Commit the transaction
+            tx.commit()
+                .map_err(|e| AppError::database(format!("Failed to commit transaction: {}", e)))?;
 
             Ok::<(), AppError>(())
         })
@@ -221,12 +261,12 @@ impl SqliteDb {
             })
             .await?;
 
-        info!("Deleted collection: {}", collection_clone);
+        info!("Deleted collection and its table: {}", collection_clone);
         Ok(())
     }
 
     /// List all collections
-    pub async fn list_collections(&self) -> Result<Vec<String>, AppError> {
+    pub async fn list_collections(&self) -> Result<Vec<CollectionSchema>, AppError> {
         let connection = self.connection.clone();
 
         let collections = spawn_blocking(move || {
@@ -235,15 +275,20 @@ impl SqliteDb {
                 .map_err(|_| AppError::database("Failed to acquire database lock"))?;
 
             let mut stmt = conn
-                .prepare("SELECT name FROM collections ORDER BY name")
+                .prepare("SELECT schema FROM collections ORDER BY name")
                 .map_err(|e| AppError::database(format!("Failed to prepare statement: {}", e)))?;
 
-            let collection_names: Result<Vec<String>, rusqlite::Error> = stmt
-                .query_map([], |row| row.get(0))
+            let schemas: Result<Vec<CollectionSchema>, rusqlite::Error> = stmt
+                .query_map([], |row| {
+                    let schema_json: String = row.get(0)?;
+                    let schema: CollectionSchema = serde_json::from_str(&schema_json)
+                        .map_err(|e| rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e)))?;
+                    Ok(schema)
+                })
                 .map_err(|e| AppError::database(format!("Failed to execute query: {}", e)))?
                 .collect();
 
-            collection_names
+            schemas
                 .map_err(|e| AppError::database(format!("Failed to query collections: {}", e)))
         })
         .await
