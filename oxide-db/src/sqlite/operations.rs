@@ -3,9 +3,9 @@
 use super::connection::SqliteDb;
 use crate::{db::{Db, ListParams, SchemaAdapter}, Record};
 use oxide_core::{
-    AppError,
+    AppError, FieldType,
     BeforeEventContext, AfterEventContext, BeforeEventType, AfterEventType,
-    event::{RecordData, RecordId}, FieldType,
+    event::{RecordData, RecordId},
 };
 use tokio::task::spawn_blocking;
 use tracing::debug;
@@ -22,49 +22,34 @@ impl SqliteDb {
         
         for (field_name, field_def) in &schema.fields {
             if let Some(value) = data.get(field_name) {
-                let sql_value = match field_def.field_type {
-                    FieldType::Text | FieldType::Email | FieldType::Url => {
-                        SqlValue::Text(value.as_str().unwrap_or("").to_string())
+                let sql_value = match field_def.field_type.sql_type() {
+                    "TEXT" => SqlValue::Text(value.as_str().unwrap_or("").to_string()),
+                    "REAL" => SqlValue::Real(value.as_f64().unwrap_or(0.0)),
+                    "INTEGER" => {
+                        // Handle both boolean (stored as integer) and actual integers
+                        if value.is_boolean() {
+                            SqlValue::Integer(if value.as_bool().unwrap_or(false) { 1 } else { 0 })
+                        } else {
+                            SqlValue::Integer(value.as_i64().unwrap_or(0))
+                        }
                     }
-                    FieldType::Number => {
-                        SqlValue::Real(value.as_f64().unwrap_or(0.0))
-                    }
-                    FieldType::Boolean => {
-                        SqlValue::Integer(if value.as_bool().unwrap_or(false) { 1 } else { 0 })
-                    }
-                    FieldType::Date => {
-                        // Try to parse as timestamp, fallback to 0
-                        SqlValue::Integer(value.as_i64().unwrap_or(0))
-                    }
-                    FieldType::Json => {
-                        SqlValue::Text(value.to_string())
-                    }
-                    FieldType::Password => {
-                        SqlValue::Text(value.as_str().unwrap_or("").to_string())
-                    }
+                    _ => SqlValue::Text(value.to_string()), // Fallback to text
                 };
                 sql_values.push((field_name.clone(), sql_value));
             } else if let Some(default) = &field_def.default {
                 // Use default value if field is not provided
-                let sql_value = match field_def.field_type {
-                    FieldType::Text | FieldType::Email | FieldType::Url => {
-                        SqlValue::Text(default.as_str().unwrap_or("").to_string())
+                let sql_value = match field_def.field_type.sql_type() {
+                    "TEXT" => SqlValue::Text(default.as_str().unwrap_or("").to_string()),
+                    "REAL" => SqlValue::Real(default.as_f64().unwrap_or(0.0)),
+                    "INTEGER" => {
+                        // Handle both boolean (stored as integer) and actual integers
+                        if default.is_boolean() {
+                            SqlValue::Integer(if default.as_bool().unwrap_or(false) { 1 } else { 0 })
+                        } else {
+                            SqlValue::Integer(default.as_i64().unwrap_or(0))
+                        }
                     }
-                    FieldType::Number => {
-                        SqlValue::Real(default.as_f64().unwrap_or(0.0))
-                    }
-                    FieldType::Boolean => {
-                        SqlValue::Integer(if default.as_bool().unwrap_or(false) { 1 } else { 0 })
-                    }
-                    FieldType::Date => {
-                        SqlValue::Integer(default.as_i64().unwrap_or(0))
-                    }
-                    FieldType::Json => {
-                        SqlValue::Text(default.to_string())
-                    }
-                    FieldType::Password => {
-                        SqlValue::Text(default.as_str().unwrap_or("").to_string())
-                    }
+                    _ => SqlValue::Text(default.to_string()), // Fallback to text
                 };
                 sql_values.push((field_name.clone(), sql_value));
             }
@@ -83,15 +68,22 @@ impl SqliteDb {
         
         // Extract schema fields from the row
         for (field_name, field_def) in &schema.fields {
-            let value = match field_def.field_type {
-                FieldType::Text | FieldType::Email | FieldType::Url => {
+            let value = match field_def.field_type.sql_type() {
+                "TEXT" => {
                     if let Ok(text) = row.get::<_, Option<String>>(field_name.as_str()) {
-                        text.map(JsonValue::String).unwrap_or(JsonValue::Null)
+                        text.map(|s| {
+                            // For JSON fields stored as TEXT, try to parse as JSON
+                            if matches!(field_def.field_type, FieldType::Json) {
+                                serde_json::from_str(&s).unwrap_or(JsonValue::String(s))
+                            } else {
+                                JsonValue::String(s)
+                            }
+                        }).unwrap_or(JsonValue::Null)
                     } else {
                         JsonValue::Null
                     }
                 }
-                FieldType::Number => {
+                "REAL" => {
                     if let Ok(num) = row.get::<_, Option<f64>>(field_name.as_str()) {
                         num.map(|n| JsonValue::Number(serde_json::Number::from_f64(n).unwrap_or_else(|| serde_json::Number::from(0))))
                             .unwrap_or(JsonValue::Null)
@@ -99,34 +91,21 @@ impl SqliteDb {
                         JsonValue::Null
                     }
                 }
-                FieldType::Boolean => {
-                    if let Ok(bool_val) = row.get::<_, Option<i64>>(field_name.as_str()) {
-                        bool_val.map(|b| JsonValue::Bool(b != 0)).unwrap_or(JsonValue::Null)
+                "INTEGER" => {
+                    if let Ok(int_val) = row.get::<_, Option<i64>>(field_name.as_str()) {
+                        int_val.map(|i| {
+                            // For boolean fields stored as INTEGER, convert back to boolean
+                            if matches!(field_def.field_type, FieldType::Boolean) {
+                                JsonValue::Bool(i != 0)
+                            } else {
+                                JsonValue::Number(serde_json::Number::from(i))
+                            }
+                        }).unwrap_or(JsonValue::Null)
                     } else {
                         JsonValue::Null
                     }
                 }
-                FieldType::Date => {
-                    if let Ok(timestamp) = row.get::<_, Option<i64>>(field_name.as_str()) {
-                        timestamp.map(|t| JsonValue::Number(serde_json::Number::from(t))).unwrap_or(JsonValue::Null)
-                    } else {
-                        JsonValue::Null
-                    }
-                }
-                FieldType::Json => {
-                    if let Ok(Some(s)) = row.get::<_, Option<String>>(field_name.as_str()) {
-                        serde_json::from_str(&s).unwrap_or(JsonValue::Null)
-                    } else {
-                        JsonValue::Null
-                    }
-                }
-                FieldType::Password => {
-                    if let Ok(text) = row.get::<_, Option<String>>(field_name.as_str()) {
-                        text.map(JsonValue::String).unwrap_or(JsonValue::Null)
-                    } else {
-                        JsonValue::Null
-                    }
-                }
+                _ => JsonValue::Null, // Fallback
             };
             data.insert(field_name.clone(), value);
         }

@@ -262,24 +262,23 @@ impl SqliteDb {
                             field_names.push(field_name.clone());
                             placeholders.push(format!("?{}", field_names.len()));
                             
-                            match field_def.field_type {
-                                oxide_core::FieldType::Text | oxide_core::FieldType::Email | oxide_core::FieldType::Url => {
+                            match field_def.field_type.sql_type() {
+                                "TEXT" => {
                                     bind_values.push(Box::new(value.as_str().unwrap_or("").to_string()));
                                 }
-                                oxide_core::FieldType::Number => {
+                                "REAL" => {
                                     bind_values.push(Box::new(value.as_f64().unwrap_or(0.0)));
                                 }
-                                oxide_core::FieldType::Boolean => {
-                                    bind_values.push(Box::new(if value.as_bool().unwrap_or(false) { 1i64 } else { 0i64 }));
+                                "INTEGER" => {
+                                    if value.is_boolean() {
+                                        bind_values.push(Box::new(if value.as_bool().unwrap_or(false) { 1i64 } else { 0i64 }));
+                                    } else {
+                                        bind_values.push(Box::new(value.as_i64().unwrap_or(0)));
+                                    }
                                 }
-                                oxide_core::FieldType::Date => {
-                                    bind_values.push(Box::new(value.as_i64().unwrap_or(0)));
-                                }
-                                oxide_core::FieldType::Json => {
+                                _ => {
+                                    // Fallback to text
                                     bind_values.push(Box::new(value.to_string()));
-                                }
-                                oxide_core::FieldType::Password => {
-                                    bind_values.push(Box::new(value.as_str().unwrap_or("").to_string()));
                                 }
                             }
                         }

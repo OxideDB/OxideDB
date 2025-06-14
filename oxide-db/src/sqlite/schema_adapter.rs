@@ -55,36 +55,32 @@ impl SchemaAdapter for SqliteSchemaAdapter {
             }
 
             if let Some(default) = &field_def.default {
-                match field_def.field_type {
-                    FieldType::Text | FieldType::Email | FieldType::Url => {
+                match field_def.field_type.sql_type() {
+                    "TEXT" => {
                         if let Some(s) = default.as_str() {
                             sql.push_str(&format!(" DEFAULT '{}'", s.replace('\'', "''")));
+                        } else {
+                            // For JSON fields, serialize the default value
+                            sql.push_str(&format!(" DEFAULT '{}'", default.to_string().replace('\'', "''")));
                         }
                     }
-                    FieldType::Number => {
+                    "REAL" => {
                         if let Some(n) = default.as_f64() {
                             sql.push_str(&format!(" DEFAULT {}", n));
                         }
                     }
-                    FieldType::Boolean => {
-                        if let Some(b) = default.as_bool() {
-                            sql.push_str(&format!(" DEFAULT {}", if b { 1 } else { 0 }));
+                    "INTEGER" => {
+                        if default.is_boolean() {
+                            if let Some(b) = default.as_bool() {
+                                sql.push_str(&format!(" DEFAULT {}", if b { 1 } else { 0 }));
+                            }
+                        } else if let Some(i) = default.as_i64() {
+                            sql.push_str(&format!(" DEFAULT {}", i));
                         }
                     }
-                    FieldType::Date => {
-                        if let Some(d) = default.as_i64() {
-                            sql.push_str(&format!(" DEFAULT {}", d));
-                        }
-                    }
-                    FieldType::Json => {
+                    _ => {
+                        // Fallback to text representation
                         sql.push_str(&format!(" DEFAULT '{}'", default.to_string().replace('\'', "''")));
-                    }
-                    FieldType::Password => {
-                        // Note: Password fields should not have default values as they should be hashed
-                        // But if a default is specified, treat it as text (it will be hashed by the hook)
-                        if let Some(s) = default.as_str() {
-                            sql.push_str(&format!(" DEFAULT '{}'", s.replace('\'', "''")));
-                        }
                     }
                 }
             }
@@ -130,14 +126,8 @@ impl SchemaAdapter for SqliteSchemaAdapter {
 
     /// Convert field type to SQLite column type
     fn field_type_to_sql(&self, field_type: &FieldType) -> &'static str {
-        match field_type {
-            FieldType::Text | FieldType::Email | FieldType::Url => "TEXT",
-            FieldType::Number => "REAL",
-            FieldType::Boolean => "INTEGER", // SQLite doesn't have native boolean
-            FieldType::Date => "INTEGER",    // Store as unix timestamp
-            FieldType::Json => "TEXT",       // Store as JSON string
-            FieldType::Password => "TEXT",   // Store as hashed string
-        }
+        // Use the new extensible field type system
+        field_type.sql_type()
     }
 }
 

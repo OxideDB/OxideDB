@@ -100,15 +100,15 @@ impl SchemaValidatorHook {
         })?;
 
         if let Some(schema) = schemas.get(&context.collection) {
-            // Validate the data against the schema
+            // Apply type conversions first if enabled
+            if self.config.auto_type_conversion {
+                self.apply_type_conversions(context, schema)?;
+            }
+
+            // Then validate the data against the schema
             if let Err(validation_error) = schema.validate_data(&context.data) {
                 warn!("Schema validation failed for collection {}: {}", context.collection, validation_error);
                 return Err(AppError::validation("schema", &validation_error));
-            }
-
-            // Apply type conversions if enabled
-            if self.config.auto_type_conversion {
-                self.apply_type_conversions(context, schema)?;
             }
 
             // Check for unknown fields in strict mode
@@ -165,99 +165,8 @@ impl SchemaValidatorHook {
         value: &serde_json::Value, 
         expected_type: &crate::FieldType
     ) -> Result<serde_json::Value, String> {
-        use crate::FieldType;
-        
-        match expected_type {
-            FieldType::Text => {
-                match value {
-                    serde_json::Value::String(_) => Ok(value.clone()),
-                    serde_json::Value::Number(n) => Ok(serde_json::Value::String(n.to_string())),
-                    serde_json::Value::Bool(b) => Ok(serde_json::Value::String(b.to_string())),
-                    _ => Err("Cannot convert to text".to_string()),
-                }
-            }
-            FieldType::Number => {
-                match value {
-                    serde_json::Value::Number(_) => Ok(value.clone()),
-                    serde_json::Value::String(s) => {
-                        s.parse::<f64>()
-                            .map(|n| serde_json::Value::Number(serde_json::Number::from_f64(n).unwrap()))
-                            .map_err(|_| "Cannot convert string to number".to_string())
-                    }
-                    _ => Err("Cannot convert to number".to_string()),
-                }
-            }
-            FieldType::Boolean => {
-                match value {
-                    serde_json::Value::Bool(_) => Ok(value.clone()),
-                    serde_json::Value::String(s) => {
-                        match s.to_lowercase().as_str() {
-                            "true" | "1" | "yes" | "on" => Ok(serde_json::Value::Bool(true)),
-                            "false" | "0" | "no" | "off" => Ok(serde_json::Value::Bool(false)),
-                            _ => Err("Cannot convert string to boolean".to_string()),
-                        }
-                    }
-                    serde_json::Value::Number(n) => {
-                        if let Some(i) = n.as_i64() {
-                            Ok(serde_json::Value::Bool(i != 0))
-                        } else {
-                            Err("Cannot convert number to boolean".to_string())
-                        }
-                    }
-                    _ => Err("Cannot convert to boolean".to_string()),
-                }
-            }
-            FieldType::Date => {
-                match value {
-                    serde_json::Value::String(s) => {
-                        // Try to parse as ISO 8601 datetime
-                        if chrono::DateTime::parse_from_rfc3339(s).is_ok() {
-                            Ok(value.clone())
-                        } else {
-                            Err("Invalid datetime format".to_string())
-                        }
-                    }
-                    _ => Err("DateTime must be a string".to_string()),
-                }
-            }
-            FieldType::Email => {
-                match value {
-                    serde_json::Value::String(s) => {
-                        // Basic email validation
-                        if s.contains('@') && s.contains('.') {
-                            Ok(value.clone())
-                        } else {
-                            Err("Invalid email format".to_string())
-                        }
-                    }
-                    _ => Err("Email must be a string".to_string()),
-                }
-            }
-            FieldType::Url => {
-                match value {
-                    serde_json::Value::String(s) => {
-                        // Basic URL validation
-                        if s.starts_with("http://") || s.starts_with("https://") {
-                            Ok(value.clone())
-                        } else {
-                            Err("Invalid URL format".to_string())
-                        }
-                    }
-                    _ => Err("URL must be a string".to_string()),
-                }
-            }
-            FieldType::Json => {
-                // JSON type accepts any valid JSON value
-                Ok(value.clone())
-            }
-            FieldType::Password => {
-                // Password fields should be strings
-                match value {
-                    serde_json::Value::String(_) => Ok(value.clone()),
-                    _ => Err("Password must be a string".to_string()),
-                }
-            }
-        }
+        // Use the new extensible field type conversion
+        expected_type.convert_value(value)
     }
 
     /// Check for unknown fields in strict mode

@@ -164,63 +164,8 @@ impl CollectionSchema {
         value: &JsonValue,
         field_def: &FieldDefinition,
     ) -> Result<(), String> {
-        match field_def.field_type {
-            FieldType::Text => {
-                if !value.is_string() {
-                    return Err(format!("Field '{}' must be a string", field_name));
-                }
-            }
-            FieldType::Number => {
-                if !value.is_number() {
-                    return Err(format!("Field '{}' must be a number", field_name));
-                }
-            }
-            FieldType::Boolean => {
-                if !value.is_boolean() {
-                    return Err(format!("Field '{}' must be a boolean", field_name));
-                }
-            }
-            FieldType::Date => {
-                if !value.is_string() {
-                    return Err(format!("Field '{}' must be a date string", field_name));
-                }
-                // Additional date format validation could be added here
-            }
-            FieldType::Json => {
-                // Any JSON value is valid for json type
-            }
-            FieldType::Email => {
-                if let Some(email) = value.as_str() {
-                    if !email.contains('@') {
-                        return Err(format!("Field '{}' must be a valid email address", field_name));
-                    }
-                } else {
-                    return Err(format!("Field '{}' must be a string", field_name));
-                }
-            }
-            FieldType::Url => {
-                if let Some(url) = value.as_str() {
-                    if !url.starts_with("http://") && !url.starts_with("https://") {
-                        return Err(format!("Field '{}' must be a valid URL", field_name));
-                    }
-                } else {
-                    return Err(format!("Field '{}' must be a string", field_name));
-                }
-            }
-            FieldType::Password => {
-                if !value.is_string() {
-                    return Err(format!("Field '{}' must be a string", field_name));
-                }
-                if let Some(password) = value.as_str() {
-                    if password.is_empty() {
-                        return Err(format!("Field '{}' cannot be empty", field_name));
-                    }
-                    // Note: Password will be hashed by the password hashing hook
-                }
-            }
-        }
-
-        Ok(())
+        // Use the new extensible field type validation
+        field_def.field_type.validate(field_name, value)
     }
 }
 
