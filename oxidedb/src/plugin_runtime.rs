@@ -457,7 +457,7 @@ impl WasmtimePluginRuntime {
 
     /// Resume a suspended plugin
     pub fn resume_plugin(&mut self, plugin_name: &str) -> PluginResult<()> {
-        self.security_manager.resume_plugin(plugin_name);
+        let _ = self.security_manager.resume_plugin(plugin_name);
         info!("Plugin '{}' has been resumed", plugin_name);
         Ok(())
     }
@@ -555,7 +555,7 @@ impl PluginRuntime for WasmtimePluginRuntime {
                 function_name: function_name.to_string(),
                 required_capability: required_capability.clone(),
             };
-            self.security_manager.record_violation(plugin_name, violation);
+            let _ = self.security_manager.record_violation(plugin_name, violation);
             return Err(PluginError::SecurityViolation(
                 format!("Plugin '{}' lacks required capability for function '{}'", plugin_name, function_name)
             ));

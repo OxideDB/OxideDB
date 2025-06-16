@@ -1,4 +1,19 @@
-import type { ApiError, CollectionStats, CreateCollectionRequest, DbRecord, HealthStatus, CollectionSchema, CollectionPermissionsInfo, CollectionPermissions, PermissionPresetType, ApiResponse, AuthResponse, User } from '../types/api';
+import type { ApiError, CollectionStats, CreateCollectionRequest, DbRecord, HealthStatus, CollectionSchema, CollectionPermissionsInfo, CollectionPermissions, PermissionPresetType, ApiResponse, AuthResponse, User, TokenValidationResponse } from '../types/api';
+
+// Import PaginatedResponse from generated bindings
+interface PaginatedResponse<T> {
+  data: T[];
+  pagination: {
+    page: number;
+    per_page: number;
+    total: number;
+    total_pages: number;
+    has_next: boolean;
+    has_prev: boolean;
+  };
+  meta?: any;
+  success: boolean;
+}
 
 class ApiService {
   private baseUrl: string;
@@ -95,10 +110,16 @@ class ApiService {
     return !!this.token;
   }
 
-  async login(email: string, password: string): Promise<AuthResponse> {
-    const response = await this.post<ApiResponse<AuthResponse>>('/auth/login', {
-      email,
-      password,
+  // Get available auth collections
+  async getAuthCollections(): Promise<{ collections: { name: string; identifier_field: string; registration_enabled: boolean; email_verification_required: boolean }[] }> {
+    const response = await this.get<ApiResponse<{ collections: { name: string; identifier_field: string; registration_enabled: boolean; email_verification_required: boolean }[] }>>('/auth/collections');
+    return response.data;
+  }
+
+  async login(collection: string, identifier: string, credential: string): Promise<AuthResponse> {
+    const response = await this.post<ApiResponse<AuthResponse>>(`/auth/${encodeURIComponent(collection)}/login`, {
+      identifier,
+      credential,
     });
     
     // Store the token automatically
@@ -106,11 +127,11 @@ class ApiService {
     return response.data;
   }
 
-  async register(email: string, password: string, isSuper: boolean = false): Promise<void> {
-    await this.post<void>('/auth/register', {
-      email,
-      password,
-      is_superuser: isSuper,
+  async register(collection: string, identifier: string, credential: string, additionalData?: Record<string, unknown>): Promise<void> {
+    await this.post<void>(`/auth/${encodeURIComponent(collection)}/register`, {
+      identifier,
+      credential,
+      additional_data: additionalData,
     });
   }
 
@@ -125,8 +146,15 @@ class ApiService {
 
   async validateToken(): Promise<boolean> {
     try {
-      await this.get<void>('/auth/validate');
-      return true;
+      if (!this.token) {
+        return false;
+      }
+      
+      const response = await this.post<ApiResponse<TokenValidationResponse>>('/auth/validate', {
+        token: this.token
+      });
+      
+      return response.data.valid;
     } catch {
       this.clearToken();
       return false;
@@ -139,13 +167,15 @@ class ApiService {
   }
 
   // Health check
-  async getHealth(): Promise<HealthStatus> {
-    return this.request<HealthStatus>('/health');
+  async getHealth(): Promise<HealthStatus & { version?: string }> {
+    const response = await this.request<ApiResponse<HealthStatus & { version?: string }>>('/health');
+    return response.data;
   }
 
   // Collection methods
   async getCollections(): Promise<CollectionSchema[]> {
-    return this.request<CollectionSchema[]>('/collections');
+    const response = await this.request<ApiResponse<CollectionSchema[]>>('/collections');
+    return response.data;
   }
 
   async createCollection(schema: CreateCollectionRequest): Promise<void> {
@@ -167,11 +197,13 @@ class ApiService {
   }
 
   async getCollectionStats(collection: string): Promise<CollectionStats> {
-    return this.request<CollectionStats>(`/collections/${encodeURIComponent(collection)}/stats`);
+    const response = await this.request<ApiResponse<CollectionStats>>(`/collections/${encodeURIComponent(collection)}/stats`);
+    return response.data;
   }
 
   async getCollectionSchema(collection: string): Promise<CollectionSchema> {
-    return this.request<CollectionSchema>(`/collections/${encodeURIComponent(collection)}/schema`);
+    const response = await this.request<ApiResponse<CollectionSchema>>(`/collections/${encodeURIComponent(collection)}/schema`);
+    return response.data;
   }
 
   async updateCollectionSchema(collection: string, schema: CollectionSchema): Promise<void> {
@@ -190,31 +222,37 @@ class ApiService {
     const query = searchParams.toString();
     const endpoint = `/collections/${encodeURIComponent(collection)}/records${query ? `?${query}` : ''}`;
     
-    return this.request<DbRecord[]>(endpoint);
+    // Note: list_records returns PaginatedResponse, not ApiResponse
+    const response = await this.request<PaginatedResponse<DbRecord>>(endpoint);
+    return response.data;
   }
 
   async createRecord(collection: string, data: Record<string, unknown>): Promise<DbRecord> {
-    return this.request<DbRecord>(`/collections/${encodeURIComponent(collection)}/records`, {
+    const response = await this.request<ApiResponse<DbRecord>>(`/collections/${encodeURIComponent(collection)}/records`, {
       method: 'POST',
       body: JSON.stringify(data),
     });
+    return response.data;
   }
 
   async getRecord(collection: string, id: string): Promise<DbRecord> {
-    return this.request<DbRecord>(`/collections/${encodeURIComponent(collection)}/records/${encodeURIComponent(id)}`);
+    const response = await this.request<ApiResponse<DbRecord>>(`/collections/${encodeURIComponent(collection)}/records/${encodeURIComponent(id)}`);
+    return response.data;
   }
 
   async updateRecord(collection: string, id: string, data: Record<string, unknown>): Promise<DbRecord> {
-    return this.request<DbRecord>(`/collections/${encodeURIComponent(collection)}/records/${encodeURIComponent(id)}`, {
+    const response = await this.request<ApiResponse<DbRecord>>(`/collections/${encodeURIComponent(collection)}/records/${encodeURIComponent(id)}`, {
       method: 'PUT',
       body: JSON.stringify(data),
     });
+    return response.data;
   }
 
   async deleteRecord(collection: string, id: string): Promise<DbRecord> {
-    return this.request<DbRecord>(`/collections/${encodeURIComponent(collection)}/records/${encodeURIComponent(id)}`, {
+    const response = await this.request<ApiResponse<DbRecord>>(`/collections/${encodeURIComponent(collection)}/records/${encodeURIComponent(id)}`, {
       method: 'DELETE',
     });
+    return response.data;
   }
 
   // Permissions methods

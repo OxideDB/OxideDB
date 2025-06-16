@@ -13,7 +13,7 @@
 //! - Capabilities can be revoked at runtime
 //! - All plugin operations are audited
 
-use crate::{AppError, auth::{UserRole, CrudOperation}};
+use crate::{AppError, auth::CrudOperation};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -233,6 +233,12 @@ impl Default for SecurityPolicies {
             allow_untrusted_plugins: false, // Secure by default
             require_code_signing: true,
         }
+    }
+}
+
+impl Default for PluginSecurityManager {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -667,7 +673,9 @@ mod tests {
 
     #[test]
     fn test_trust_level_restrictions() {
-        let mut manager = PluginSecurityManager::new();
+        let mut policies = SecurityPolicies::default();
+        policies.allow_untrusted_plugins = true; // Allow untrusted plugins for this test
+        let mut manager = PluginSecurityManager::with_policies(policies);
         manager.register_plugin(
             "untrusted_plugin".to_string(),
             Some(PluginTrustLevel::Untrusted)
@@ -688,7 +696,9 @@ mod tests {
 
     #[test]
     fn test_security_violations() {
-        let mut manager = PluginSecurityManager::new();
+        let mut policies = SecurityPolicies::default();
+        policies.allow_untrusted_plugins = true; // Allow untrusted plugins for this test
+        let mut manager = PluginSecurityManager::with_policies(policies);
         manager.register_plugin(
             "bad_plugin".to_string(),
             Some(PluginTrustLevel::Untrusted)

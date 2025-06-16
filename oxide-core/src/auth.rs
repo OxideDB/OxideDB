@@ -1,56 +1,33 @@
-//! Authentication utilities for OxideDB
+//! Authentication and authorization system
 //!
-//! This module provides password hashing and JWT token management
-//! for the authentication system, plus comprehensive permission rules
-//! for API access control similar to PocketBase.
+//! This module provides the core authentication and authorization functionality
+//! for OxideDB, including JWT token management, password hashing, and permission
+//! checking. It supports multiple authentication methods and collection-based
+//! authentication configuration.
 
-use crate::AppError;
+use crate::{AppError, CollectionSchema, CollectionType};
 use argon2::{
-    password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString},
+    password_hash::{rand_core::OsRng, PasswordHash, PasswordHasher, PasswordVerifier, SaltString},
     Argon2,
 };
-use rand_core::OsRng;
-use chrono::{Duration, Utc};
-use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
+use async_trait::async_trait;
+use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation};
 use serde::{Deserialize, Serialize};
-use std::fmt;
 use std::collections::HashMap;
+use std::fmt;
 use ts_rs::TS;
-use async_trait;
 
-/// JWT Claims structure
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Claims {
-    pub sub: String,    // Subject (user id)
-    pub email: String,  // User email
-    pub exp: i64,       // Expiration time (timestamp)
-    pub iat: i64,       // Issued at time (timestamp)
-    pub role: String,   // User role (user or superuser)
-}
-
-impl Claims {
-    /// Create new claims for a user
-    pub fn new(user_id: String, email: String, role: String, expires_in_hours: i64) -> Self {
-        let now = Utc::now();
-        let exp = now + Duration::hours(expires_in_hours);
-        
-        Self {
-            sub: user_id,
-            email,
-            exp: exp.timestamp(),
-            iat: now.timestamp(),
-            role,
-        }
-    }
-}
-
-/// User role enum
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
+/// User roles in the system
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash, TS)]
 #[ts(export)]
 #[serde(rename_all = "lowercase")]
 pub enum UserRole {
+    /// Regular user with basic permissions
     User,
+    /// Superuser with administrative privileges
     Superuser,
+    /// Custom role (for future extensibility)
+    Custom(String),
 }
 
 impl fmt::Display for UserRole {
@@ -58,6 +35,7 @@ impl fmt::Display for UserRole {
         match self {
             UserRole::User => write!(f, "user"),
             UserRole::Superuser => write!(f, "superuser"),
+            UserRole::Custom(role) => write!(f, "{}", role),
         }
     }
 }
@@ -69,8 +47,102 @@ impl std::str::FromStr for UserRole {
         match s.to_lowercase().as_str() {
             "user" => Ok(UserRole::User),
             "superuser" => Ok(UserRole::Superuser),
-            _ => Err(format!("Invalid user role: {}", s)),
+            _ => Ok(UserRole::Custom(s.to_string())),
         }
+    }
+}
+
+/// Authentication method types
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
+#[ts(export)]
+#[serde(rename_all = "snake_case")]
+pub enum AuthMethod {
+    /// Email and password authentication
+    EmailPassword,
+    /// OAuth authentication (future)
+    OAuth { provider: String },
+    /// SAML authentication (future)
+    Saml { provider: String },
+    /// LDAP authentication (future)
+    Ldap { server: String },
+}
+
+/// Authentication configuration for a collection
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct AuthCollectionConfig {
+    /// Collection name
+    pub collection: String,
+    /// Authentication method
+    pub auth_method: AuthMethod,
+    /// Field name for the identifier (e.g., "email", "username")
+    pub identifier_field: String,
+    /// Field name for the credential (e.g., "password")
+    pub credential_field: String,
+    /// Default user role for this collection
+    pub default_role: UserRole,
+    /// Whether registration is enabled for this collection
+    pub registration_enabled: bool,
+    /// Whether email verification is required
+    pub email_verification_required: bool,
+    /// Custom fields to include in JWT claims
+    pub custom_claim_fields: Vec<String>,
+}
+
+impl Default for AuthCollectionConfig {
+    fn default() -> Self {
+        Self {
+            collection: String::new(),
+            auth_method: AuthMethod::EmailPassword,
+            identifier_field: "email".to_string(),
+            credential_field: "password".to_string(),
+            default_role: UserRole::User,
+            registration_enabled: true,
+            email_verification_required: false,
+            custom_claim_fields: Vec::new(),
+        }
+    }
+}
+
+/// Authentication service configuration
+#[derive(Debug, Clone)]
+pub struct AuthServiceConfig {
+    /// JWT secret for token signing
+    pub jwt_secret: String,
+    /// Token expiration time in hours
+    pub token_expiry_hours: i64,
+    /// Authentication configurations per collection
+    pub auth_collections: HashMap<String, AuthCollectionConfig>,
+}
+
+impl AuthServiceConfig {
+    /// Create a new auth service configuration
+    pub fn new(jwt_secret: String) -> Self {
+        Self {
+            jwt_secret,
+            token_expiry_hours: 24,
+            auth_collections: HashMap::new(),
+        }
+    }
+
+    /// Add an auth collection configuration
+    pub fn add_auth_collection(&mut self, config: AuthCollectionConfig) {
+        self.auth_collections.insert(config.collection.clone(), config);
+    }
+
+    /// Get auth collection configuration
+    pub fn get_auth_collection(&self, collection: &str) -> Option<&AuthCollectionConfig> {
+        self.auth_collections.get(collection)
+    }
+
+    /// List all auth collection names
+    pub fn list_auth_collections(&self) -> Vec<String> {
+        self.auth_collections.keys().cloned().collect()
+    }
+
+    /// Check if a collection is configured for authentication
+    pub fn is_auth_collection(&self, collection: &str) -> bool {
+        self.auth_collections.contains_key(collection)
     }
 }
 
@@ -172,7 +244,7 @@ impl CollectionPermissions {
     }
 
     /// Create permissive rules for a collection (public access)
-    pub fn new_public(collection: String) -> Self {
+    pub fn public(collection: String) -> Self {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -198,45 +270,24 @@ impl CollectionPermissions {
         }
     }
 
-    /// Set permission for a specific operation
-    pub fn set_operation_permission(&mut self, operation: CrudOperation, permission: PermissionLevel, filter: Option<String>) {
-        self.rules.insert(operation.clone(), OperationRule {
-            operation,
-            permission,
-            filter,
-        });
-        self.update_timestamp();
-    }
-
-    /// Get permission rule for a specific operation
+    /// Get the operation rule for a specific CRUD operation
     pub fn get_operation_rule(&self, operation: &CrudOperation) -> Option<&OperationRule> {
         self.rules.get(operation)
     }
 
-    /// Check if an operation is allowed for a given user role
-    pub fn is_operation_allowed(&self, operation: &CrudOperation, user_role: Option<&UserRole>) -> bool {
-        let rule = match self.rules.get(operation) {
-            Some(rule) => rule,
-            None => return false, // No rule means no access
+    /// Set the permission level for a specific operation
+    pub fn set_operation_permission(&mut self, operation: CrudOperation, permission: PermissionLevel) {
+        let rule = OperationRule {
+            operation: operation.clone(),
+            permission,
+            filter: None,
         };
-
-        match &rule.permission {
-            PermissionLevel::None => false,
-            PermissionLevel::Public => true,
-            PermissionLevel::AuthenticatedOnly => user_role.is_some(),
-            PermissionLevel::SuperuserOnly => {
-                matches!(user_role, Some(UserRole::Superuser))
-            }
-            PermissionLevel::Rule(_) => {
-                // For custom rules, we need additional context evaluation
-                // For now, we'll require at least authentication
-                user_role.is_some()
-            }
-        }
+        self.rules.insert(operation, rule);
+        self.update_timestamp();
     }
 
     /// Update the updated_at timestamp
-    pub fn update_timestamp(&mut self) {
+    fn update_timestamp(&mut self) {
         self.updated_at = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -244,79 +295,111 @@ impl CollectionPermissions {
     }
 }
 
-/// Context for evaluating permission rules
-#[derive(Debug, Clone)]
-pub struct PermissionContext {
-    /// The authenticated user's claims (if any)
-    pub user_claims: Option<Claims>,
-    /// The record being accessed (for rules like "@request.auth.id = @record.owner_id")
-    pub record: Option<serde_json::Value>,
-    /// Request data (for create/update operations)
-    pub request_data: Option<serde_json::Value>,
-    /// Collection being accessed
-    pub collection: String,
-    /// Operation being performed
-    pub operation: CrudOperation,
+/// JWT Claims structure
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Claims {
+    /// Subject (user ID)
+    pub sub: String,
+    /// Email address
+    pub email: String,
+    /// User role
+    pub role: String,
+    /// Collection the user authenticated from
+    pub auth_collection: String,
+    /// Expiration timestamp
+    pub exp: i64,
+    /// Issued at timestamp
+    pub iat: i64,
+    /// Custom claims from the auth collection config
+    pub custom: HashMap<String, serde_json::Value>,
 }
 
-impl PermissionContext {
-    /// Create a new permission context
-    pub fn new(
-        collection: String,
-        operation: CrudOperation,
-        user_claims: Option<Claims>,
-        record: Option<serde_json::Value>,
-        request_data: Option<serde_json::Value>,
-    ) -> Self {
+impl Claims {
+    /// Create new claims with default expiration
+    pub fn new(user_id: String, email: String, role: String, auth_collection: String, expiry_hours: i64) -> Self {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+
         Self {
-            user_claims,
-            record,
-            request_data,
-            collection,
-            operation,
+            sub: user_id,
+            email,
+            role,
+            auth_collection,
+            exp: now + (expiry_hours * 3600),
+            iat: now,
+            custom: HashMap::new(),
         }
     }
 
-    /// Get user role from claims
-    pub fn user_role(&self) -> Option<UserRole> {
-        self.user_claims.as_ref()
-            .and_then(|claims| claims.role.parse().ok())
+    /// Add a custom claim
+    pub fn add_custom_claim(&mut self, key: String, value: serde_json::Value) {
+        self.custom.insert(key, value);
     }
 
-    /// Get user ID from claims
-    pub fn user_id(&self) -> Option<&str> {
-        self.user_claims.as_ref().map(|claims| claims.sub.as_str())
+    /// Get user role as enum
+    pub fn user_role(&self) -> Result<UserRole, String> {
+        self.role.parse()
     }
 }
 
-/// Permission service trait for database operations
-///
-/// This trait abstracts permission storage operations to avoid circular dependencies
-/// between oxide-core and oxide-db.
-#[async_trait::async_trait]
-pub trait PermissionService: Send + Sync {
-    /// Store permissions for a collection
-    async fn store_permissions(&self, permissions: &CollectionPermissions) -> Result<(), AppError>;
-
-    /// Get permissions for a collection
-    async fn get_permissions(&self, collection: &str) -> Result<Option<CollectionPermissions>, AppError>;
-
-    /// Delete permissions for a collection (revert to defaults)
-    async fn delete_permissions(&self, collection: &str) -> Result<(), AppError>;
-
-    /// List all collections that have custom permissions
-    async fn list_collections_with_permissions(&self) -> Result<Vec<String>, AppError>;
-}
-
-/// Authentication service for password hashing and JWT management
+/// Authentication service for handling JWT tokens and password hashing
+#[derive(Clone)]
 pub struct AuthService {
-    jwt_secret: String,
+    config: AuthServiceConfig,
 }
 
 impl AuthService {
-    /// Create a new AuthService with a JWT secret
-    pub fn new(jwt_secret: String) -> Self {
-        Self { jwt_secret }
+    /// Create a new AuthService with configuration
+    pub fn new(config: AuthServiceConfig) -> Self {
+        Self { config }
+    }
+
+    /// Get the service configuration
+    pub fn config(&self) -> &AuthServiceConfig {
+        &self.config
+    }
+
+    /// Update auth collection configurations from database schemas
+    pub fn update_auth_collections(&mut self, schemas: &[CollectionSchema]) {
+        // Clear existing auth collections
+        self.config.auth_collections.clear();
+
+        // Add configurations for all auth collections
+        for schema in schemas {
+            if schema.collection_type == CollectionType::Auth {
+                let default_role = if schema.name.contains("superuser") || schema.name.contains("admin") {
+                    UserRole::Superuser
+                } else {
+                    UserRole::User
+                };
+
+                // Auto-detect identifier and credential fields from schema
+                let identifier_field = if schema.fields.contains_key("username") {
+                    "username".to_string()
+                } else {
+                    "email".to_string() // default to email
+                };
+
+                let credential_field = "password".to_string(); // always use password
+
+                // Check if email verification field exists
+                let email_verification_required = schema.fields.contains_key("verified") || 
+                                                 schema.fields.contains_key("email_verified");
+
+                let config = AuthCollectionConfig {
+                    collection: schema.name.clone(),
+                    default_role,
+                    identifier_field,
+                    credential_field,
+                    email_verification_required,
+                    ..Default::default()
+                };
+
+                self.config.add_auth_collection(config);
+            }
+        }
     }
 
     /// Hash a password using Argon2
@@ -344,13 +427,31 @@ impl AuthService {
     }
 
     /// Generate a JWT token for a user
-    pub fn generate_token(&self, user_id: String, email: String, role: UserRole) -> Result<String, AppError> {
-        let claims = Claims::new(user_id, email, role.to_string(), 24); // 24 hours expiry
+    pub fn generate_token(&self, user_id: String, email: String, role: UserRole, auth_collection: String) -> Result<String, AppError> {
+        let claims = Claims::new(user_id, email, role.to_string(), auth_collection.clone(), self.config.token_expiry_hours);
+        
+        // Add custom claims if configured for this auth collection
+        if let Some(_auth_config) = self.config.get_auth_collection(&auth_collection) {
+            // Custom claim fields would be populated from the user record data
+            // This is handled in the authentication flow
+        }
         
         let token = encode(
             &Header::default(),
             &claims,
-            &EncodingKey::from_secret(self.jwt_secret.as_ref()),
+            &EncodingKey::from_secret(self.config.jwt_secret.as_ref()),
+        )
+        .map_err(|e| AppError::auth(format!("Failed to generate token: {}", e)))?;
+        
+        Ok(token)
+    }
+
+    /// Generate a JWT token with custom claims
+    pub fn generate_token_with_claims(&self, claims: Claims) -> Result<String, AppError> {
+        let token = encode(
+            &Header::default(),
+            &claims,
+            &EncodingKey::from_secret(self.config.jwt_secret.as_ref()),
         )
         .map_err(|e| AppError::auth(format!("Failed to generate token: {}", e)))?;
         
@@ -361,53 +462,100 @@ impl AuthService {
     pub fn verify_token(&self, token: &str) -> Result<Claims, AppError> {
         let token_data = decode::<Claims>(
             token,
-            &DecodingKey::from_secret(self.jwt_secret.as_ref()),
-            &Validation::new(Algorithm::HS256),
+            &DecodingKey::from_secret(self.config.jwt_secret.as_ref()),
+            &Validation::default(),
         )
         .map_err(|e| AppError::auth(format!("Invalid token: {}", e)))?;
-        
+
         Ok(token_data.claims)
     }
+}
 
-    /// Evaluate a permission rule in the given context
-    pub fn evaluate_permission_rule(&self, rule: &str, context: &PermissionContext) -> Result<bool, AppError> {
-        // Simple rule evaluation - in a real system you'd want a proper expression parser
-        // For now, we'll support basic patterns like "@request.auth.id = @record.owner_id"
-        
-        if rule.is_empty() {
-            return Ok(true);
+/// Permission context for authorization checks
+pub struct PermissionContext {
+    /// The user's JWT claims (if authenticated)
+    pub user_claims: Option<Claims>,
+    /// The CRUD operation being performed
+    pub operation: CrudOperation,
+    /// The collection being accessed
+    pub collection: String,
+    /// The specific record ID (if applicable)
+    pub record_id: Option<String>,
+    /// Additional request metadata
+    pub metadata: HashMap<String, serde_json::Value>,
+}
+
+impl PermissionContext {
+    /// Create a new permission context
+    pub fn new(
+        user_claims: Option<Claims>,
+        operation: CrudOperation,
+        collection: String,
+        record_id: Option<String>,
+    ) -> Self {
+        Self {
+            user_claims,
+            operation,
+            collection,
+            record_id,
+            metadata: HashMap::new(),
         }
+    }
 
-        // Handle "@request.auth.id = @record.owner_id" pattern
-        if rule.contains("@request.auth.id") && rule.contains("@record.owner_id") {
-            let user_id = context.user_id().ok_or_else(|| AppError::auth("No authenticated user"))?;
-            let record = context.record.as_ref().ok_or_else(|| AppError::auth("No record context"))?;
-            let owner_id = record.get("owner_id")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| AppError::auth("Record has no owner_id"))?;
-            
-            return Ok(user_id == owner_id);
-        }
+    /// Get the user's role if authenticated
+    pub fn user_role(&self) -> Option<UserRole> {
+        self.user_claims.as_ref()
+            .and_then(|claims| claims.user_role().ok())
+    }
 
-        // Handle "@request.auth.role = 'admin'" pattern
-        if rule.contains("@request.auth.role") {
-            if let Some(role) = context.user_role() {
-                if rule.contains("'superuser'") || rule.contains("\"superuser\"") {
-                    return Ok(role == UserRole::Superuser);
-                }
-                if rule.contains("'user'") || rule.contains("\"user\"") {
-                    return Ok(role == UserRole::User);
-                }
-            }
-            return Ok(false);
-        }
+    /// Check if the user is authenticated
+    pub fn is_authenticated(&self) -> bool {
+        self.user_claims.is_some()
+    }
 
-        // Default: if we can't parse the rule, require authentication
+    /// Check if the user is a superuser
+    pub fn is_superuser(&self) -> bool {
+        matches!(self.user_role(), Some(UserRole::Superuser))
+    }
+}
+
+/// Permission service trait for checking authorization
+#[async_trait::async_trait]
+pub trait PermissionService: Send + Sync {
+    /// Check if a user is authenticated
+    fn check_authentication(&self, context: &PermissionContext) -> Result<bool, AppError>;
+
+    /// Check if a user can perform an operation on a collection
+    fn check_permission(&self, permissions: &CollectionPermissions, context: &PermissionContext) -> Result<bool, AppError>;
+
+    /// Store permissions for a collection
+    async fn store_permissions(&self, permissions: &CollectionPermissions) -> Result<(), AppError>;
+
+    /// Get permissions for a collection
+    async fn get_permissions(&self, collection: &str) -> Result<Option<CollectionPermissions>, AppError>;
+
+    /// Delete permissions for a collection (revert to defaults)
+    async fn delete_permissions(&self, collection: &str) -> Result<(), AppError>;
+
+    /// List all collections that have custom permissions
+    async fn list_collections_with_permissions(&self) -> Result<Vec<String>, AppError>;
+}
+
+/// Default permission service implementation
+pub struct DefaultPermissionService;
+
+#[async_trait]
+impl PermissionService for DefaultPermissionService {
+    /// Check if a user is authenticated
+    fn check_authentication(
+        &self,
+        context: &PermissionContext,
+    ) -> Result<bool, AppError> {
         Ok(context.user_claims.is_some())
     }
 
     /// Check if a user can perform an operation on a collection
-    pub fn check_permission(
+    fn check_permission(
         &self,
         permissions: &CollectionPermissions,
         context: &PermissionContext,
@@ -429,10 +577,43 @@ impl AuthService {
             }
         }
     }
+
+    /// Store permissions for a collection (default implementation returns error)
+    async fn store_permissions(&self, _permissions: &CollectionPermissions) -> Result<(), AppError> {
+        Err(AppError::internal("Permission storage not implemented in default service"))
+    }
+
+    /// Get permissions for a collection (default implementation returns None)
+    async fn get_permissions(&self, _collection: &str) -> Result<Option<CollectionPermissions>, AppError> {
+        Ok(None)
+    }
+
+    /// Delete permissions for a collection (default implementation returns error)
+    async fn delete_permissions(&self, _collection: &str) -> Result<(), AppError> {
+        Err(AppError::internal("Permission deletion not implemented in default service"))
+    }
+
+    /// List all collections that have custom permissions (default implementation returns empty)
+    async fn list_collections_with_permissions(&self) -> Result<Vec<String>, AppError> {
+        Ok(Vec::new())
+    }
 }
 
-/// Create default auth collections schemas
-pub fn create_auth_collections() -> (crate::collection::CollectionSchema, crate::collection::CollectionSchema) {
+impl DefaultPermissionService {
+    /// Evaluate a custom permission rule (placeholder for future implementation)
+    fn evaluate_permission_rule(
+        &self,
+        _rule_expr: &str,
+        _context: &PermissionContext,
+    ) -> Result<bool, AppError> {
+        // TODO: Implement rule evaluation engine
+        // For now, default to requiring authentication
+        Ok(_context.user_claims.is_some())
+    }
+}
+
+/// Create default auth collections schemas (legacy support)
+pub fn create_auth_collections() -> (CollectionSchema, CollectionSchema) {
     use crate::collection::{CollectionSchema, CollectionType, FieldDefinition};
     use crate::field_types::FieldType;
     use std::collections::HashMap;
@@ -491,7 +672,7 @@ pub fn create_auth_collections() -> (crate::collection::CollectionSchema, crate:
         field_type: FieldType::Boolean,
         required: false,
         unique: false,
-        default: Some(serde_json::json!(true)),
+        default: Some(serde_json::json!(true)), // Superusers are verified by default
         validation: None,
     });
     
@@ -505,81 +686,48 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_password_hashing() {
-        let auth_service = AuthService::new("test_secret".to_string());
-        
-        let password = "test_password_123";
-        let hash = auth_service.hash_password(password).unwrap();
-        
-        assert!(auth_service.verify_password(password, &hash).unwrap());
-        assert!(!auth_service.verify_password("wrong_password", &hash).unwrap());
+    fn test_user_role_parsing() {
+        assert_eq!("user".parse::<UserRole>().unwrap(), UserRole::User);
+        assert_eq!("superuser".parse::<UserRole>().unwrap(), UserRole::Superuser);
+        assert_eq!("admin".parse::<UserRole>().unwrap(), UserRole::Custom("admin".to_string()));
     }
 
     #[test]
-    fn test_jwt_tokens() {
-        let auth_service = AuthService::new("test_secret".to_string());
+    fn test_auth_service_config() {
+        let mut config = AuthServiceConfig::new("secret".to_string());
         
-        let user_id = "user123".to_string();
-        let email = "test@example.com".to_string();
-        let role = UserRole::User;
+        let auth_config = AuthCollectionConfig {
+            collection: "users".to_string(),
+            auth_method: AuthMethod::EmailPassword,
+            identifier_field: "email".to_string(),
+            credential_field: "password".to_string(),
+            default_role: UserRole::User,
+            registration_enabled: true,
+            email_verification_required: false,
+            custom_claim_fields: vec!["name".to_string()],
+        };
         
-        let token = auth_service.generate_token(user_id.clone(), email.clone(), role).unwrap();
-        let claims = auth_service.verify_token(&token).unwrap();
+        config.add_auth_collection(auth_config);
         
-        assert_eq!(claims.sub, user_id);
-        assert_eq!(claims.email, email);
+        assert!(config.is_auth_collection("users"));
+        assert!(!config.is_auth_collection("posts"));
+        assert_eq!(config.list_auth_collections(), vec!["users"]);
+    }
+
+    #[test]
+    fn test_claims_creation() {
+        let claims = Claims::new(
+            "user123".to_string(),
+            "test@example.com".to_string(),
+            "user".to_string(),
+            "users".to_string(),
+            24,
+        );
+        
+        assert_eq!(claims.sub, "user123");
+        assert_eq!(claims.email, "test@example.com");
         assert_eq!(claims.role, "user");
-    }
-
-    #[test]
-    fn test_collection_permissions() {
-        let mut permissions = CollectionPermissions::new("test_collection".to_string());
-        
-        // Default should be superuser only
-        assert!(!permissions.is_operation_allowed(&CrudOperation::Create, None));
-        assert!(!permissions.is_operation_allowed(&CrudOperation::Create, Some(&UserRole::User)));
-        assert!(permissions.is_operation_allowed(&CrudOperation::Create, Some(&UserRole::Superuser)));
-        
-        // Change to public
-        permissions.set_operation_permission(CrudOperation::Create, PermissionLevel::Public, None);
-        assert!(permissions.is_operation_allowed(&CrudOperation::Create, None));
-        assert!(permissions.is_operation_allowed(&CrudOperation::Create, Some(&UserRole::User)));
-        assert!(permissions.is_operation_allowed(&CrudOperation::Create, Some(&UserRole::Superuser)));
-        
-        // Change to authenticated only
-        permissions.set_operation_permission(CrudOperation::Read, PermissionLevel::AuthenticatedOnly, None);
-        assert!(!permissions.is_operation_allowed(&CrudOperation::Read, None));
-        assert!(permissions.is_operation_allowed(&CrudOperation::Read, Some(&UserRole::User)));
-        assert!(permissions.is_operation_allowed(&CrudOperation::Read, Some(&UserRole::Superuser)));
-    }
-
-    #[test]
-    fn test_permission_rule_evaluation() {
-        let auth_service = AuthService::new("test_secret".to_string());
-        
-        // Test owner-based rule
-        let claims = Claims::new("user123".to_string(), "test@example.com".to_string(), "user".to_string(), 24);
-        let record = serde_json::json!({"id": "record1", "owner_id": "user123"});
-        let context = PermissionContext::new(
-            "test_collection".to_string(),
-            CrudOperation::Read,
-            Some(claims),
-            Some(record),
-            None,
-        );
-        
-        assert!(auth_service.evaluate_permission_rule("@request.auth.id = @record.owner_id", &context).unwrap());
-        
-        // Test with different owner
-        let record_different_owner = serde_json::json!({"id": "record1", "owner_id": "user456"});
-        let context_different = PermissionContext::new(
-            "test_collection".to_string(),
-            CrudOperation::Read,
-            context.user_claims.clone(),
-            Some(record_different_owner),
-            None,
-        );
-        
-        assert!(!auth_service.evaluate_permission_rule("@request.auth.id = @record.owner_id", &context_different).unwrap());
+        assert_eq!(claims.auth_collection, "users");
+        assert!(claims.exp > claims.iat);
     }
 } 

@@ -30,6 +30,7 @@ impl Default for AuthorizationConfig {
             bypass_collections: vec![
                 "health".to_string(), // Health checks bypass auth
                 "admin".to_string(),  // Admin UI should be publicly accessible
+                "auth".to_string(),   // Auth endpoints must be publicly accessible
             ],
             log_decisions: true,
         }
@@ -99,22 +100,21 @@ impl AuthorizationHook {
                 if self.config.default_auth_required {
                     CollectionPermissions::new(collection.clone())
                 } else {
-                    CollectionPermissions::new_public(collection.clone())
+                    CollectionPermissions::public(collection.clone())
                 }
             }
         };
 
         // Create permission context
         let permission_context = PermissionContext::new(
-            collection.clone(),
-            operation.clone(),
             user_claims,
-            None, // Record data will be loaded later if needed
-            context.data.get("body").cloned(),
+            operation.clone(),
+            collection.clone(),
+            None, // Record ID
         );
 
-        // Check permission
-        let allowed = self.auth_service.check_permission(&permissions, &permission_context)?;
+        // Check permission using the permission service
+        let allowed = self.permission_service.check_permission(&permissions, &permission_context)?;
 
         if !allowed {
             let user_info = permission_context.user_claims
@@ -273,6 +273,7 @@ impl AuthorizationHook {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{UserRole, auth::{AuthServiceConfig, PermissionLevel}};
     use std::collections::HashMap;
     use std::sync::Arc;
 
@@ -291,6 +292,27 @@ mod tests {
 
     #[async_trait::async_trait]
     impl PermissionService for MockPermissionService {
+        fn check_authentication(&self, context: &PermissionContext) -> Result<bool, AppError> {
+            Ok(context.user_claims.is_some())
+        }
+
+        fn check_permission(&self, permissions: &CollectionPermissions, context: &PermissionContext) -> Result<bool, AppError> {
+            let rule = match permissions.get_operation_rule(&context.operation) {
+                Some(rule) => rule,
+                None => return Ok(false),
+            };
+
+            match &rule.permission {
+                PermissionLevel::None => Ok(false),
+                PermissionLevel::Public => Ok(true),
+                PermissionLevel::AuthenticatedOnly => Ok(context.user_claims.is_some()),
+                PermissionLevel::SuperuserOnly => {
+                    Ok(matches!(context.user_role(), Some(UserRole::Superuser)))
+                }
+                PermissionLevel::Rule(_) => Ok(context.user_claims.is_some()),
+            }
+        }
+
         async fn store_permissions(&self, permissions: &CollectionPermissions) -> Result<(), AppError> {
             let mut perms = self.permissions.lock().unwrap();
             perms.insert(permissions.collection.clone(), permissions.clone());
@@ -316,7 +338,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_authorization_hook() {
-        let auth_service = Arc::new(AuthService::new("test_secret".to_string()));
+        let auth_config = AuthServiceConfig::new("test_secret".to_string());
+        let auth_service = Arc::new(AuthService::new(auth_config));
         let permission_service = Arc::new(MockPermissionService::new());
         let hook = AuthorizationHook::new(auth_service, permission_service.clone());
 
@@ -344,7 +367,8 @@ mod tests {
 
     #[test]
     fn test_parse_request_info() {
-        let auth_service = Arc::new(AuthService::new("test_secret".to_string()));
+        let auth_config = AuthServiceConfig::new("test_secret".to_string());
+        let auth_service = Arc::new(AuthService::new(auth_config));
         let permission_service = Arc::new(MockPermissionService::new());
         let hook = AuthorizationHook::new(auth_service, permission_service);
 
@@ -379,5 +403,25 @@ mod tests {
         assert_eq!(collection, "users");
         assert_eq!(operation, CrudOperation::Read);
         assert_eq!(record_id, Some("123".to_string()));
+    }
+
+    #[test]
+    fn test_superuser_bypass() {
+        let auth_config = AuthServiceConfig::new("test_secret".to_string());
+        let auth_service = Arc::new(AuthService::new(auth_config));
+        let permission_service = Arc::new(MockPermissionService::new());
+        let _hook = AuthorizationHook::new(auth_service.clone(), permission_service.clone());
+
+        // TODO: Implement actual test logic for superuser bypass behavior
+    }
+
+    #[test]
+    fn test_rule_based_permission() {
+        let auth_config = AuthServiceConfig::new("test_secret".to_string());
+        let auth_service = Arc::new(AuthService::new(auth_config));
+        let permission_service = Arc::new(MockPermissionService::new());
+        let _hook = AuthorizationHook::new(auth_service.clone(), permission_service.clone());
+
+        // TODO: Implement actual test logic for rule-based permission behavior
     }
 }

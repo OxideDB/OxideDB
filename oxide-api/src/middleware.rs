@@ -75,14 +75,24 @@ impl LoggingMiddleware {
 
 /// List of public endpoints that don't require authentication
 const PUBLIC_ENDPOINTS: &[&str] = &[
-    "/auth/login",
-    "/auth/register",
     "/health",
+];
+
+/// List of public endpoint prefixes that don't require authentication
+const PUBLIC_ENDPOINT_PREFIXES: &[&str] = &[
+    "/auth/",      // All auth endpoints should be public
+    "/admin",      // Admin UI endpoints should be publicly accessible
 ];
 
 /// Check if the given path is a public endpoint
 fn is_public_endpoint(path: &str) -> bool {
-    PUBLIC_ENDPOINTS.iter().any(|&endpoint| path == endpoint)
+    // Check exact matches first
+    if PUBLIC_ENDPOINTS.iter().any(|&endpoint| path == endpoint) {
+        return true;
+    }
+    
+    // Check prefix matches for parameterized routes
+    PUBLIC_ENDPOINT_PREFIXES.iter().any(|&prefix| path.starts_with(prefix))
 }
 
 /// Authentication and authorization middleware

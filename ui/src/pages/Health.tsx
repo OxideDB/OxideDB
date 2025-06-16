@@ -3,8 +3,10 @@ import { CheckCircle, XCircle, RefreshCw } from 'lucide-react';
 import { apiService } from '../services/api';
 import type { HealthStatus } from '../types/api';
 
+type ExtendedHealthStatus = HealthStatus & { version?: string };
+
 const Health: React.FC = () => {
-  const [health, setHealth] = useState<HealthStatus | null>(null);
+  const [health, setHealth] = useState<ExtendedHealthStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -25,7 +27,7 @@ const Health: React.FC = () => {
     }
   };
 
-  const isHealthy = health?.status === 'healthy' && health?.database.includes('healthy');
+  const isHealthy = health?.status === 'healthy' && health?.database === 'healthy';
 
   return (
     <div>
@@ -108,7 +110,12 @@ const Health: React.FC = () => {
                     {health.status}
                   </span>
                 </div>
-
+                {health.version && (
+                  <div className="flex justify-between">
+                    <span className="text-gray-600">Version:</span>
+                    <span className="font-medium text-gray-900">{health.version}</span>
+                  </div>
+                )}
               </div>
             </div>
 
@@ -116,7 +123,7 @@ const Health: React.FC = () => {
             <div className="card">
               <div className="flex items-center justify-between mb-4">
                 <h3 className="text-lg font-medium text-gray-900">Database</h3>
-                {health.database.includes('healthy') ? (
+                {health.database === 'healthy' ? (
                   <CheckCircle className="h-6 w-6 text-green-500" />
                 ) : (
                   <XCircle className="h-6 w-6 text-red-500" />
@@ -126,7 +133,7 @@ const Health: React.FC = () => {
                 <div className="flex justify-between">
                   <span className="text-gray-600">Status:</span>
                   <span className={`font-medium ${
-                    health.database.includes('healthy') ? 'text-green-700' : 'text-red-700'
+                    health.database === 'healthy' ? 'text-green-700' : 'text-red-700'
                   }`}>
                     {health.database}
                   </span>

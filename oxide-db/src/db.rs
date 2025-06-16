@@ -7,6 +7,7 @@
 use crate::Record;
 use oxide_core::{AppError, CollectionSchema, CollectionPermissions};
 use oxide_core::event::{RecordData, RecordId};
+use oxide_core::auth::AuthCollectionConfig;
 
 /// Parameters for listing records
 #[derive(Debug, Clone, Default, serde::Deserialize)]
@@ -19,6 +20,45 @@ pub struct ListParams {
     pub sort_field: Option<String>,
     /// Whether to sort in ascending order (default: true)
     pub sort_ascending: Option<bool>,
+}
+
+/// Authentication request for generic auth collections
+#[derive(Debug, Clone)]
+pub struct AuthRequest {
+    /// The auth collection to authenticate against
+    pub collection: String,
+    /// The identifier value (email, username, etc.)
+    pub identifier: String,
+    /// The credential value (password, etc.)
+    pub credential: String,
+}
+
+/// Authentication response
+#[derive(Debug, Clone)]
+pub struct AuthResponse {
+    /// The authenticated user's record ID
+    pub user_id: String,
+    /// JWT token for the authenticated user
+    pub token: String,
+    /// The auth collection the user authenticated from
+    pub auth_collection: String,
+    /// User's role
+    pub role: String,
+    /// Additional user data for custom claims
+    pub user_data: serde_json::Value,
+}
+
+/// Registration request for generic auth collections
+#[derive(Debug, Clone)]
+pub struct RegisterRequest {
+    /// The auth collection to register in
+    pub collection: String,
+    /// The identifier value (email, username, etc.)
+    pub identifier: String,
+    /// The credential value (password, etc.)
+    pub credential: String,
+    /// Additional user data
+    pub additional_data: Option<serde_json::Value>,
 }
 
 /// Trait for database-specific schema operations
@@ -213,4 +253,53 @@ pub trait Db: Send + Sync {
     /// # Returns
     /// A vector of collection names that have custom permissions
     async fn list_collections_with_permissions(&self) -> Result<Vec<String>, AppError>;
+
+    /// Authenticate a user against a specific auth collection
+    ///
+    /// This method handles user authentication by finding the user in the specified
+    /// auth collection, verifying the credential, and generating a JWT token.
+    /// It dispatches authentication events through the hook system.
+    ///
+    /// # Arguments
+    /// * `auth_request` - The authentication request containing collection, identifier, and credential
+    /// * `auth_config` - The authentication configuration for the collection
+    ///
+    /// # Returns
+    /// An AuthResponse containing user ID, token, and additional data if authentication succeeds
+    async fn authenticate_user(&self, auth_request: AuthRequest, auth_config: &AuthCollectionConfig) -> Result<AuthResponse, AppError>;
+
+    /// Register a new user in a specific auth collection
+    ///
+    /// This method creates a new user record in the specified auth collection
+    /// using the standard record creation flow, which allows all validation,
+    /// sanitization, and business logic to be handled by hooks.
+    ///
+    /// # Arguments
+    /// * `register_request` - The registration request containing collection, identifier, credential, and additional data
+    /// * `auth_config` - The authentication configuration for the collection
+    ///
+    /// # Returns
+    /// The ID of the newly created user record
+    async fn register_user(&self, register_request: RegisterRequest, auth_config: &AuthCollectionConfig) -> Result<String, AppError>;
+
+    /// Find a user by identifier in a specific auth collection
+    ///
+    /// This is a helper method for authentication and user management operations.
+    ///
+    /// # Arguments
+    /// * `collection` - The name of the auth collection
+    /// * `identifier_field` - The field name to search by (e.g., "email", "username")
+    /// * `identifier_value` - The value to search for
+    ///
+    /// # Returns
+    /// The user record if found
+    async fn find_user_by_identifier(&self, collection: &str, identifier_field: &str, identifier_value: &str) -> Result<Record, AppError>;
+
+    /// List all auth collections
+    ///
+    /// This method returns all collections with CollectionType::Auth.
+    ///
+    /// # Returns
+    /// A vector of auth collection schemas
+    async fn list_auth_collections(&self) -> Result<Vec<CollectionSchema>, AppError>;
 }

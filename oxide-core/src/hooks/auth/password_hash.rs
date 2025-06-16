@@ -232,7 +232,8 @@ mod tests {
 
     #[test]
     fn test_password_hashing_hook() {
-        let auth_service = Arc::new(AuthService::new("test_secret".to_string()));
+        let auth_config = crate::auth::AuthServiceConfig::new("test_secret".to_string());
+        let auth_service = Arc::new(AuthService::new(auth_config));
         let mut config = PasswordHashConfig::default();
         config.schema_aware = false; // Use config mode for this test
         let hook = PasswordHashingHook::with_config(auth_service, config);
@@ -264,7 +265,8 @@ mod tests {
 
     #[test]
     fn test_custom_config() {
-        let auth_service = Arc::new(AuthService::new("test_secret".to_string()));
+        let auth_config = crate::auth::AuthServiceConfig::new("test_secret".to_string());
+        let auth_service = Arc::new(AuthService::new(auth_config));
         let config = PasswordHashConfig {
             schema_aware: false,
             auth_collections: vec!["custom_users".to_string()],
@@ -296,7 +298,8 @@ mod tests {
 
     #[test]
     fn test_schema_aware_password_hashing() {
-        let auth_service = Arc::new(AuthService::new("test_secret".to_string()));
+        let auth_config = crate::auth::AuthServiceConfig::new("test_secret".to_string());
+        let auth_service = Arc::new(AuthService::new(auth_config));
         let hook = PasswordHashingHook::new(auth_service); // Uses schema_aware: true by default
 
         // Create a schema with password fields

@@ -82,7 +82,7 @@ impl PermissionHandlers {
         // Store permissions in database
         let mut updated_permissions = permissions;
         updated_permissions.collection = collection;
-        updated_permissions.update_timestamp();
+        // Note: timestamp is updated automatically by the set_operation_permission method
 
         db.store_permissions(&updated_permissions).await?;
 
@@ -162,11 +162,11 @@ impl PermissionHandlers {
         debug!("Creating permission preset '{}' for collection: {}", preset_type, collection);
 
         let permissions = match preset_type {
-            PermissionPresetType::Public => CollectionPermissions::new_public(collection),
+            PermissionPresetType::Public => CollectionPermissions::public(collection),
             PermissionPresetType::AuthenticatedOnly => {
                 let mut perms = CollectionPermissions::new(collection);
                 for operation in [CrudOperation::Create, CrudOperation::Read, CrudOperation::Update, CrudOperation::Delete, CrudOperation::List] {
-                    perms.set_operation_permission(operation, PermissionLevel::AuthenticatedOnly, None);
+                    perms.set_operation_permission(operation, PermissionLevel::AuthenticatedOnly);
                 }
                 perms
             }
@@ -174,8 +174,8 @@ impl PermissionHandlers {
             PermissionPresetType::ReadOnly => {
                 let mut perms = CollectionPermissions::new(collection);
                 // Allow public read and list, but restrict create/update/delete to superuser
-                perms.set_operation_permission(CrudOperation::Read, PermissionLevel::Public, None);
-                perms.set_operation_permission(CrudOperation::List, PermissionLevel::Public, None);
+                perms.set_operation_permission(CrudOperation::Read, PermissionLevel::Public);
+                perms.set_operation_permission(CrudOperation::List, PermissionLevel::Public);
                 perms
             }
         };

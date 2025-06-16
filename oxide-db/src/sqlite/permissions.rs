@@ -5,7 +5,7 @@
 
 use super::SqliteDb;
 use oxide_core::{AppError, CollectionPermissions};
-use oxide_core::auth::PermissionService;
+use oxide_core::auth::{PermissionService, PermissionContext, PermissionLevel};
 use tokio::task::spawn_blocking;
 use tracing::{debug, info};
 
@@ -45,6 +45,63 @@ impl SqliteDb {
 // Implement PermissionService trait for SqliteDb
 #[async_trait::async_trait]
 impl PermissionService for SqliteDb {
+    /// Check if a user is authenticated
+    fn check_authentication(&self, context: &PermissionContext) -> Result<bool, AppError> {
+        // A user is considered authenticated if they have valid JWT claims
+        Ok(context.is_authenticated())
+    }
+
+    /// Check if a user can perform an operation on a collection
+    fn check_permission(&self, permissions: &CollectionPermissions, context: &PermissionContext) -> Result<bool, AppError> {
+        // Get the operation rule for the requested operation
+        let rule = match permissions.get_operation_rule(&context.operation) {
+            Some(rule) => rule,
+            None => {
+                // If no rule is defined, default to superuser only
+                debug!("No rule found for operation {:?} on collection {}, defaulting to superuser only", 
+                       context.operation, context.collection);
+                return Ok(context.is_superuser());
+            }
+        };
+
+        // Check permission level
+        match &rule.permission {
+            PermissionLevel::None => {
+                debug!("Permission denied: operation {:?} not allowed on collection {}", 
+                       context.operation, context.collection);
+                Ok(false)
+            }
+            PermissionLevel::Public => {
+                debug!("Permission granted: public access for operation {:?} on collection {}", 
+                       context.operation, context.collection);
+                Ok(true)
+            }
+            PermissionLevel::AuthenticatedOnly => {
+                let allowed = context.is_authenticated();
+                debug!("Permission {}: authenticated access for operation {:?} on collection {}", 
+                       if allowed { "granted" } else { "denied" },
+                       context.operation, context.collection);
+                Ok(allowed)
+            }
+            PermissionLevel::SuperuserOnly => {
+                let allowed = context.is_superuser();
+                debug!("Permission {}: superuser access for operation {:?} on collection {}", 
+                       if allowed { "granted" } else { "denied" },
+                       context.operation, context.collection);
+                Ok(allowed)
+            }
+            PermissionLevel::Rule(rule_expr) => {
+                // For now, implement basic rule evaluation
+                // In the future, this could be extended with a proper rule engine
+                debug!("Evaluating rule '{}' for operation {:?} on collection {}", 
+                       rule_expr, context.operation, context.collection);
+                
+                // Basic rule evaluation (this is a placeholder for more sophisticated logic)
+                self.evaluate_permission_rule(rule_expr, context)
+            }
+        }
+    }
+
     /// Store permissions for a collection
     async fn store_permissions(&self, permissions: &CollectionPermissions) -> Result<(), AppError> {
         debug!("Storing permissions for collection: {}", permissions.collection);
@@ -201,5 +258,34 @@ impl PermissionService for SqliteDb {
 
         debug!("✅ Found {} collections with custom permissions", collections.len());
         Ok(collections)
+    }
+}
+
+impl SqliteDb {
+    /// Basic rule evaluation for permission rules
+    /// This is a simplified implementation - a full rule engine would be more robust
+    fn evaluate_permission_rule(&self, rule_expr: &str, context: &PermissionContext) -> Result<bool, AppError> {
+        // For now, support some basic rule patterns
+        // In a full implementation, this would parse and evaluate complex rule expressions
+        
+        // Example rules:
+        // "@request.auth.id = @record.owner_id" - only record owner can access
+        // "@request.auth.role = 'admin'" - only admin role
+        // "@request.auth != null" - any authenticated user
+        
+        match rule_expr {
+            "@request.auth != null" => Ok(context.is_authenticated()),
+            rule if rule.contains("@request.auth.role = 'admin'") => Ok(context.is_superuser()),
+            rule if rule.contains("@request.auth.role = 'superuser'") => Ok(context.is_superuser()),
+            rule if rule.contains("@request.auth.id = @record.owner_id") => {
+                // This would require record data to evaluate properly
+                // For now, just check if user is authenticated
+                Ok(context.is_authenticated())
+            }
+            _ => {
+                debug!("Unknown rule expression: {}, defaulting to deny", rule_expr);
+                Ok(false)
+            }
+        }
     }
 }

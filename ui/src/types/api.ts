@@ -49,6 +49,16 @@ export interface AuthResponse {
   expires_in: number;
 }
 
+export interface TokenValidationResponse {
+  valid: boolean;
+  user_id?: string;
+  email?: string;
+  role?: string;
+  auth_collection?: string;
+  expires_at?: number;
+  custom_claims?: unknown;
+}
+
 export interface LoginRequest {
   email: string;
   password: string;
@@ -78,7 +88,8 @@ export type PermissionPresetType = 'public' | 'authenticated_only' | 'superuser_
 
 // API Response wrapper
 export interface ApiResponse<T> {
-  status: string;
-  message?: string;
   data: T;
+  success: boolean;
+  status?: string;
+  message?: string;
 } 

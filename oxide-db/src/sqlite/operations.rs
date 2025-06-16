@@ -621,4 +621,20 @@ impl Db for SqliteDb {
         use oxide_core::auth::PermissionService;
         <Self as PermissionService>::list_collections_with_permissions(self).await
     }
+
+    async fn authenticate_user(&self, auth_request: crate::db::AuthRequest, auth_config: &oxide_core::auth::AuthCollectionConfig) -> Result<crate::db::AuthResponse, AppError> {
+        SqliteDb::authenticate_user(self, auth_request, auth_config).await
+    }
+
+    async fn register_user(&self, register_request: crate::db::RegisterRequest, auth_config: &oxide_core::auth::AuthCollectionConfig) -> Result<String, AppError> {
+        SqliteDb::register_user(self, register_request, auth_config).await
+    }
+
+    async fn find_user_by_identifier(&self, collection: &str, identifier_field: &str, identifier_value: &str) -> Result<crate::Record, AppError> {
+        SqliteDb::find_user_by_identifier(self, collection, identifier_field, identifier_value).await
+    }
+
+    async fn list_auth_collections(&self) -> Result<Vec<oxide_core::CollectionSchema>, AppError> {
+        SqliteDb::list_auth_collections(self).await
+    }
 } 

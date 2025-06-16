@@ -341,7 +341,8 @@ mod tests {
         // 2. User validation hook runs second
         // 3. Should NOT fail with "Required field 'password' is missing"
 
-        let auth_service = Arc::new(AuthService::new("test_secret".to_string()));
+        let auth_config = crate::auth::AuthServiceConfig::new("test_secret".to_string());
+        let auth_service = Arc::new(AuthService::new(auth_config));
         let password_hook = PasswordHashingHook::new(auth_service);
         let validation_hook = UserValidationHook::new().unwrap();
 

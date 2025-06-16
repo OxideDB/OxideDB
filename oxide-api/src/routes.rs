@@ -13,7 +13,10 @@ use tower_http::{cors::CorsLayer, trace::TraceLayer};
 use crate::{
     handlers::{
         admin::{serve_admin_static, serve_admin_ui},
-        auth::{login, register, validate_token, get_current_user, logout},
+        auth::{
+            validate_token, get_current_user, logout,
+            list_auth_collections, login_collection, register_collection,
+        },
         collections::{
             collection_schema, collection_stats, create_collection, delete_collection,
             list_collections, update_collection_schema,
@@ -53,8 +56,11 @@ fn health_routes() -> Router<AppState> {
 /// Authentication routes
 fn auth_routes() -> Router<AppState> {
     Router::new()
-        .route("/auth/login", axum::routing::post(login))
-        .route("/auth/register", axum::routing::post(register))
+        // Collection-specific auth routes
+        .route("/auth/collections", get(list_auth_collections))
+        .route("/auth/:collection/login", axum::routing::post(login_collection))
+        .route("/auth/:collection/register", axum::routing::post(register_collection))
+        // Common auth routes
         .route("/auth/validate", axum::routing::post(validate_token))
         .route("/auth/logout", axum::routing::post(logout))
         .route("/auth/me", get(get_current_user))

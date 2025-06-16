@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Eye, EyeOff, Database, AlertCircle } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -6,19 +6,39 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Alert, AlertDescription } from '@/components/ui/alert';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { useAuth } from '../contexts/AuthContext';
-import { apiService } from '../services/api';
+// import { apiService } from '../services/api';
 
 const Login: React.FC = () => {
   const navigate = useNavigate();
-  const { login } = useAuth();
+  const { login, authCollections, loadAuthCollections } = useAuth();
   const [formData, setFormData] = useState({
-    email: '',
-    password: '',
+    collection: '',
+    identifier: '',
+    credential: '',
   });
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Load auth collections on component mount
+  useEffect(() => {
+    loadAuthCollections();
+  }, [loadAuthCollections]);
+
+  // Auto-select the first available collection
+  useEffect(() => {
+    if (authCollections.length > 0 && !formData.collection) {
+      // Prefer 'users' collection if available, otherwise use the first one
+      const defaultCollection = authCollections.find(c => c.name === 'users') || authCollections[0];
+      if (defaultCollection) {
+        setFormData(prev => ({ ...prev, collection: defaultCollection.name }));
+      }
+    }
+  }, [authCollections, formData.collection]);
+
+  const selectedCollection = authCollections.find(c => c.name === formData.collection);
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const { name, value } = e.target;
@@ -30,10 +50,19 @@ const Login: React.FC = () => {
     if (error) setError(null);
   };
 
+  const handleCollectionChange = (collection: string) => {
+    setFormData(prev => ({
+      ...prev,
+      collection,
+      identifier: '', // Clear identifier when changing collections
+    }));
+    if (error) setError(null);
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     
-    if (!formData.email || !formData.password) {
+    if (!formData.collection || !formData.identifier || !formData.credential) {
       setError('Please fill in all fields');
       return;
     }
@@ -42,7 +71,7 @@ const Login: React.FC = () => {
     setError(null);
 
     try {
-      await login(formData.email, formData.password);
+      await login(formData.collection, formData.identifier, formData.credential);
       navigate('/collections');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Login failed. Please check your credentials.');
@@ -72,7 +101,7 @@ const Login: React.FC = () => {
           <CardHeader>
             <CardTitle>Sign In</CardTitle>
             <CardDescription>
-              Enter your credentials to access the admin dashboard
+              Select a collection and enter your credentials
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -85,55 +114,77 @@ const Login: React.FC = () => {
                 </Alert>
               )}
 
-              {/* Email Field */}
+                                            {/* Collection Selector */}
+               <div className="space-y-2">
+                 <Label htmlFor="collection">Collection</Label>
+                 <Select
+                   value={formData.collection}
+                   onValueChange={handleCollectionChange}
+                 >
+                   <SelectTrigger disabled={loading}>
+                     <SelectValue placeholder="Select a collection" />
+                   </SelectTrigger>
+                   <SelectContent>
+                     {authCollections.map((collection) => (
+                       <SelectItem key={collection.name} value={collection.name}>
+                         {collection.name}
+                       </SelectItem>
+                     ))}
+                   </SelectContent>
+                 </Select>
+               </div>
+
+              {/* Identifier Field */}
               <div className="space-y-2">
-                <Label htmlFor="email">Email</Label>
+                <Label htmlFor="identifier">
+                  {selectedCollection?.identifier_field === 'email' ? 'Email' : 'Identifier'}
+                </Label>
                 <Input
-                  id="email"
-                  name="email"
-                  type="email"
-                  placeholder="admin@example.com"
-                  value={formData.email}
+                  id="identifier"
+                  name="identifier"
+                  type={selectedCollection?.identifier_field === 'email' ? 'email' : 'text'}
+                  placeholder={selectedCollection?.identifier_field === 'email' ? 'admin@example.com' : 'Enter your identifier'}
+                  value={formData.identifier}
                   onChange={handleInputChange}
                   disabled={loading}
                   required
-                  autoComplete="email"
+                  autoComplete="username"
                   className="w-full"
                 />
               </div>
 
-              {/* Password Field */}
-              <div className="space-y-2">
-                <Label htmlFor="password">Password</Label>
-                <div className="relative">
-                  <Input
-                    id="password"
-                    name="password"
-                    type={showPassword ? 'text' : 'password'}
-                    placeholder="Enter your password"
-                    value={formData.password}
-                    onChange={handleInputChange}
-                    disabled={loading}
-                    required
-                    autoComplete="current-password"
-                    className="w-full pr-10"
-                  />
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    className="absolute right-0 top-0 h-full px-3 py-2 hover:bg-transparent"
-                    onClick={() => setShowPassword(!showPassword)}
-                    disabled={loading}
-                  >
-                    {showPassword ? (
-                      <EyeOff className="h-4 w-4 text-muted-foreground" />
-                    ) : (
-                      <Eye className="h-4 w-4 text-muted-foreground" />
-                    )}
-                  </Button>
-                </div>
-              </div>
+                             {/* Credential Field */}
+               <div className="space-y-2">
+                 <Label htmlFor="credential">Credential</Label>
+                 <div className="relative">
+                   <Input
+                     id="credential"
+                     name="credential"
+                     type={showPassword ? 'text' : 'password'}
+                     placeholder="Enter your credential"
+                     value={formData.credential}
+                     onChange={handleInputChange}
+                     disabled={loading}
+                     required
+                     autoComplete="current-password"
+                     className="w-full pr-10"
+                   />
+                   <Button
+                     type="button"
+                     variant="ghost"
+                     size="sm"
+                     className="absolute right-0 top-0 h-full px-3 py-2 hover:bg-transparent"
+                     onClick={() => setShowPassword(!showPassword)}
+                     disabled={loading}
+                   >
+                     {showPassword ? (
+                       <EyeOff className="h-4 w-4 text-muted-foreground" />
+                     ) : (
+                       <Eye className="h-4 w-4 text-muted-foreground" />
+                     )}
+                   </Button>
+                 </div>
+               </div>
 
               {/* Submit Button */}
               <Button
@@ -152,10 +203,10 @@ const Login: React.FC = () => {
               </h4>
               <div className="text-xs text-muted-foreground space-y-1">
                 <div>
-                  <strong>Admin:</strong> admin@example.com / secure_password_123
+                  <strong>Superusers Collection:</strong> admin@example.com / secure_password_123
                 </div>
                 <div>
-                  <strong>User:</strong> user@example.com / user_password_456
+                  <strong>Users Collection:</strong> user@example.com / user_password_456
                 </div>
               </div>
             </div>
