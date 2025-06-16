@@ -5,8 +5,9 @@
 
 use crate::{
     EventBus, AuthService, AppError, BeforeEventType,
+    auth::PermissionService,
     hooks::{
-        auth::{PasswordHashingHook, UserValidationHook},
+        auth::{PasswordHashingHook, UserValidationHook, AuthorizationHook},
         audit::{ActivityLoggerHook, SecurityAuditHook},
         validation::{SchemaValidatorHook, DataSanitizerHook},
     }
@@ -21,6 +22,8 @@ pub struct HookRegistryConfig {
     pub enable_password_hooks: bool,
     /// Enable user validation hooks
     pub enable_user_validation: bool,
+    /// Enable authorization hooks
+    pub enable_authorization: bool,
     /// Enable activity logging hooks
     pub enable_activity_logging: bool,
     /// Enable security audit hooks
@@ -36,6 +39,7 @@ impl Default for HookRegistryConfig {
         Self {
             enable_password_hooks: true,
             enable_user_validation: true,
+            enable_authorization: true,
             enable_activity_logging: true,
             enable_security_audit: true,
             enable_schema_validation: false, // Disabled by default as it requires schema setup
@@ -48,6 +52,7 @@ impl Default for HookRegistryConfig {
 pub struct HookRegistry {
     config: HookRegistryConfig,
     auth_service: Option<Arc<AuthService>>,
+    permission_service: Option<Arc<dyn PermissionService>>,
 }
 
 impl Default for HookRegistry {
@@ -62,6 +67,7 @@ impl HookRegistry {
         Self {
             config: HookRegistryConfig::default(),
             auth_service: None,
+            permission_service: None,
         }
     }
 
@@ -70,6 +76,7 @@ impl HookRegistry {
         Self {
             config,
             auth_service: None,
+            permission_service: None,
         }
     }
 
@@ -79,8 +86,14 @@ impl HookRegistry {
         self
     }
 
+    /// Set the permission service for authorization hooks
+    pub fn with_permission_service(mut self, permission_service: Arc<dyn PermissionService>) -> Self {
+        self.permission_service = Some(permission_service);
+        self
+    }
+
     /// Register all enabled system hooks with the event bus
-    pub fn register_all_hooks(&self, event_bus: &dyn EventBus) -> Result<(), AppError> {
+    pub async fn register_all_hooks(&self, event_bus: &dyn EventBus) -> Result<(), AppError> {
         info!("🎣 Registering system hooks...");
 
         let mut registered_count = 0;
@@ -93,6 +106,11 @@ impl HookRegistry {
 
         if self.config.enable_user_validation {
             self.register_user_validation_hooks(event_bus)?;
+            registered_count += 1;
+        }
+
+        if self.config.enable_authorization {
+            self.register_authorization_hooks(event_bus).await?;
             registered_count += 1;
         }
 
@@ -133,14 +151,24 @@ impl HookRegistry {
         let hook_create = Arc::clone(&hook);
         event_bus.subscribe_before(
             BeforeEventType::RecordCreate.name(),
-            Box::new(move |context| hook_create.handle_before_record_create(context)),
+            Arc::new(move |context| {
+                let hook = Arc::clone(&hook_create);
+                Box::pin(async move {
+                    hook.handle_before_record_create(context)
+                })
+            }),
         )?;
 
         // Register for record updates
         let hook_update = Arc::clone(&hook);
         event_bus.subscribe_before(
             BeforeEventType::RecordUpdate.name(),
-            Box::new(move |context| hook_update.handle_before_record_update(context)),
+            Arc::new(move |context| {
+                let hook = Arc::clone(&hook_update);
+                Box::pin(async move {
+                    hook.handle_before_record_update(context)
+                })
+            }),
         )?;
 
         info!("🔒 Password hashing hooks registered");
@@ -156,17 +184,56 @@ impl HookRegistry {
         let hook_create = Arc::clone(&hook);
         event_bus.subscribe_before(
             BeforeEventType::RecordCreate.name(),
-            Box::new(move |context| hook_create.handle_before_record_create(context)),
+            Arc::new(move |context| {
+                let hook = Arc::clone(&hook_create);
+                Box::pin(async move {
+                    hook.handle_before_record_create(context)
+                })
+            }),
         )?;
 
         // Register for record updates
         let hook_update = Arc::clone(&hook);
         event_bus.subscribe_before(
             BeforeEventType::RecordUpdate.name(),
-            Box::new(move |context| hook_update.handle_before_record_update(context)),
+            Arc::new(move |context| {
+                let hook = Arc::clone(&hook_update);
+                Box::pin(async move {
+                    hook.handle_before_record_update(context)
+                })
+            }),
         )?;
 
         info!("✅ User validation hooks registered");
+        Ok(())
+    }
+
+    /// Register authorization hooks
+    async fn register_authorization_hooks(&self, event_bus: &dyn EventBus) -> Result<(), AppError> {
+        let auth_service = self.auth_service.as_ref()
+            .ok_or_else(|| AppError::internal("AuthService is required for authorization hooks"))?;
+
+        let permission_service = self.permission_service.as_ref()
+            .ok_or_else(|| AppError::internal("PermissionService is required for authorization hooks"))?;
+
+        let hook = Arc::new(AuthorizationHook::new(Arc::clone(auth_service), Arc::clone(permission_service)));
+
+        // Initialize default permissions for system collections asynchronously
+        hook.initialize_default_permissions().await?;
+
+        // Register for API request authorization
+        let hook_api = Arc::clone(&hook);
+        event_bus.subscribe_before(
+            BeforeEventType::ApiRequest.name(),
+            Arc::new(move |context| {
+                let hook = Arc::clone(&hook_api);
+                Box::pin(async move {
+                    hook.handle_before_api_request(context).await
+                })
+            }),
+        )?;
+
+        info!("🔐 Authorization hooks registered");
         Ok(())
     }
 
@@ -178,8 +245,11 @@ impl HookRegistry {
         let hook_before = Arc::clone(&hook);
         event_bus.subscribe_before(
             BeforeEventType::RecordCreate.name(),
-            Box::new(move |context| {
-                hook_before.handle_before_event(BeforeEventType::RecordCreate.name(), context)
+            Arc::new(move |context| {
+                let hook = Arc::clone(&hook_before);
+                Box::pin(async move {
+                    hook.handle_before_event(BeforeEventType::RecordCreate.name(), context)
+                })
             }),
         )?;
 
@@ -195,8 +265,11 @@ impl HookRegistry {
         let hook_before = Arc::clone(&hook);
         event_bus.subscribe_before(
             BeforeEventType::RecordCreate.name(),
-            Box::new(move |context| {
-                hook_before.handle_before_event(BeforeEventType::RecordCreate.name(), context)
+            Arc::new(move |context| {
+                let hook = Arc::clone(&hook_before);
+                Box::pin(async move {
+                    hook.handle_before_event(BeforeEventType::RecordCreate.name(), context)
+                })
             }),
         )?;
 
@@ -212,7 +285,12 @@ impl HookRegistry {
         let hook_create = Arc::clone(&hook);
         event_bus.subscribe_before(
             BeforeEventType::RecordCreate.name(),
-            Box::new(move |context| hook_create.handle_before_record_create(context)),
+            Arc::new(move |context| {
+                let hook = Arc::clone(&hook_create);
+                Box::pin(async move {
+                    hook.handle_before_record_create(context)
+                })
+            }),
         )?;
 
         info!("📝 Schema validation hooks registered");
@@ -228,14 +306,24 @@ impl HookRegistry {
         let hook_create = Arc::clone(&hook);
         event_bus.subscribe_before(
             BeforeEventType::RecordCreate.name(),
-            Box::new(move |context| hook_create.handle_before_record_create(context)),
+            Arc::new(move |context| {
+                let hook = Arc::clone(&hook_create);
+                Box::pin(async move {
+                    hook.handle_before_record_create(context)
+                })
+            }),
         )?;
 
         // Register for record updates
         let hook_update = Arc::clone(&hook);
         event_bus.subscribe_before(
             BeforeEventType::RecordUpdate.name(),
-            Box::new(move |context| hook_update.handle_before_record_update(context)),
+            Arc::new(move |context| {
+                let hook = Arc::clone(&hook_update);
+                Box::pin(async move {
+                    hook.handle_before_record_update(context)
+                })
+            }),
         )?;
 
         info!("🧹 Data sanitization hooks registered");
@@ -244,10 +332,13 @@ impl HookRegistry {
 }
 
 /// Convenience function to register all system hooks with default configuration
-pub fn register_system_hooks(
+pub async fn register_system_hooks(
     event_bus: &dyn EventBus,
     auth_service: Arc<AuthService>,
+    permission_service: Arc<dyn PermissionService>,
 ) -> Result<(), AppError> {
-    let registry = HookRegistry::new().with_auth_service(auth_service);
-    registry.register_all_hooks(event_bus)
+    let registry = HookRegistry::new()
+        .with_auth_service(auth_service)
+        .with_permission_service(permission_service);
+    registry.register_all_hooks(event_bus).await
 } 

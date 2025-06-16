@@ -26,7 +26,7 @@ fn main() {
         if !Path::new("../ui/node_modules").exists() {
             println!("cargo:warning=Installing UI dependencies...");
             let output = Command::new("npm")
-                .args(&["install"])
+                .args(["install"])
                 .current_dir("../ui")
                 .output()
                 .expect("Failed to run npm install");
@@ -38,7 +38,7 @@ fn main() {
         
         // Build the UI
         let output = Command::new("npm")
-            .args(&["run", "build"])
+            .args(["run", "build"])
             .current_dir("../ui")
             .output()
             .expect("Failed to run npm run build");
@@ -64,4 +64,4 @@ fn is_ui_outdated() -> bool {
     
     // If we can't determine, assume it needs rebuilding
     true
-} 
+}

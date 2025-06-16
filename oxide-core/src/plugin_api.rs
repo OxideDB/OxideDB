@@ -28,6 +28,9 @@ pub enum PluginError {
 
     #[error("Plugin function not exported: {0}")]
     FunctionNotExported(String),
+
+    #[error("Security violation: {0}")]
+    SecurityViolation(String),
 }
 
 impl From<PluginError> for AppError {

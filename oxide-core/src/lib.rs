@@ -19,10 +19,14 @@ pub mod error;
 pub mod event;
 pub mod field_types;
 pub mod plugin_api;
+pub mod plugin_security;
 pub mod hooks;
 
 // Re-export commonly used types for convenience
-pub use auth::{AuthService, UserRole};
+pub use auth::{
+    AuthService, UserRole, Claims, CrudOperation, PermissionLevel,
+    OperationRule, CollectionPermissions, PermissionContext
+};
 pub use collection::{CollectionSchema, CollectionType, FieldDefinition};
 pub use error::AppError;
 pub use field_types::FieldType;
@@ -34,6 +38,10 @@ pub use event::{
     Event, EventHandler,
 };
 pub use plugin_api::{PluginError, PluginResult, EventPayload, PluginResponse};
+pub use plugin_security::{
+    PluginCapability, PluginSecurityContext, PluginTrustLevel, ResourceLimits,
+    ExecutionStats, SecurityViolation, PluginSecurityManager, SecurityPolicies
+};
 
 // Re-export the main hook registration function
 pub use hooks::register_system_hooks;

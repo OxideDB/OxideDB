@@ -1,0 +1,383 @@
+//! Authorization Hook
+//!
+//! This hook enforces API access control rules based on collection permissions
+//! and user authentication status. It follows the hook-first architecture by
+//! intercepting BeforeApiRequest events and validating permissions.
+
+use crate::{
+    BeforeEventContext, AppError, AuthService, Claims, CrudOperation, 
+    CollectionPermissions, PermissionContext
+};
+use crate::auth::PermissionService;
+use std::sync::Arc;
+use tracing::{debug, warn, info};
+
+/// Configuration for authorization behavior
+#[derive(Debug, Clone)]
+pub struct AuthorizationConfig {
+    /// Default permission level for collections without explicit rules
+    pub default_auth_required: bool,
+    /// Collections that bypass authorization entirely (be very careful!)
+    pub bypass_collections: Vec<String>,
+    /// Whether to log authorization decisions
+    pub log_decisions: bool,
+}
+
+impl Default for AuthorizationConfig {
+    fn default() -> Self {
+        Self {
+            default_auth_required: true,
+            bypass_collections: vec![
+                "health".to_string(), // Health checks bypass auth
+                "admin".to_string(),  // Admin UI should be publicly accessible
+            ],
+            log_decisions: true,
+        }
+    }
+}
+
+/// Authorization hook that enforces API access control
+pub struct AuthorizationHook {
+    auth_service: Arc<AuthService>,
+    config: AuthorizationConfig,
+    permission_service: Arc<dyn PermissionService>,
+}
+
+impl AuthorizationHook {
+    /// Create a new authorization hook
+    pub fn new(auth_service: Arc<AuthService>, permission_service: Arc<dyn PermissionService>) -> Self {
+        Self {
+            auth_service,
+            config: AuthorizationConfig::default(),
+            permission_service,
+        }
+    }
+
+    /// Create a new authorization hook with custom configuration
+    pub fn with_config(auth_service: Arc<AuthService>, permission_service: Arc<dyn PermissionService>, config: AuthorizationConfig) -> Self {
+        Self {
+            auth_service,
+            config,
+            permission_service,
+        }
+    }
+
+    /// Handle BeforeApiRequest events for authorization
+    pub async fn handle_before_api_request(&self, context: &mut BeforeEventContext) -> Result<(), AppError> {
+        // Extract request information from the context
+        let method = context.data.get("method")
+            .and_then(|m| m.as_str())
+            .unwrap_or("GET");
+        
+        let path = context.data.get("path")
+            .and_then(|p| p.as_str())
+            .unwrap_or("/");
+
+        let empty_headers = serde_json::json!({});
+        let headers = context.data.get("headers")
+            .unwrap_or(&empty_headers);
+
+        debug!("🔐 Authorizing API request: {} {}", method, path);
+
+        // Parse the collection and operation from the path
+        let (collection, operation, _record_id) = self.parse_request_info(method, path)?;
+
+        // Check if this collection bypasses authorization
+        if self.config.bypass_collections.contains(&collection) {
+            debug!("🔓 Bypassing authorization for collection: {}", collection);
+            return Ok(());
+        }
+
+        // Extract authentication information from headers
+        let user_claims = self.extract_user_claims(headers)?;
+
+        // Get permission rules for the collection from permission service
+        let permissions = match self.permission_service.get_permissions(&collection).await? {
+            Some(perms) => perms,
+            None => {
+                // Create default restrictive permissions for unknown collections
+                if self.config.default_auth_required {
+                    CollectionPermissions::new(collection.clone())
+                } else {
+                    CollectionPermissions::new_public(collection.clone())
+                }
+            }
+        };
+
+        // Create permission context
+        let permission_context = PermissionContext::new(
+            collection.clone(),
+            operation.clone(),
+            user_claims,
+            None, // Record data will be loaded later if needed
+            context.data.get("body").cloned(),
+        );
+
+        // Check permission
+        let allowed = self.auth_service.check_permission(&permissions, &permission_context)?;
+
+        if !allowed {
+            let user_info = permission_context.user_claims
+                .map(|claims| format!("user {} ({})", claims.sub, claims.role))
+                .unwrap_or_else(|| "anonymous".to_string());
+
+            let error_msg = format!(
+                "Access denied: {} cannot perform {} operation on collection '{}'",
+                user_info, operation, collection
+            );
+
+            if self.config.log_decisions {
+                warn!("🚫 {}", error_msg);
+            }
+
+            return Err(AppError::auth(error_msg));
+        }
+
+        if self.config.log_decisions {
+            let user_info = permission_context.user_claims
+                .map(|claims| format!("user {} ({})", claims.sub, claims.role))
+                .unwrap_or_else(|| "anonymous".to_string());
+
+            info!("✅ Access granted: {} can perform {} operation on collection '{}'", 
+                  user_info, operation, collection);
+        }
+
+        Ok(())
+    }
+
+    /// Parse request information to extract collection, operation, and record ID
+    fn parse_request_info(&self, method: &str, path: &str) -> Result<(String, CrudOperation, Option<String>), AppError> {
+        // Handle health checks
+        if path.starts_with("/health") {
+            return Ok(("health".to_string(), CrudOperation::Read, None));
+        }
+
+        // Handle auth endpoints
+        if path.starts_with("/auth") {
+            return Ok(("auth".to_string(), CrudOperation::Read, None));
+        }
+
+        // Handle admin UI endpoints - these should be publicly accessible
+        if path.starts_with("/admin") {
+            return Ok(("admin".to_string(), CrudOperation::Read, None));
+        }
+
+        // Handle permission endpoints
+        if path.starts_with("/permissions") {
+            return Ok(("permissions".to_string(), CrudOperation::Read, None));
+        }
+
+        // Parse collection endpoints: /collections/{collection} or /collections/{collection}/records/{id}
+        let path_parts: Vec<&str> = path.trim_start_matches('/').split('/').collect();
+        
+        // Handle the base /collections endpoint (list all collections)
+        if path_parts.len() == 1 && path_parts[0] == "collections" {
+            let operation = match method {
+                "GET" => CrudOperation::List,
+                "POST" => CrudOperation::Create,
+                _ => CrudOperation::List,
+            };
+            return Ok(("collections".to_string(), operation, None));
+        }
+        
+        if path_parts.len() >= 2 && path_parts[0] == "collections" {
+            let collection = path_parts[1].to_string();
+            
+            // Handle collection-specific permission endpoints
+            if path_parts.len() >= 3 && path_parts[2] == "permissions" {
+                return Ok(("permissions".to_string(), CrudOperation::Update, None));
+            }
+            
+            if path_parts.len() >= 4 && path_parts[2] == "records" {
+                // Record-specific operations: /collections/{collection}/records/{id}
+                let record_id = Some(path_parts[3].to_string());
+                let operation = match method {
+                    "GET" => CrudOperation::Read,
+                    "PUT" | "PATCH" => CrudOperation::Update,
+                    "DELETE" => CrudOperation::Delete,
+                    _ => CrudOperation::Read,
+                };
+                return Ok((collection, operation, record_id));
+            } else if path_parts.len() == 3 && path_parts[2] == "records" {
+                // Collection-level operations: /collections/{collection}/records
+                let operation = match method {
+                    "GET" => CrudOperation::List,
+                    "POST" => CrudOperation::Create,
+                    _ => CrudOperation::List,
+                };
+                return Ok((collection, operation, None));
+            }
+        }
+
+        // Other collection-related endpoints (schema, stats, etc.)
+        let operation = match method {
+            "GET" => CrudOperation::Read,
+            "POST" => CrudOperation::Create,
+            "PUT" | "PATCH" => CrudOperation::Update,
+            "DELETE" => CrudOperation::Delete,
+            _ => CrudOperation::Read,
+        };
+        
+        Ok(("unknown".to_string(), operation, None))
+    }
+
+    /// Extract user claims from request headers
+    fn extract_user_claims(&self, headers: &serde_json::Value) -> Result<Option<Claims>, AppError> {
+        let authorization = headers.get("authorization")
+            .or_else(|| headers.get("Authorization"))
+            .and_then(|v| v.as_str());
+
+        let token = match authorization {
+            Some(auth_header) => {
+                if let Some(stripped) = auth_header.strip_prefix("Bearer ") {
+                    stripped // Remove "Bearer " prefix
+                } else {
+                    auth_header
+                }
+            }
+            None => return Ok(None), // No authentication provided
+        };
+
+        match self.auth_service.verify_token(token) {
+            Ok(claims) => Ok(Some(claims)),
+            Err(_) => {
+                debug!("🔑 Invalid or expired token provided");
+                Ok(None) // Invalid token treated as no authentication
+            }
+        }
+    }
+
+    /// Initialize default permissions for system collections
+    pub async fn initialize_default_permissions(&self) -> Result<(), AppError> {
+        // Auth collections should be superuser only by default
+        let auth_collections = ["users", "superusers"];
+        for collection in &auth_collections {
+            let permissions = CollectionPermissions::new(collection.to_string());
+            self.permission_service.store_permissions(&permissions).await?;
+        }
+
+        // Collections endpoint permissions - require authentication for all operations
+        let collections_permissions = CollectionPermissions::new("collections".to_string());
+        // All collection operations require at least authenticated user by default
+        // Specific permissions can be configured per collection as needed
+        self.permission_service.store_permissions(&collections_permissions).await?;
+
+        // Note: Admin UI routes are handled via bypass_collections in AuthorizationConfig
+        // They remain publicly accessible for authentication purposes only
+
+        info!("🔐 Default authorization permissions initialized");
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    // Mock permission service for testing
+    struct MockPermissionService {
+        permissions: std::sync::Mutex<HashMap<String, CollectionPermissions>>,
+    }
+
+    impl MockPermissionService {
+        fn new() -> Self {
+            Self {
+                permissions: std::sync::Mutex::new(HashMap::new()),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl PermissionService for MockPermissionService {
+        async fn store_permissions(&self, permissions: &CollectionPermissions) -> Result<(), AppError> {
+            let mut perms = self.permissions.lock().unwrap();
+            perms.insert(permissions.collection.clone(), permissions.clone());
+            Ok(())
+        }
+
+        async fn get_permissions(&self, collection: &str) -> Result<Option<CollectionPermissions>, AppError> {
+            let perms = self.permissions.lock().unwrap();
+            Ok(perms.get(collection).cloned())
+        }
+
+        async fn delete_permissions(&self, collection: &str) -> Result<(), AppError> {
+            let mut perms = self.permissions.lock().unwrap();
+            perms.remove(collection);
+            Ok(())
+        }
+
+        async fn list_collections_with_permissions(&self) -> Result<Vec<String>, AppError> {
+            let perms = self.permissions.lock().unwrap();
+            Ok(perms.keys().cloned().collect())
+        }
+    }
+
+    #[tokio::test]
+    async fn test_authorization_hook() {
+        let auth_service = Arc::new(AuthService::new("test_secret".to_string()));
+        let permission_service = Arc::new(MockPermissionService::new());
+        let hook = AuthorizationHook::new(auth_service, permission_service.clone());
+
+        // Set up a restrictive collection permission (superuser only)
+        let permissions = CollectionPermissions::new("sensitive_data".to_string());
+        permission_service.store_permissions(&permissions).await.unwrap();
+
+        // Create a request context with user token
+        let mut context = BeforeEventContext {
+            collection: "api".to_string(),
+            data: serde_json::json!({
+                "method": "GET",
+                "path": "/collections/sensitive_data/records",
+                "headers": {}
+            }),
+            metadata: serde_json::json!({}),
+            record_id: None,
+            old_data: None,
+        };
+
+        // Should fail for unauthenticated request
+        let result = hook.handle_before_api_request(&mut context).await;
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_request_info() {
+        let auth_service = Arc::new(AuthService::new("test_secret".to_string()));
+        let permission_service = Arc::new(MockPermissionService::new());
+        let hook = AuthorizationHook::new(auth_service, permission_service);
+
+        // Test collections list endpoint
+        let (collection, operation, record_id) = hook
+            .parse_request_info("GET", "/collections")
+            .unwrap();
+        assert_eq!(collection, "collections");
+        assert_eq!(operation, CrudOperation::List);
+        assert_eq!(record_id, None);
+
+        // Test collections create endpoint
+        let (collection, operation, record_id) = hook
+            .parse_request_info("POST", "/collections")
+            .unwrap();
+        assert_eq!(collection, "collections");
+        assert_eq!(operation, CrudOperation::Create);
+        assert_eq!(record_id, None);
+
+        // Test collection list endpoint
+        let (collection, operation, record_id) = hook
+            .parse_request_info("GET", "/collections/users/records")
+            .unwrap();
+        assert_eq!(collection, "users");
+        assert_eq!(operation, CrudOperation::List);
+        assert_eq!(record_id, None);
+
+        // Test record read endpoint
+        let (collection, operation, record_id) = hook
+            .parse_request_info("GET", "/collections/users/records/123")
+            .unwrap();
+        assert_eq!(collection, "users");
+        assert_eq!(operation, CrudOperation::Read);
+        assert_eq!(record_id, Some("123".to_string()));
+    }
+}

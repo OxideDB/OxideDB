@@ -595,4 +595,30 @@ impl Db for SqliteDb {
     async fn health_check(&self) -> Result<(), AppError> {
         SqliteDb::health_check(self).await
     }
+
+    // Permission storage methods
+
+    /// Store permissions for a collection
+    async fn store_permissions(&self, permissions: &oxide_core::CollectionPermissions) -> Result<(), AppError> {
+        use oxide_core::auth::PermissionService;
+        <Self as PermissionService>::store_permissions(self, permissions).await
+    }
+
+    /// Get permissions for a collection
+    async fn get_permissions(&self, collection: &str) -> Result<Option<oxide_core::CollectionPermissions>, AppError> {
+        use oxide_core::auth::PermissionService;
+        <Self as PermissionService>::get_permissions(self, collection).await
+    }
+
+    /// Delete permissions for a collection (revert to defaults)
+    async fn delete_permissions(&self, collection: &str) -> Result<(), AppError> {
+        use oxide_core::auth::PermissionService;
+        <Self as PermissionService>::delete_permissions(self, collection).await
+    }
+
+    /// List all collections that have custom permissions
+    async fn list_collections_with_permissions(&self) -> Result<Vec<String>, AppError> {
+        use oxide_core::auth::PermissionService;
+        <Self as PermissionService>::list_collections_with_permissions(self).await
+    }
 } 

@@ -104,6 +104,20 @@ impl SqliteDb {
                 AppError::database(format!("Failed to create collections table: {}", e))
             })?;
 
+            // Create the permissions table
+            conn.execute(
+                r#"
+                CREATE TABLE IF NOT EXISTS collection_permissions (
+                    collection TEXT PRIMARY KEY,
+                    permissions_json TEXT NOT NULL,
+                    created_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL
+                )
+                "#,
+                [],
+            )
+            .map_err(|e| AppError::database(format!("Failed to create permissions table: {}", e)))?;
+
             info!("SQLite database initialized successfully");
             Ok::<(), AppError>(())
         })

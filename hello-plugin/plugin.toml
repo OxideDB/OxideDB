@@ -1,0 +1,35 @@
+# Hello Plugin Configuration
+# This file defines the plugin metadata and required security capabilities
+
+[plugin]
+name = "hello-plugin"
+version = "1.0.0"
+description = "A simple demonstration plugin for OxideDB that shows basic event processing and security integration"
+author = "OxideDB Team"
+
+# Security capabilities required by this plugin
+# These must be granted by the host for the plugin to function properly
+[security]
+capabilities = [
+    "ReadEventData",    # Required for get_event_payload() function
+    "LogInfo",          # Required for log_info() function
+    "LogError",         # Required for log_error() function
+    "BlockOperations",  # Required for set_error() function
+]
+
+# Plugin lifecycle hooks that this plugin implements
+[hooks]
+exports = [
+    "on_before_create",  # Main plugin function
+    "plugin_init",      # Initialization function
+    "plugin_cleanup",   # Cleanup function
+]
+
+# Plugin behavior configuration
+[behavior]
+# Whether this plugin can modify data
+can_modify_data = true
+# Whether this plugin can block operations
+can_block_operations = true
+# Maximum execution time in milliseconds
+max_execution_time_ms = 5000

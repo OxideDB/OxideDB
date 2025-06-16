@@ -56,6 +56,10 @@ pub enum AppError {
     /// Rate limiting and quota errors
     #[error("Rate limit exceeded: {message}")]
     RateLimit { message: String },
+
+    /// Security-related errors (violations, unauthorized access)
+    #[error("Security error: {message}")]
+    Security { message: String },
 }
 
 impl AppError {
@@ -128,6 +132,13 @@ impl AppError {
     /// Create a new rate limit error
     pub fn rate_limit<S: Into<String>>(message: S) -> Self {
         Self::RateLimit {
+            message: message.into(),
+        }
+    }
+
+    /// Create a new security error
+    pub fn security<S: Into<String>>(message: S) -> Self {
+        Self::Security {
             message: message.into(),
         }
     }

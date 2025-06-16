@@ -1,9 +1,10 @@
 //! Hello Plugin - A simple WASM plugin for OxideDB
 //!
 //! This plugin demonstrates the basic plugin API by:
-//! 1. Importing host functions (log_info, set_error, get_event_payload)
+//! 1. Importing host functions (log_info, log_error, set_error, get_event_payload)
 //! 2. Exporting the on_before_create function
 //! 3. Processing events and calling host functions
+//! 4. Working with the security-enhanced plugin system
 
 use serde::{Deserialize, Serialize};
 
@@ -26,14 +27,22 @@ pub struct EventPayload {
 }
 
 // Import host functions that the plugin can call
+// These correspond to the security-enhanced plugin API
 extern "C" {
     /// Get the current event payload as JSON string
+    /// Requires ReadEventData capability
     fn get_event_payload() -> i32;
 
     /// Log an info message to the host
+    /// Requires LogInfo capability
     fn log_info(ptr: *const u8, len: usize);
 
+    /// Log an error message to the host
+    /// Requires LogError capability
+    fn log_error(ptr: *const u8, len: usize);
+
     /// Set an error message (prevents operation from continuing)
+    /// Requires BlockOperations capability
     fn set_error(ptr: *const u8, len: usize);
 
     /// Get the result of get_event_payload call
@@ -41,11 +50,14 @@ extern "C" {
     fn get_result_len() -> i32;
 }
 
+use std::sync::Mutex;
+use std::sync::OnceLock;
+
 // Global buffer for sharing data with host
-static mut RESULT_BUFFER: Vec<u8> = Vec::new();
-static mut RESPONSE_BUFFER: Vec<u8> = Vec::new();
+static RESPONSE_BUFFER: OnceLock<Mutex<Vec<u8>>> = OnceLock::new();
 
 /// Helper function to call host's log_info
+/// This function requires the LogInfo capability to be granted to the plugin
 fn host_log_info(message: &str) {
     let bytes = message.as_bytes();
     unsafe {
@@ -53,7 +65,17 @@ fn host_log_info(message: &str) {
     }
 }
 
+/// Helper function to call host's log_error
+/// This function requires the LogError capability to be granted to the plugin
+fn host_log_error(message: &str) {
+    let bytes = message.as_bytes();
+    unsafe {
+        log_error(bytes.as_ptr(), bytes.len());
+    }
+}
+
 /// Helper function to call host's set_error
+/// This function requires the BlockOperations capability to be granted to the plugin
 fn host_set_error(message: &str) {
     let bytes = message.as_bytes();
     unsafe {
@@ -93,101 +115,168 @@ pub extern "C" fn alloc(size: usize) -> *mut u8 {
 }
 
 /// Export function for memory deallocation
+/// 
+/// # Safety
+/// 
+/// This function is unsafe because it reconstructs a Vec from raw parts.
+/// The caller must ensure that:
+/// - `ptr` was originally allocated by the `alloc` function in this module
+/// - `size` matches the original capacity used when allocating the memory
+/// - The pointer has not been deallocated previously
+/// - No other references to this memory exist
 #[no_mangle]
-pub extern "C" fn dealloc(ptr: *mut u8, size: usize) {
-    unsafe {
-        let _ = Vec::from_raw_parts(ptr, 0, size);
-    }
+pub unsafe extern "C" fn dealloc(ptr: *mut u8, size: usize) {
+    let _ = Vec::from_raw_parts(ptr, 0, size);
 }
 
 /// Set response data that the host can retrieve
+/// 
+/// # Safety
+/// 
+/// This function is unsafe because it dereferences a raw pointer (`ptr`) to create a slice.
+/// The caller must ensure that:
+/// - `ptr` is valid and points to at least `len` bytes of readable memory
+/// - The memory pointed to by `ptr` remains valid for the duration of this function call
+/// - `len` accurately represents the number of bytes available at `ptr`
 #[no_mangle]
-pub extern "C" fn set_response(ptr: *const u8, len: usize) {
-    unsafe {
-        RESPONSE_BUFFER.clear();
-        RESPONSE_BUFFER.extend_from_slice(std::slice::from_raw_parts(ptr, len));
+pub unsafe extern "C" fn set_response(ptr: *const u8, len: usize) {
+    let buffer = RESPONSE_BUFFER.get_or_init(|| Mutex::new(Vec::new()));
+    if let Ok(mut buf) = buffer.lock() {
+        buf.clear();
+        buf.extend_from_slice(std::slice::from_raw_parts(ptr, len));
     }
 }
 
 /// Get response data length
 #[no_mangle]
 pub extern "C" fn get_response_len() -> usize {
-    unsafe { RESPONSE_BUFFER.len() }
+    let buffer = RESPONSE_BUFFER.get_or_init(|| Mutex::new(Vec::new()));
+    if let Ok(buf) = buffer.lock() {
+        buf.len()
+    } else {
+        0
+    }
 }
 
 /// Get response data pointer
 #[no_mangle]
 pub extern "C" fn get_response_ptr() -> *const u8 {
-    unsafe { RESPONSE_BUFFER.as_ptr() }
+    let buffer = RESPONSE_BUFFER.get_or_init(|| Mutex::new(Vec::new()));
+    if let Ok(buf) = buffer.lock() {
+        buf.as_ptr()
+    } else {
+        std::ptr::null()
+    }
 }
 
-/// Main plugin function: called before a record is created
+/// Helper function to serialize and set plugin response
+fn set_plugin_response(response: &PluginResponse) -> Result<(), String> {
+    let response_json = serde_json::to_string(response)
+        .map_err(|e| format!("Failed to serialize response: {}", e))?;
+    
+    let bytes = response_json.as_bytes();
+    unsafe {
+        set_response(bytes.as_ptr(), bytes.len());
+    }
+    Ok(())
+}
+
+/// Main plugin function - called before create operations
+/// This function demonstrates:
+/// 1. Getting event payload from host
+/// 2. Processing the data
+/// 3. Logging information (both info and error)
+/// 4. Setting response data
+/// 5. Working with the security-enhanced plugin system
 #[no_mangle]
 pub extern "C" fn on_before_create() -> i32 {
-    host_log_info("Hello from WASM plugin! on_before_create called");
+    host_log_info("Hello Plugin: on_before_create called");
 
     // Get the event payload from the host
     let payload = match host_get_event_payload() {
         Ok(payload) => payload,
         Err(e) => {
             let error_msg = format!("Failed to get event payload: {}", e);
+            host_log_error(&error_msg);
             host_set_error(&error_msg);
-            return -1;
+            return 1; // Error code
         }
     };
 
     host_log_info(&format!(
-        "Processing event: {} for collection: {} with data: {}",
-        payload.event_type, payload.collection, payload.data
+        "Processing event: {} for collection: {}",
+        payload.event_type, payload.collection
     ));
 
-    // Parse the incoming data to potentially modify it
-    let mut data_value: serde_json::Value = match serde_json::from_str(&payload.data) {
-        Ok(value) => value,
-        Err(e) => {
-            let error_msg = format!("Failed to parse incoming data: {}", e);
-            host_set_error(&error_msg);
-            return -1;
-        }
-    };
-
-    // Add a plugin marker to the data
-    if let Some(obj) = data_value.as_object_mut() {
-        obj.insert("plugin_processed".to_string(), serde_json::json!(true));
-        obj.insert("processed_by".to_string(), serde_json::json!("hello-plugin"));
-        obj.insert("processed_at".to_string(), serde_json::json!("2025-06-09T06:54:52Z"));
+    // Example: Validate collection name for security
+    if payload.collection.contains("admin") || payload.collection.contains("system") {
+        let error_msg = format!("Access denied to restricted collection: {}", payload.collection);
+        host_log_error(&error_msg);
         
-        host_log_info("✅ Plugin added metadata to record");
+        let response = PluginResponse {
+             allow: false,
+             modified_data: None,
+             error_message: Some(error_msg.clone()),
+             metadata: serde_json::json!({
+                 "processed_by": "hello-plugin",
+                 "version": "1.0.0",
+                 "security_check": "failed"
+             }),
+         };
+         
+         match set_plugin_response(&response) {
+             Ok(_) => return 0, // Success code (operation blocked as intended)
+             Err(e) => {
+                 host_set_error(&format!("Failed to set response: {}", e));
+                 return 1; // Error code
+             }
+         }
     }
 
-    // Create a response that allows the operation and returns modified data
+    // Example: Modify the data by adding a timestamp and plugin info
+    let modified_data = if let Ok(mut data_obj) = serde_json::from_str::<serde_json::Value>(&payload.data) {
+        // Add plugin metadata
+        if let Some(obj) = data_obj.as_object_mut() {
+            obj.insert(
+                "plugin_processed_at".to_string(),
+                serde_json::Value::String("2024-01-01T00:00:00Z".to_string()),
+            );
+            obj.insert(
+                "plugin_name".to_string(),
+                serde_json::Value::String("hello-plugin".to_string()),
+            );
+        }
+        Some(data_obj.to_string())
+    } else {
+        host_log_info("Could not parse data as JSON, leaving unchanged");
+        None
+    };
+
+    // Create response
     let response = PluginResponse {
-        allow: true, // Allow the operation
-        modified_data: Some(data_value.to_string()),
+        allow: true,
+        modified_data,
         error_message: None,
-        metadata: serde_json::json!({ 
-            "plugin": "hello-plugin", 
-            "version": "0.1.0",
-            "action": "data_enrichment"
+        metadata: serde_json::json!({
+            "processed_by": "hello-plugin",
+            "version": "1.0.0",
+            "security_check": "passed"
         }),
     };
 
-    // Serialize response
-    match serde_json::to_string(&response) {
-        Ok(response_json) => {
-            let bytes = response_json.as_bytes();
-            unsafe {
-                RESPONSE_BUFFER.clear();
-                RESPONSE_BUFFER.extend_from_slice(bytes);
-            }
-            host_log_info("✅ Plugin processed record successfully");
-            0 // Success
-        }
-        Err(_) => {
-            host_set_error("Failed to serialize plugin response");
-            -1
-        }
-    }
+    // Set the response for the host to retrieve
+      match set_plugin_response(&response) {
+          Ok(_) => {
+              host_log_info("Hello Plugin: Successfully processed create event");
+              0 // Success code
+          }
+          Err(e) => {
+              let error_msg = format!("Failed to set response: {}", e);
+              host_log_error(&error_msg);
+              host_set_error(&error_msg);
+              1 // Error code
+          }
+      }
 }
 
 /// Plugin initialization function

@@ -3,14 +3,19 @@
 //! This is the main entry point for OxideDB. It demonstrates the integration
 //! of the core architecture components implemented in Milestone 3.
 
-use oxide_api::ApiServer;
+use oxide_api::server::ApiServer;
 use oxide_core::{AppError, AuthService, BeforeEventContext, BeforeEventType, EventBus, InMemoryEventBus, register_system_hooks};
 use oxide_core::plugin_api::{EventPayload, plugin_exports, PluginRuntime};
 use oxide_db::{Db, SqliteDb};
 use oxidedb::WasmtimePluginRuntime;
 use std::sync::{Arc, Mutex};
+use std::future::Future;
+use std::pin::Pin;
 use tracing::{info, warn, error, Level};
-use tracing_subscriber;
+use tracing_subscriber::fmt;
+
+// Type alias to reduce complexity
+type BeforeCreateHandler = Arc<dyn Fn(&mut BeforeEventContext) -> Pin<Box<dyn Future<Output = Result<(), AppError>> + Send + '_>> + Send + Sync>;
 
 /// Bridge to connect WASM plugins with the EventBus system
 struct PluginEventBridge {
@@ -23,10 +28,13 @@ impl PluginEventBridge {
     }
 
     /// Create an event handler that calls the plugin for BeforeRecordCreate events
-    fn create_before_create_handler(&self, plugin_name: String) -> Box<dyn Fn(&mut BeforeEventContext) -> Result<(), AppError> + Send + Sync> {
+    fn create_before_create_handler(&self, plugin_name: String) -> BeforeCreateHandler {
         let runtime = Arc::clone(&self.plugin_runtime);
         
-        Box::new(move |context: &mut BeforeEventContext| {
+        Arc::new(move |context: &mut BeforeEventContext| {
+            let runtime = Arc::clone(&runtime);
+            let plugin_name = plugin_name.clone();
+            Box::pin(async move {
             info!("🔌 Calling plugin '{}' for BeforeRecordCreate event", plugin_name);
             
             // Convert BeforeEventContext to EventPayload
@@ -72,9 +80,10 @@ impl PluginEventBridge {
                 }
                 Err(e) => {
                     error!("🔌 Plugin '{}' execution failed: {}", plugin_name, e);
-                    Err(AppError::plugin(&plugin_name, &format!("Plugin execution failed: {}", e)))
+                    Err(AppError::plugin(plugin_name, format!("Plugin execution failed: {}", e)))
                 }
             }
+            })
         })
     }
 }
@@ -82,7 +91,7 @@ impl PluginEventBridge {
 #[tokio::main]
 async fn main() -> Result<(), AppError> {
     // Initialize logging
-    tracing_subscriber::fmt().with_max_level(Level::INFO).init();
+    fmt().with_max_level(Level::INFO).init();
 
     info!("Starting OxideDB - Milestone 4 with Plugin Integration Test");
 
@@ -90,19 +99,47 @@ async fn main() -> Result<(), AppError> {
     let event_bus: Arc<dyn EventBus> = Arc::new(InMemoryEventBus::new());
     info!("✅ Event bus initialized");
 
-    // Initialize plugin runtime
-    let mut plugin_runtime = WasmtimePluginRuntime::new()
-        .map_err(|e| AppError::internal(&format!("Failed to create plugin runtime: {}", e)))?;
+    // Initialize plugin runtime with security policies that allow untrusted plugins
+    let security_policies = oxide_core::plugin_security::SecurityPolicies {
+        default_trust_level: oxide_core::plugin_security::PluginTrustLevel::Untrusted,
+        default_resource_limits: oxide_core::plugin_security::ResourceLimits::default(),
+        max_violations_before_suspension: 5,
+        allow_untrusted_plugins: true,  // Allow untrusted plugins
+        require_code_signing: false,
+    };
     
-    // Load the hello-plugin
+    let mut plugin_runtime = WasmtimePluginRuntime::new_with_security_policies(security_policies)
+        .map_err(|e| AppError::internal(format!("Failed to create plugin runtime: {}", e)))?;
+    
+    // Load the hello-plugin with proper security registration
     let wasm_path = "./target/wasm32-unknown-unknown/release/hello_plugin.wasm";
     let wasm_bytes = std::fs::read(wasm_path)
-        .map_err(|e| AppError::internal(&format!("Failed to read WASM file {}: {}", wasm_path, e)))?;
+        .map_err(|e| AppError::internal(format!("Failed to read WASM file {}: {}", wasm_path, e)))?;
     
-    plugin_runtime.load_plugin("hello-plugin", &wasm_bytes)
-        .map_err(|e| AppError::internal(&format!("Failed to load hello-plugin: {}", e)))?;
+    // Load plugin with elevated trust level to allow advanced capabilities
+    use oxide_core::plugin_security::{PluginCapability, PluginTrustLevel, ResourceLimits};
+    use oxide_core::auth::CrudOperation;
     
-    info!("✅ Hello plugin loaded successfully");
+    // Load plugin with PartiallyTrusted level to enable more capabilities
+    plugin_runtime.load_plugin_with_trust(
+        "hello-plugin", 
+        &wasm_bytes,
+        PluginTrustLevel::PartiallyTrusted,
+        vec![
+            PluginCapability::ReadEventData,
+            PluginCapability::ModifyEventData,
+            PluginCapability::BlockOperations,
+            PluginCapability::AccessCollection {
+                collection: "*".to_string(),
+                operations: vec![CrudOperation::Create, CrudOperation::Read, CrudOperation::Update, CrudOperation::Delete],
+            },
+            PluginCapability::LogInfo,
+            PluginCapability::LogError,
+        ],
+        ResourceLimits::default(),
+    ).map_err(|e| AppError::internal(format!("Failed to load hello-plugin with capabilities: {}", e)))?;
+    
+    info!("✅ Hello plugin loaded successfully with security context and capabilities");
     
     // Test plugin initialization
     let test_payload = EventPayload {
@@ -116,7 +153,7 @@ async fn main() -> Result<(), AppError> {
         "hello-plugin",
         plugin_exports::PLUGIN_INIT,
         &test_payload,
-    ).map_err(|e| AppError::internal(&format!("Failed to initialize plugin: {}", e)))?;
+    ).map_err(|e| AppError::internal(format!("Failed to initialize plugin: {}", e)))?;
     
     info!("✅ Plugin initialized successfully");
     
@@ -136,12 +173,14 @@ async fn main() -> Result<(), AppError> {
     // Register a sample event listener to demonstrate hooking
     event_bus.subscribe_before(
         BeforeEventType::RecordCreate.name(),
-        Box::new(|context: &mut BeforeEventContext| {
-            info!(
-                "🎣 Demo Hook triggered: About to create record in collection '{}' with data: {}",
-                context.collection, context.data
-            );
-            Ok(())
+        Arc::new(|context: &mut BeforeEventContext| {
+            Box::pin(async move {
+                info!(
+                    "🎣 Demo Hook triggered: About to create record in collection '{}' with data: {}",
+                    context.collection, context.data
+                );
+                Ok(())
+            })
         }),
     )?;
     info!("✅ Demo event listener registered");
@@ -151,10 +190,6 @@ async fn main() -> Result<(), AppError> {
         .unwrap_or_else(|_| "dev_secret_key_change_in_production".to_string());
     let auth_service = Arc::new(AuthService::new(jwt_secret));
     info!("✅ Authentication service initialized");
-
-    // Register all system hooks using the new centralized system
-    register_system_hooks(event_bus.as_ref(), Arc::clone(&auth_service))?;
-    info!("✅ All system hooks registered via centralized registry");
 
     // Initialize the database with event integration
     let database_path = ":memory:"; // Use in-memory SQLite for demo
@@ -166,11 +201,26 @@ async fn main() -> Result<(), AppError> {
     database.initialize().await?;
     info!("✅ SQLite database initialized with event integration and authentication");
 
+    // Create permission service for authorization hooks
+    let permission_service = Arc::new(oxide_api::services::DatabasePermissionService::new(
+        Arc::clone(&database) as Arc<dyn oxide_db::Db>
+    ));
+    info!("✅ Permission service initialized");
+
+    // Register all system hooks using the new centralized system
+    register_system_hooks(
+        event_bus.as_ref(), 
+        Arc::clone(&auth_service),
+        Arc::clone(&permission_service) as Arc<dyn oxide_core::auth::PermissionService>
+    ).await?;
+    info!("✅ All system hooks registered via centralized registry");
+
     // Create and start the API server
     info!("🚀 Starting API server...");
     let api_server = ApiServer::new(
         Arc::clone(&database) as Arc<dyn Db>,
         Arc::clone(&event_bus),
+        Arc::clone(&auth_service),
         "127.0.0.1".to_string(),
         8080,
     );

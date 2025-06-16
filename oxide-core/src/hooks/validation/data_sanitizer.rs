@@ -69,7 +69,7 @@ impl DataSanitizerHook {
     pub fn with_config(config: DataSanitizerConfig) -> Result<Self, AppError> {
         // Compile regex patterns
         let html_regex = Arc::new(
-            Regex::new(r"<[^>]*>")
+            Regex::new(r"<script[^>]*>.*?</script>|<[^>]*>")
                 .map_err(|e| AppError::internal(format!("Failed to compile HTML regex: {}", e)))?
         );
 
@@ -387,4 +387,4 @@ mod tests {
         assert!(hook.contains_suspicious_patterns("<script>alert(1)</script>"));
         assert!(!hook.contains_suspicious_patterns("normal content"));
     }
-} 
+}

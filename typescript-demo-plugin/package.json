@@ -1,0 +1,39 @@
+{
+  "name": "typescript-demo-plugin",
+  "version": "1.0.0",
+  "description": "Advanced TypeScript demo plugin for OxideDB showcasing comprehensive plugin capabilities",
+  "main": "dist/lib.js",
+  "scripts": {
+    "build": "npm run build:ts && npm run build:wasm",
+    "build:ts": "tsc",
+    "build:wasm": "asc src/lib.ts --target release --outFile dist/plugin.wasm --exportRuntime --optimize --runtime stub",
+    "dev": "tsc --watch",
+    "clean": "rm -rf dist",
+    "test": "npm run build && node test/test.js"
+  },
+  "devDependencies": {
+    "assemblyscript": "^0.27.0",
+    "typescript": "^5.0.0",
+    "@types/node": "^20.0.0"
+  },
+  "files": [
+    "dist/",
+    "src/",
+    "README.md"
+  ],
+  "keywords": [
+    "oxidedb",
+    "plugin",
+    "wasm",
+    "typescript",
+    "database",
+    "validation",
+    "transformation"
+  ],
+  "author": "OxideDB Team",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/oxidedb/typescript-demo-plugin"
+  }
+}

@@ -183,7 +183,7 @@ impl CollectionHandlers {
 
         // Check for duplicate field names
         let mut field_names = std::collections::HashSet::new();
-        for (field_name, _field_def) in &schema.fields {
+        for field_name in schema.fields.keys() {
             if !field_names.insert(field_name) {
                 return Err(ApiError::bad_request(format!(
                     "Duplicate field name: {}",
@@ -262,4 +262,4 @@ pub async fn update_collection_schema(
 ) -> Result<Json<EmptyResponse>, ApiError> {
     CollectionHandlers::update_collection_schema(state.db, collection, schema).await?;
     Ok(Json(EmptyResponse::updated()))
-} 
+}

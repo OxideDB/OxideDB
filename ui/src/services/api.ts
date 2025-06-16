@@ -1,4 +1,4 @@
-import type { ApiError, CollectionStats, CreateCollectionRequest, DbRecord, HealthStatus, CollectionSchema } from '../types/api';
+import type { ApiError, CollectionStats, CreateCollectionRequest, DbRecord, HealthStatus, CollectionSchema, CollectionPermissionsInfo, CollectionPermissions, PermissionPresetType, ApiResponse, AuthResponse, User } from '../types/api';
 
 class ApiService {
   private baseUrl: string;
@@ -57,6 +57,29 @@ class ApiService {
     return response.json();
   }
 
+  // Generic HTTP methods
+  async get<T>(endpoint: string): Promise<T> {
+    return this.request<T>(endpoint, { method: 'GET' });
+  }
+
+  async post<T>(endpoint: string, data?: unknown): Promise<T> {
+    return this.request<T>(endpoint, {
+      method: 'POST',
+      body: data ? JSON.stringify(data) : undefined,
+    });
+  }
+
+  async put<T>(endpoint: string, data?: unknown): Promise<T> {
+    return this.request<T>(endpoint, {
+      method: 'PUT',
+      body: data ? JSON.stringify(data) : undefined,
+    });
+  }
+
+  async delete<T>(endpoint: string): Promise<T> {
+    return this.request<T>(endpoint, { method: 'DELETE' });
+  }
+
   // Auth methods
   setToken(token: string) {
     this.token = token;
@@ -70,6 +93,49 @@ class ApiService {
 
   isAuthenticated(): boolean {
     return !!this.token;
+  }
+
+  async login(email: string, password: string): Promise<AuthResponse> {
+    const response = await this.post<ApiResponse<AuthResponse>>('/auth/login', {
+      email,
+      password,
+    });
+    
+    // Store the token automatically
+    this.setToken(response.data.token);
+    return response.data;
+  }
+
+  async register(email: string, password: string, isSuper: boolean = false): Promise<void> {
+    await this.post<void>('/auth/register', {
+      email,
+      password,
+      is_superuser: isSuper,
+    });
+  }
+
+  async logout(): Promise<void> {
+    try {
+      await this.post<void>('/auth/logout');
+    } finally {
+      // Always clear token, even if logout request fails
+      this.clearToken();
+    }
+  }
+
+  async validateToken(): Promise<boolean> {
+    try {
+      await this.get<void>('/auth/validate');
+      return true;
+    } catch {
+      this.clearToken();
+      return false;
+    }
+  }
+
+  async getCurrentUser(): Promise<User> {
+    const response = await this.get<ApiResponse<User>>('/auth/me');
+    return response.data;
   }
 
   // Health check
@@ -150,6 +216,23 @@ class ApiService {
       method: 'DELETE',
     });
   }
+
+  // Permissions methods
+  async getPermissions(): Promise<ApiResponse<CollectionPermissionsInfo[]>> {
+    return this.get<ApiResponse<CollectionPermissionsInfo[]>>('/permissions');
+  }
+
+  async updateCollectionPermissions(collection: string, permissions: CollectionPermissions): Promise<void> {
+    return this.put<void>(`/collections/${encodeURIComponent(collection)}/permissions`, permissions);
+  }
+
+  async resetCollectionPermissions(collection: string): Promise<void> {
+    return this.post<void>(`/collections/${encodeURIComponent(collection)}/permissions/reset`, {});
+  }
+
+  async applyPermissionPreset(collection: string, preset: PermissionPresetType): Promise<void> {
+    return this.post<void>(`/collections/${encodeURIComponent(collection)}/permissions/preset`, preset);
+  }
 }
 
-export const apiService = new ApiService(); 
+export const apiService = new ApiService();

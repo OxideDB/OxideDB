@@ -79,6 +79,13 @@ impl ApiError {
         }
     }
     
+    /// Create an authentication error
+    pub fn auth(message: impl Into<String>) -> Self {
+        Self::Core(AppError::Auth {
+            message: message.into(),
+        })
+    }
+    
     /// Create a forbidden error
     pub fn forbidden(message: impl Into<String>) -> Self {
         Self::Forbidden {
@@ -128,6 +135,7 @@ impl ApiError {
                 AppError::Config { .. } => StatusCode::INTERNAL_SERVER_ERROR,
                 AppError::Conflict { .. } => StatusCode::CONFLICT,
                 AppError::RateLimit { .. } => StatusCode::TOO_MANY_REQUESTS,
+                AppError::Security { .. } => StatusCode::FORBIDDEN,
             },
             ApiError::BadRequest { .. } => StatusCode::BAD_REQUEST,
             ApiError::Unauthorized => StatusCode::UNAUTHORIZED,
@@ -155,6 +163,7 @@ impl ApiError {
                 AppError::Config { .. } => "config_error",
                 AppError::Conflict { .. } => "conflict_error",
                 AppError::RateLimit { .. } => "rate_limit_error",
+                AppError::Security { .. } => "security_error",
             },
             ApiError::BadRequest { .. } => "bad_request",
             ApiError::Unauthorized => "unauthorized",
@@ -206,4 +215,4 @@ impl From<(StatusCode, String)> for ApiError {
             _ => ApiError::internal(message),
         }
     }
-} 
+}

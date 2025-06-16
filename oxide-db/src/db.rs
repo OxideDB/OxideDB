@@ -5,7 +5,7 @@
 //! while the `SchemaAdapter` trait handles database-specific schema operations.
 
 use crate::Record;
-use oxide_core::{AppError, CollectionSchema};
+use oxide_core::{AppError, CollectionSchema, CollectionPermissions};
 use oxide_core::event::{RecordData, RecordId};
 
 /// Parameters for listing records
@@ -186,4 +186,31 @@ pub trait Db: Send + Sync {
 
     /// Check if the database connection is healthy
     async fn health_check(&self) -> Result<(), AppError>;
+
+    /// Store permissions for a collection
+    ///
+    /// # Arguments
+    /// * `permissions` - The collection permissions to store
+    async fn store_permissions(&self, permissions: &CollectionPermissions) -> Result<(), AppError>;
+
+    /// Get permissions for a collection
+    ///
+    /// # Arguments
+    /// * `collection` - The name of the collection
+    ///
+    /// # Returns
+    /// The collection permissions if found, or None if no custom permissions exist
+    async fn get_permissions(&self, collection: &str) -> Result<Option<CollectionPermissions>, AppError>;
+
+    /// Delete permissions for a collection (revert to defaults)
+    ///
+    /// # Arguments
+    /// * `collection` - The name of the collection
+    async fn delete_permissions(&self, collection: &str) -> Result<(), AppError>;
+
+    /// List all collections that have custom permissions
+    ///
+    /// # Returns
+    /// A vector of collection names that have custom permissions
+    async fn list_collections_with_permissions(&self) -> Result<Vec<String>, AppError>;
 }

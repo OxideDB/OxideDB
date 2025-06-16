@@ -1,24 +1,33 @@
 import React from 'react';
-import { Link, useLocation, Outlet } from 'react-router-dom';
-import { Database, Settings, Activity, LogOut } from 'lucide-react';
+import { Outlet, Link, useLocation } from 'react-router-dom';
+import { Database, Activity, Settings, LogOut, User, Shield } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Separator } from '@/components/ui/separator';
-import { ThemeToggle } from './theme-toggle';
+import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
+import { ThemeToggle } from './theme-toggle';
+import { useAuth } from '../contexts/AuthContext';
 
 const Layout: React.FC = () => {
   const location = useLocation();
+  const { user, logout } = useAuth();
 
   const navigation = [
     { name: 'Collections', href: '/collections', icon: Database },
     { name: 'Health', href: '/health', icon: Activity },
+    { name: 'Permissions', href: '/permissions', icon: Shield },
     { name: 'Settings', href: '/settings', icon: Settings },
   ];
 
-  const handleLogout = () => {
-    // For now, just redirect to login
-    // In a real app, this would clear auth tokens
-    window.location.href = '/login';
+  const handleLogout = async () => {
+    try {
+      await logout();
+      // Redirect will be handled by ProtectedRoute
+    } catch (error) {
+      console.error('Logout failed:', error);
+      // Force redirect even if logout fails
+      window.location.href = '/login';
+    }
   };
 
   return (
@@ -56,6 +65,34 @@ const Layout: React.FC = () => {
         </nav>
 
         <Separator />
+        
+        {/* User Info */}
+        {user && (
+          <div className="p-3">
+            <div className="flex items-center space-x-3 p-2 rounded-lg bg-muted/50">
+              <div className="flex-shrink-0">
+                <div className="w-8 h-8 bg-primary/10 rounded-full flex items-center justify-center">
+                  <User className="h-4 w-4 text-primary" />
+                </div>
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-medium text-foreground truncate">
+                  {user.email}
+                </p>
+                <div className="flex items-center space-x-1 mt-1">
+                  <Badge 
+                    variant={user.is_superuser ? "default" : "secondary"}
+                    className="text-xs"
+                  >
+                    {user.is_superuser ? 'Superuser' : 'User'}
+                  </Badge>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+        
+        <Separator />
         <div className="p-3 space-y-2">
           <div className="flex justify-center">
             <ThemeToggle />
@@ -83,4 +120,4 @@ const Layout: React.FC = () => {
   );
 };
 
-export default Layout; 
+export default Layout;

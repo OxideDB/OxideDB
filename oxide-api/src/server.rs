@@ -3,7 +3,7 @@
 //! This module contains the core HTTP server implementation for the OxideDB API.
 //! The server is built on top of Axum and provides a REST API interface.
 
-use oxide_core::{event::EventBus, AppError};
+use oxide_core::{event::EventBus, AppError, AuthService};
 use oxide_db::Db;
 use std::sync::Arc;
 use tokio::net::TcpListener;
@@ -16,6 +16,7 @@ use crate::routes::{build_router_with_config, RouteConfig};
 pub struct AppState {
     pub db: Arc<dyn Db>,
     pub event_bus: Arc<dyn EventBus>,
+    pub auth_service: Arc<AuthService>,
 }
 
 /// The API server that handles HTTP requests
@@ -26,6 +27,7 @@ pub struct AppState {
 pub struct ApiServer {
     db: Arc<dyn Db>,
     event_bus: Arc<dyn EventBus>,
+    auth_service: Arc<AuthService>,
     host: String,
     port: u16,
 }
@@ -36,12 +38,14 @@ impl ApiServer {
     /// # Arguments
     /// * `db` - The database implementation to use
     /// * `event_bus` - The event bus for dispatching events
+    /// * `auth_service` - The authentication service
     /// * `host` - The host address to bind to
     /// * `port` - The port to listen on
-    pub fn new(db: Arc<dyn Db>, event_bus: Arc<dyn EventBus>, host: String, port: u16) -> Self {
+    pub fn new(db: Arc<dyn Db>, event_bus: Arc<dyn EventBus>, auth_service: Arc<AuthService>, host: String, port: u16) -> Self {
         Self {
             db,
             event_bus,
+            auth_service,
             host,
             port,
         }
@@ -65,9 +69,15 @@ impl ApiServer {
         let state = AppState {
             db: Arc::clone(&self.db),
             event_bus: Arc::clone(&self.event_bus),
+            auth_service: Arc::clone(&self.auth_service),
         };
 
-        let app = build_router_with_config(config).with_state(state);
+        let app = build_router_with_config(config)
+            .route_layer(axum::middleware::from_fn_with_state(
+                state.clone(),
+                crate::middleware::auth_middleware,
+            ))
+            .with_state(state);
 
         let listener = TcpListener::bind(&self.address()).await.map_err(|e| {
             AppError::internal(format!("Failed to bind to {}: {}", self.address(), e))
@@ -110,6 +120,20 @@ impl ApiServer {
     pub fn address(&self) -> String {
         format!("{}:{}", self.host, self.port)
     }
+}
+
+/// Create an Axum app with the given state
+///
+/// This function creates the complete Axum application with all routes
+/// and middleware configured. It's useful for testing or when you need
+/// more control over the server lifecycle.
+pub fn create_app(state: AppState) -> axum::Router {
+    build_router_with_config(RouteConfig::default()).with_state(state)
+}
+
+/// Create an Axum app with custom configuration
+pub fn create_app_with_config(state: AppState, config: RouteConfig) -> axum::Router {
+    build_router_with_config(config).with_state(state)
 }
 
 

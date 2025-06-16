@@ -14,6 +14,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use std::future::Future;
+use std::pin::Pin;
 
 use tracing::{info, warn};
 
@@ -218,11 +220,11 @@ impl AfterEventType {
     }
 }
 
-/// Handler for Before events that can modify the context
-pub type BeforeEventHandler = Box<dyn Fn(&mut BeforeEventContext) -> Result<(), AppError> + Send + Sync>;
+/// Handler for Before events that can modify the context (now async)
+pub type BeforeEventHandler = Arc<dyn Fn(&mut BeforeEventContext) -> Pin<Box<dyn Future<Output = Result<(), AppError>> + Send + '_>> + Send + Sync>;
 
-/// Handler for After events that are read-only
-pub type AfterEventHandler = Box<dyn Fn(&AfterEventContext) -> Result<(), AppError> + Send + Sync>;
+/// Handler for After events that are read-only (now async)
+pub type AfterEventHandler = Arc<dyn Fn(&AfterEventContext) -> Pin<Box<dyn Future<Output = Result<(), AppError>> + Send + '_>> + Send + Sync>;
 
 /// The EventBus trait defines the interface for dispatching and subscribing to events.
 ///
@@ -303,21 +305,22 @@ impl EventBus for InMemoryEventBus {
             *counter += 1;
         }
 
-        // Execute all Before handlers while holding the lock
-        let mut errors = Vec::new();
-        {
+        // Get handlers (clone them to avoid holding the lock during async execution)
+        let handlers = {
             let handlers_map = self
                 .before_handlers
                 .lock()
                 .map_err(|_| AppError::internal("Failed to acquire lock on before event handlers"))?;
 
-            if let Some(handlers) = handlers_map.get(event_name) {
-                for (index, handler) in handlers.iter().enumerate() {
-                    if let Err(err) = handler(context) {
-                        warn!("Before handler {} for event {} failed: {}", index, event_name, err);
-                        errors.push(err);
-                    }
-                }
+            handlers_map.get(event_name).cloned().unwrap_or_default()
+        };
+
+        // Execute all Before handlers asynchronously
+        let mut errors = Vec::new();
+        for (index, handler) in handlers.iter().enumerate() {
+            if let Err(err) = handler(context).await {
+                warn!("Before handler {} for event {} failed: {}", index, event_name, err);
+                errors.push(err);
             }
         }
 
@@ -342,21 +345,22 @@ impl EventBus for InMemoryEventBus {
             *counter += 1;
         }
 
-        // Execute all After handlers while holding the lock
-        let mut errors = Vec::new();
-        {
+        // Get handlers (clone them to avoid holding the lock during async execution)
+        let handlers = {
             let handlers_map = self
                 .after_handlers
                 .lock()
                 .map_err(|_| AppError::internal("Failed to acquire lock on after event handlers"))?;
 
-            if let Some(handlers) = handlers_map.get(event_name) {
-                for (index, handler) in handlers.iter().enumerate() {
-                    if let Err(err) = handler(context) {
-                        warn!("After handler {} for event {} failed: {}", index, event_name, err);
-                        errors.push(err);
-                    }
-                }
+            handlers_map.get(event_name).cloned().unwrap_or_default()
+        };
+
+        // Execute all After handlers asynchronously
+        let mut errors = Vec::new();
+        for (index, handler) in handlers.iter().enumerate() {
+            if let Err(err) = handler(context).await {
+                warn!("After handler {} for event {} failed: {}", index, event_name, err);
+                errors.push(err);
             }
         }
 
@@ -494,12 +498,14 @@ mod tests {
         // Subscribe a handler that modifies the data
         bus.subscribe_before(
             "BeforeRecordCreate",
-            Box::new(|context| {
-                // Modify the data - add a timestamp
-                if let Some(obj) = context.data.as_object_mut() {
-                    obj.insert("modified_by_hook".to_string(), serde_json::json!(true));
-                }
-                Ok(())
+            Arc::new(|context| {
+                Box::pin(async move {
+                    // Modify the data - add a timestamp
+                    if let Some(obj) = context.data.as_object_mut() {
+                        obj.insert("modified_by_hook".to_string(), serde_json::json!(true));
+                    }
+                    Ok(())
+                })
             }),
         ).unwrap();
 
@@ -526,9 +532,12 @@ mod tests {
         // Subscribe to After events
         bus.subscribe_after(
             "AfterRecordCreate",
-            Box::new(move |_context| {
-                call_count_clone.fetch_add(1, Ordering::SeqCst);
-                Ok(())
+            Arc::new(move |_context| {
+                let counter = call_count_clone.clone();
+                Box::pin(async move {
+                    counter.fetch_add(1, Ordering::SeqCst);
+                    Ok(())
+                })
             }),
         ).unwrap();
 
@@ -552,7 +561,11 @@ mod tests {
         // Subscribe a handler that fails
         bus.subscribe_before(
             "BeforeRecordCreate",
-            Box::new(|_context| Err(AppError::internal("Handler failed"))),
+            Arc::new(|_context| {
+                Box::pin(async move {
+                    Err(AppError::internal("Handler failed"))
+                })
+            }),
         ).unwrap();
 
         let mut context = BeforeEventContext::new_create(
