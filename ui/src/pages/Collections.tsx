@@ -1,9 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
-import { Plus, Trash2, BarChart3, Database, Settings, Shield, AlertTriangle } from 'lucide-react';
+import { Plus, Trash2, Database, Shield, AlertTriangle, Search, MoreHorizontal, Edit } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
+import { Input } from '@/components/ui/input';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { apiService } from '../services/api';
 import type { CollectionStats, CollectionSchema } from '../types/api';
 
@@ -12,6 +14,7 @@ const Collections: React.FC = () => {
   const [collectionStats, setCollectionStats] = useState<Record<string, CollectionStats>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [searchTerm, setSearchTerm] = useState("");
 
   useEffect(() => {
     fetchCollections();
@@ -62,6 +65,12 @@ const Collections: React.FC = () => {
     }
   };
 
+  // Filter collections based on search term
+  const filteredCollections = collections.filter(
+    (collection) =>
+      collection.name.toLowerCase().includes(searchTerm.toLowerCase())
+  );
+
   if (loading) {
     return (
       <div className="flex items-center justify-center h-64">
@@ -71,22 +80,35 @@ const Collections: React.FC = () => {
   }
 
   return (
-    <div>
-      <div className="flex justify-between items-center mb-8">
-        <div>
-          <h1 className="text-2xl font-bold text-foreground">Collections</h1>
-          <p className="text-muted-foreground mt-1">Manage your database collections</p>
+    <div className="flex-1 space-y-4 md:space-y-6 p-4 md:p-6">
+      {/* Header */}
+      <div>
+        <h1 className="text-2xl font-bold text-foreground">Collections</h1>
+        <p className="text-muted-foreground mt-1">Manage your database collections</p>
+      </div>
+
+      {/* Header Actions */}
+      <div className="flex flex-col gap-3 sm:flex-row sm:gap-4 sm:justify-between">
+        <div className="relative flex-1 max-w-full sm:max-w-sm">
+          <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+          <Input
+            placeholder="Search collections..."
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+            className="pl-10"
+          />
         </div>
-        <Button asChild>
+
+        <Button asChild className="w-full sm:w-auto">
           <Link to="/collections/new">
             <Plus className="h-4 w-4 mr-2" />
-            New Collection
+            Create Collection
           </Link>
         </Button>
       </div>
 
       {error && (
-        <Card className="mb-6 border-destructive">
+        <Card className="border-destructive">
           <CardContent className="p-4">
             <div className="text-destructive">{error}</div>
             <Button
@@ -101,180 +123,116 @@ const Collections: React.FC = () => {
         </Card>
       )}
 
-      {collections.length === 0 ? (
-        <Card>
-          <CardContent className="text-center py-12">
-            <Database className="mx-auto h-12 w-12 text-muted-foreground" />
-            <CardTitle className="mt-4 text-lg">No collections</CardTitle>
-            <CardDescription className="mt-2">Get started by creating a new collection with a defined schema.</CardDescription>
-            <div className="mt-6">
-              <Button asChild>
-                <Link to="/collections/new">
-                  Create Collection
-                </Link>
-              </Button>
-            </div>
-          </CardContent>
-        </Card>
+      {/* Collections Grid */}
+      {filteredCollections.length === 0 ? (
+        <div className="text-center py-12">
+          <Database className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
+          <h3 className="text-lg font-medium mb-2">
+            {searchTerm ? "No collections found" : "No collections"}
+          </h3>
+          <p className="text-muted-foreground mb-4 px-4">
+            {searchTerm 
+              ? "Try adjusting your search terms." 
+              : "Get started by creating a new collection with a defined schema."
+            }
+          </p>
+          {!searchTerm && (
+            <Button asChild>
+              <Link to="/collections/new">
+                <Plus className="h-4 w-4 mr-2" />
+                Create Collection
+              </Link>
+            </Button>
+          )}
+        </div>
       ) : (
-        <div className="space-y-8">
-          {/* Base Collections */}
-          {collections.filter(c => c.collection_type === 'base').length > 0 && (
-            <div>
-              <div className="flex items-center gap-2 mb-4">
-                <Database className="h-5 w-5 text-primary" />
-                <h2 className="text-lg font-semibold">Base Collections</h2>
-                <Badge variant="secondary">{collections.filter(c => c.collection_type === 'base').length}</Badge>
-              </div>
-              <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
-                {collections.filter(c => c.collection_type === 'base').map((collection) => {
-                  const stats = collectionStats[collection.name];
-                  return (
-                    <Card key={collection.id}>
-                      <CardHeader className="pb-4">
-                        <div className="flex items-center justify-between">
-                          <div className="flex items-center gap-2">
-                            <CardTitle className="text-lg">{collection.name}</CardTitle>
-                          </div>
-                          <div className="flex space-x-2">
-                            <Button
-                              asChild
-                              variant="ghost"
-                              size="icon"
-                              className="h-8 w-8 text-primary hover:text-primary/80"
-                              title="View records"
-                            >
-                              <Link to={`/collections/${encodeURIComponent(collection.name)}`}>
-                                <BarChart3 className="h-4 w-4" />
-                              </Link>
-                            </Button>
-                            <Button
-                              asChild
-                              variant="ghost"
-                              size="icon"
-                              className="h-8 w-8 text-muted-foreground hover:text-foreground"
-                              title="Edit schema"
-                            >
-                              <Link to={`/collections/${encodeURIComponent(collection.name)}/edit`}>
-                                <Settings className="h-4 w-4" />
-                              </Link>
-                            </Button>
-                            <Button
-                              onClick={() => handleDeleteCollection(collection)}
-                              variant="ghost"
-                              size="icon"
-                              className="h-8 w-8 text-destructive hover:text-destructive/80"
-                              title="Delete collection"
-                            >
-                              <Trash2 className="h-4 w-4" />
-                            </Button>
-                          </div>
-                        </div>
-                        {stats && (
-                          <CardDescription>
-                            <div className="space-y-1">
-                              <p>Records: {stats.record_count}</p>
-                              <p>Status: Active</p>
-                            </div>
-                          </CardDescription>
-                        )}
-                      </CardHeader>
-                      <CardContent className="pt-0">
-                        <Button asChild variant="outline" className="w-full">
-                          <Link to={`/collections/${encodeURIComponent(collection.name)}`}>
-                            Manage Records
-                          </Link>
+        <div className="grid gap-4 grid-cols-1 md:grid-cols-2 xl:grid-cols-3">
+          {filteredCollections.map((collection) => {
+            const stats = collectionStats[collection.name];
+            const isSystemCollection = collection.collection_type === 'auth';
+            
+            return (
+              <Card key={collection.id} className={`hover:shadow-md transition-shadow ${isSystemCollection ? 'border-orange-200' : ''}`}>
+                <CardHeader className="pb-3">
+                  <div className="flex items-start justify-between">
+                    <div className="flex items-center gap-2 min-w-0 flex-1">
+                      {isSystemCollection ? (
+                        <Shield className="h-5 w-5 text-orange-500 flex-shrink-0" />
+                      ) : (
+                        <Database className="h-5 w-5 text-blue-500 flex-shrink-0" />
+                      )}
+                      <CardTitle className="text-lg truncate">{collection.name}</CardTitle>
+                      {isSystemCollection && (
+                        <Badge variant="outline" className="text-orange-600 border-orange-200 ml-2">
+                          System
+                        </Badge>
+                      )}
+                    </div>
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button variant="ghost" size="sm" className="flex-shrink-0">
+                          <MoreHorizontal className="h-4 w-4" />
                         </Button>
-                      </CardContent>
-                    </Card>
-                  );
-                })}
-              </div>
-            </div>
-          )}
-
-          {/* System Collections */}
-          {collections.filter(c => c.collection_type === 'auth').length > 0 && (
-            <div>
-              <div className="flex items-center gap-2 mb-4">
-                <Shield className="h-5 w-5 text-orange-500" />
-                <h2 className="text-lg font-semibold">System Collections</h2>
-                <Badge variant="secondary">{collections.filter(c => c.collection_type === 'auth').length}</Badge>
-                <Badge variant="outline" className="text-orange-600 border-orange-200">
-                  <AlertTriangle className="h-3 w-3 mr-1" />
-                  Protected
-                </Badge>
-              </div>
-              <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
-                {collections.filter(c => c.collection_type === 'auth').map((collection) => {
-                  const stats = collectionStats[collection.name];
-                  return (
-                    <Card key={collection.id} className="border-orange-200">
-                      <CardHeader className="pb-4">
-                        <div className="flex items-center justify-between">
-                          <div className="flex items-center gap-2">
-                            <CardTitle className="text-lg">{collection.name}</CardTitle>
-                            <Badge variant="outline" className="text-orange-600 border-orange-200">
-                              System
-                            </Badge>
-                          </div>
-                          <div className="flex space-x-2">
-                            <Button
-                              asChild
-                              variant="ghost"
-                              size="icon"
-                              className="h-8 w-8 text-primary hover:text-primary/80"
-                              title="View records"
-                            >
-                              <Link to={`/collections/${encodeURIComponent(collection.name)}`}>
-                                <BarChart3 className="h-4 w-4" />
-                              </Link>
-                            </Button>
-                            <Button
-                              asChild
-                              variant="ghost"
-                              size="icon"
-                              className="h-8 w-8 text-muted-foreground hover:text-foreground"
-                              title="View schema (read-only)"
-                            >
-                              <Link to={`/collections/${encodeURIComponent(collection.name)}/schema`}>
-                                <Settings className="h-4 w-4" />
-                              </Link>
-                            </Button>
-                            <Button
-                              onClick={() => handleDeleteCollection(collection)}
-                              variant="ghost"
-                              size="icon"
-                              className="h-8 w-8 text-muted-foreground cursor-not-allowed opacity-50"
-                              title="System collections cannot be deleted"
-                              disabled
-                            >
-                              <Trash2 className="h-4 w-4" />
-                            </Button>
-                          </div>
-                        </div>
-                        {stats && (
-                          <CardDescription>
-                            <div className="space-y-1">
-                              <p>Records: {stats.record_count}</p>
-                              <p>Status: Active (System)</p>
-                            </div>
-                          </CardDescription>
-                        )}
-                      </CardHeader>
-                      <CardContent className="pt-0">
-                        <Button asChild variant="outline" className="w-full">
-                          <Link to={`/collections/${encodeURIComponent(collection.name)}`}>
-                            Manage Records
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end">
+                        <DropdownMenuItem asChild>
+                          <Link to={`/collections/${encodeURIComponent(collection.name)}/edit`}>
+                            <Edit className="h-4 w-4 mr-2" />
+                            Edit Schema
                           </Link>
-                        </Button>
-                      </CardContent>
-                    </Card>
-                  );
-                })}
-              </div>
-            </div>
-          )}
+                        </DropdownMenuItem>
+                        <DropdownMenuItem asChild>
+                          <Link to={`/collections/${encodeURIComponent(collection.name)}`}>
+                            <Database className="h-4 w-4 mr-2" />
+                            View Records
+                          </Link>
+                        </DropdownMenuItem>
+                        {!isSystemCollection && (
+                          <DropdownMenuItem 
+                            className="text-red-600"
+                            onClick={() => handleDeleteCollection(collection)}
+                          >
+                            <Trash2 className="h-4 w-4 mr-2" />
+                            Delete Collection
+                          </DropdownMenuItem>
+                        )}
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                  </div>
+                  <CardDescription className="line-clamp-2">
+                    {isSystemCollection 
+                      ? "System collection for authentication and user management" 
+                      : "User-defined collection for storing custom data"
+                    }
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  {stats && (
+                    <>
+                      <div className="grid grid-cols-2 gap-3 text-sm">
+                        <div className="flex items-center justify-between">
+                          <span className="text-muted-foreground">Records</span>
+                          <span className="font-medium">{stats.record_count.toLocaleString()}</span>
+                        </div>
+                        <div className="flex items-center justify-between">
+                          <span className="text-muted-foreground">Status</span>
+                          <Badge variant="secondary" className="bg-green-100 text-green-800">
+                            Active
+                          </Badge>
+                        </div>
+                      </div>
+                      {isSystemCollection && (
+                        <div className="flex items-center gap-1 text-xs text-orange-600 pt-2 border-t">
+                          <AlertTriangle className="h-3 w-3" />
+                          <span>Protected system collection</span>
+                        </div>
+                      )}
+                    </>
+                  )}
+                </CardContent>
+              </Card>
+            );
+          })}
         </div>
       )}
     </div>

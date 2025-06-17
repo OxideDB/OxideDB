@@ -53,30 +53,63 @@ impl PermissionService for SqliteDb {
 
     /// Check if a user can perform an operation on a collection
     fn check_permission(&self, permissions: &CollectionPermissions, context: &PermissionContext) -> Result<bool, AppError> {
-        // Get the operation rule for the requested operation
+        // First check: if the user is a superuser, they should have access to everything
+        // unless explicitly denied (PermissionLevel::None)
+        if context.is_superuser() {
+            debug!("🔍 Superuser detected - checking if access is explicitly denied");
+            
+            // Get the operation rule for the requested operation
+            let rule = match permissions.get_operation_rule(&context.operation) {
+                Some(rule) => rule,
+                None => {
+                    // If no rule is defined, superuser has access
+                    debug!("✅ No rule found for operation {:?} on collection {}, allowing superuser access", 
+                           context.operation, context.collection);
+                    return Ok(true);
+                }
+            };
+            
+            // Only deny superuser access if explicitly set to None
+            if matches!(rule.permission, PermissionLevel::None) {
+                debug!("🚫 Superuser access explicitly denied for operation {:?} on collection {}", 
+                       context.operation, context.collection);
+                return Ok(false);
+            } else {
+                debug!("✅ Superuser access granted for operation {:?} on collection {} (rule: {:?})", 
+                       context.operation, context.collection, rule.permission);
+                return Ok(true);
+            }
+        }
+
+        // For non-superusers, proceed with normal permission checking
         let rule = match permissions.get_operation_rule(&context.operation) {
             Some(rule) => rule,
             None => {
                 // If no rule is defined, default to superuser only
                 debug!("No rule found for operation {:?} on collection {}, defaulting to superuser only", 
                        context.operation, context.collection);
-                return Ok(context.is_superuser());
+                return Ok(false); // Since we already checked superuser above, this will be false
             }
         };
+
+        debug!("🔍 Permission check: Found rule for operation {:?}: {:?}", context.operation, rule);
 
         // Check permission level
         match &rule.permission {
             PermissionLevel::None => {
+                debug!("🔍 Permission level: None - denying access");
                 debug!("Permission denied: operation {:?} not allowed on collection {}", 
                        context.operation, context.collection);
                 Ok(false)
             }
             PermissionLevel::Public => {
+                debug!("🔍 Permission level: Public - allowing access");
                 debug!("Permission granted: public access for operation {:?} on collection {}", 
                        context.operation, context.collection);
                 Ok(true)
             }
             PermissionLevel::AuthenticatedOnly => {
+                debug!("🔍 Permission level: AuthenticatedOnly - checking authentication");
                 let allowed = context.is_authenticated();
                 debug!("Permission {}: authenticated access for operation {:?} on collection {}", 
                        if allowed { "granted" } else { "denied" },
@@ -84,15 +117,26 @@ impl PermissionService for SqliteDb {
                 Ok(allowed)
             }
             PermissionLevel::SuperuserOnly => {
+                debug!("🔍 Permission level: SuperuserOnly - checking superuser status");
                 let allowed = context.is_superuser();
                 debug!("Permission {}: superuser access for operation {:?} on collection {}", 
                        if allowed { "granted" } else { "denied" },
                        context.operation, context.collection);
+                       
+                // Additional debug info for superuser permission failures
+                if !allowed {
+                    if let Some(claims) = &context.user_claims {
+                        debug!("🚫 Superuser permission denied: user_id={}, role_string='{}', user_role={:?}",
+                               claims.sub, claims.role, context.user_role());
+                    } else {
+                        debug!("🚫 Superuser permission denied: no user claims (unauthenticated)");
+                    }
+                }
+                
                 Ok(allowed)
             }
             PermissionLevel::Rule(rule_expr) => {
-                // For now, implement basic rule evaluation
-                // In the future, this could be extended with a proper rule engine
+                debug!("🔍 Permission level: Rule - evaluating custom rule");
                 debug!("Evaluating rule '{}' for operation {:?} on collection {}", 
                        rule_expr, context.operation, context.collection);
                 
@@ -262,30 +306,26 @@ impl PermissionService for SqliteDb {
 }
 
 impl SqliteDb {
-    /// Basic rule evaluation for permission rules
-    /// This is a simplified implementation - a full rule engine would be more robust
+    /// Evaluate permission rules using the comprehensive rule evaluator
     fn evaluate_permission_rule(&self, rule_expr: &str, context: &PermissionContext) -> Result<bool, AppError> {
-        // For now, support some basic rule patterns
-        // In a full implementation, this would parse and evaluate complex rule expressions
+        use oxide_core::auth::RuleEvaluator;
         
-        // Example rules:
-        // "@request.auth.id = @record.owner_id" - only record owner can access
-        // "@request.auth.role = 'admin'" - only admin role
-        // "@request.auth != null" - any authenticated user
+        debug!("🔍 Rule evaluation starting");
+        debug!("🔍 Rule expression: '{}'", rule_expr);
+        debug!("🔍 Context metadata: {:?}", context.metadata);
         
-        match rule_expr {
-            "@request.auth != null" => Ok(context.is_authenticated()),
-            rule if rule.contains("@request.auth.role = 'admin'") => Ok(context.is_superuser()),
-            rule if rule.contains("@request.auth.role = 'superuser'") => Ok(context.is_superuser()),
-            rule if rule.contains("@request.auth.id = @record.owner_id") => {
-                // This would require record data to evaluate properly
-                // For now, just check if user is authenticated
-                Ok(context.is_authenticated())
+        let evaluator = RuleEvaluator::new(context);
+        let result = evaluator.evaluate(rule_expr);
+        
+        match &result {
+            Ok(allowed) => {
+                debug!("✅ Rule evaluation completed: rule '{}' evaluated to {}", rule_expr, allowed);
             }
-            _ => {
-                debug!("Unknown rule expression: {}, defaulting to deny", rule_expr);
-                Ok(false)
+            Err(e) => {
+                debug!("❌ Rule evaluation failed: rule '{}' error: {}", rule_expr, e);
             }
         }
+        
+        result
     }
 }

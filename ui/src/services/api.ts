@@ -23,7 +23,7 @@ class ApiService {
     // Auto-detect base URL based on environment
     if (baseUrl) {
       this.baseUrl = baseUrl;
-    } else if (window.location.pathname.startsWith('/admin')) {
+    } else if (import.meta.env.PROD) {
       // Running in production, served from the same origin
       this.baseUrl = window.location.origin;
     } else {

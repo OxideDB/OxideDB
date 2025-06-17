@@ -1,0 +1,243 @@
+//! Authentication service
+//!
+//! This module provides the main authentication service that orchestrates
+//! all authentication functionality including JWT token management, password
+//! hashing, and collection management.
+
+use crate::{AppError, CollectionSchema, CollectionType};
+use super::types::{AuthServiceConfig, AuthCollectionConfig, UserRole};
+use super::jwt::{JwtService, Claims};
+use super::password::PasswordService;
+
+/// Main authentication service
+pub struct AuthService {
+    config: AuthServiceConfig,
+    password_service: PasswordService,
+}
+
+impl AuthService {
+    /// Create a new authentication service
+    pub fn new(config: AuthServiceConfig) -> Self {
+        Self { 
+            config,
+            password_service: PasswordService::new(),
+        }
+    }
+
+    /// Get the service configuration
+    pub fn config(&self) -> &AuthServiceConfig {
+        &self.config
+    }
+
+    /// Get a JWT service instance
+    pub fn jwt_service(&self) -> JwtService {
+        JwtService::new(&self.config)
+    }
+
+    /// Get the password service
+    pub fn password_service(&self) -> &PasswordService {
+        &self.password_service
+    }
+
+    /// Update auth collections based on collection schemas
+    pub fn update_auth_collections(&self, schemas: &[CollectionSchema]) {
+        for schema in schemas {
+            if schema.collection_type == CollectionType::Auth {
+                // Create default auth collection config if not exists
+                if !self.config.is_auth_collection(&schema.name) {
+                    let mut config = AuthCollectionConfig::default();
+                    config.collection = schema.name.clone();
+                    
+                    // Set the correct default role based on collection name
+                    config.default_role = match schema.name.as_str() {
+                        "superusers" => UserRole::Superuser,
+                        "users" => UserRole::User,
+                        _ => UserRole::User, // Default for custom auth collections
+                    };
+                    
+                    // Try to detect identifier and credential fields from schema
+                    for (field_name, _field_def) in &schema.fields {
+                        match field_name.as_str() {
+                            "email" | "username" | "login" => {
+                                config.identifier_field = field_name.clone();
+                            }
+                            "password" | "credential" => {
+                                config.credential_field = field_name.clone();
+                            }
+                            _ => {}
+                        }
+                    }
+                    
+                    self.config.add_auth_collection(config);
+                }
+            }
+        }
+    }
+
+    /// Hash a password using Argon2
+    pub fn hash_password(&self, password: &str) -> Result<String, AppError> {
+        self.password_service.hash_password(password)
+    }
+
+    /// Verify a password against its hash
+    pub fn verify_password(&self, password: &str, hash: &str) -> Result<bool, AppError> {
+        self.password_service.verify_password(password, hash)
+    }
+
+    /// Generate a JWT token for a user
+    pub fn generate_token(&self, user_id: String, email: String, role: UserRole, auth_collection: String) -> Result<String, AppError> {
+        let jwt_service = self.jwt_service();
+        jwt_service.generate_token(user_id, email, role, auth_collection)
+    }
+
+    /// Generate a JWT token with custom claims
+    pub fn generate_token_with_claims(&self, claims: Claims) -> Result<String, AppError> {
+        let jwt_service = self.jwt_service();
+        jwt_service.generate_token_with_claims(claims)
+    }
+
+    /// Verify and decode a JWT token
+    pub fn verify_token(&self, token: &str) -> Result<Claims, AppError> {
+        let jwt_service = self.jwt_service();
+        jwt_service.verify_token(token)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::collection::{CollectionSchema, CollectionType, FieldDefinition};
+    use crate::field_types::FieldType;
+    use std::collections::HashMap;
+
+    #[test]
+    fn test_update_auth_collections_sets_correct_roles() {
+        // Create auth service
+        let config = AuthServiceConfig::new("test_secret".to_string());
+        let auth_service = AuthService::new(config);
+
+        // Create mock schemas for users and superusers collections
+        let mut users_schema = CollectionSchema::new("users".to_string(), CollectionType::Auth);
+        let mut users_fields = HashMap::new();
+        users_fields.insert("email".to_string(), FieldDefinition {
+            field_type: FieldType::Email,
+            required: true,
+            unique: true,
+            default: None,
+            validation: None,
+        });
+        users_fields.insert("password".to_string(), FieldDefinition {
+            field_type: FieldType::Password,
+            required: true,
+            unique: false,
+            default: None,
+            validation: None,
+        });
+        users_schema.fields = users_fields;
+
+        let mut superusers_schema = CollectionSchema::new("superusers".to_string(), CollectionType::Auth);
+        let mut superusers_fields = HashMap::new();
+        superusers_fields.insert("email".to_string(), FieldDefinition {
+            field_type: FieldType::Email,
+            required: true,
+            unique: true,
+            default: None,
+            validation: None,
+        });
+        superusers_fields.insert("password".to_string(), FieldDefinition {
+            field_type: FieldType::Password,
+            required: true,
+            unique: false,
+            default: None,
+            validation: None,
+        });
+        superusers_schema.fields = superusers_fields;
+
+        let schemas = vec![users_schema, superusers_schema];
+
+        // Update auth collections
+        auth_service.update_auth_collections(&schemas);
+
+        // Verify that users collection has User role
+        let users_config = auth_service.config().get_auth_collection("users").unwrap();
+        assert_eq!(users_config.default_role, UserRole::User);
+
+        // Verify that superusers collection has Superuser role
+        let superusers_config = auth_service.config().get_auth_collection("superusers").unwrap();
+        assert_eq!(superusers_config.default_role, UserRole::Superuser);
+    }
+
+    #[test]
+    fn test_complete_auth_flow_with_proper_roles() {
+        // Create auth service
+        let config = AuthServiceConfig::new("test_secret".to_string());
+        let auth_service = AuthService::new(config);
+
+        // Create mock schemas for users and superusers collections
+        let mut users_schema = CollectionSchema::new("users".to_string(), CollectionType::Auth);
+        let mut users_fields = HashMap::new();
+        users_fields.insert("email".to_string(), FieldDefinition {
+            field_type: FieldType::Email,
+            required: true,
+            unique: true,
+            default: None,
+            validation: None,
+        });
+        users_fields.insert("password".to_string(), FieldDefinition {
+            field_type: FieldType::Password,
+            required: true,
+            unique: false,
+            default: None,
+            validation: None,
+        });
+        users_schema.fields = users_fields;
+
+        let mut superusers_schema = CollectionSchema::new("superusers".to_string(), CollectionType::Auth);
+        let mut superusers_fields = HashMap::new();
+        superusers_fields.insert("email".to_string(), FieldDefinition {
+            field_type: FieldType::Email,
+            required: true,
+            unique: true,
+            default: None,
+            validation: None,
+        });
+        superusers_fields.insert("password".to_string(), FieldDefinition {
+            field_type: FieldType::Password,
+            required: true,
+            unique: false,
+            default: None,
+            validation: None,
+        });
+        superusers_schema.fields = superusers_fields;
+
+        let schemas = vec![users_schema, superusers_schema];
+
+        // Update auth collections
+        auth_service.update_auth_collections(&schemas);
+
+        // Test token generation for regular user
+        let user_token = auth_service.generate_token(
+            "user123".to_string(),
+            "user@example.com".to_string(),
+            UserRole::User,
+            "users".to_string(),
+        ).unwrap();
+
+        // Test token generation for superuser
+        let superuser_token = auth_service.generate_token(
+            "superuser123".to_string(),
+            "admin@example.com".to_string(),
+            UserRole::Superuser,
+            "superusers".to_string(),
+        ).unwrap();
+
+        // Verify tokens contain correct roles
+        let user_claims = auth_service.verify_token(&user_token).unwrap();
+        assert_eq!(user_claims.role, "user");
+        assert_eq!(user_claims.user_role().unwrap(), UserRole::User);
+
+        let superuser_claims = auth_service.verify_token(&superuser_token).unwrap();
+        assert_eq!(superuser_claims.role, "superuser");
+        assert_eq!(superuser_claims.user_role().unwrap(), UserRole::Superuser);
+    }
+} 

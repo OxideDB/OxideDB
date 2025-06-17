@@ -32,6 +32,7 @@ use crate::{
     server::AppState,
 };
 
+
 /// Build the complete router with all routes and middleware
 pub fn build_router() -> Router<AppState> {
     Router::new()
@@ -181,7 +182,7 @@ pub fn build_router_with_config(config: RouteConfig) -> Router<AppState> {
         .merge(health_routes())
         .merge(auth_routes());
     
-    // Add API routes with auth middleware applied
+    // Add API routes
     router = router.merge(api_routes());
     
     // Conditionally add admin routes
@@ -189,7 +190,30 @@ pub fn build_router_with_config(config: RouteConfig) -> Router<AppState> {
         router = router.merge(admin_routes());
     }
     
-    // Apply middleware based on configuration
+    router
+}
+
+/// Build router with custom configuration and apply middleware in correct order
+pub fn build_router_with_config_and_middleware(config: RouteConfig, state: AppState) -> Router<()> {
+    let mut router = Router::new()
+        .merge(health_routes())
+        .merge(auth_routes());
+    
+    // Add API routes with auth middleware applied to protected routes only
+    router = router.merge(
+        api_routes()
+            .route_layer(axum::middleware::from_fn_with_state(
+                state.clone(),
+                crate::middleware::auth_middleware,
+            ))
+    );
+    
+    // Conditionally add admin routes
+    if config.enable_admin {
+        router = router.merge(admin_routes());
+    }
+    
+    // Apply middleware based on configuration - CORS should be outermost
     if config.enable_tracing {
         router = router.layer(TraceLayer::new_for_http());
     }
@@ -198,5 +222,5 @@ pub fn build_router_with_config(config: RouteConfig) -> Router<AppState> {
         router = router.layer(CorsLayer::permissive());
     }
     
-    router
+    router.with_state(state)
 }

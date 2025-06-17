@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import type { ReactNode } from 'react';
 import { apiService } from '../services/api';
 import type { User } from '../types/api';
@@ -32,19 +32,26 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
   const [user, setUser] = useState<User | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [authCollections, setAuthCollections] = useState<{ name: string; identifier_field: string; registration_enabled: boolean; email_verification_required: boolean }[]>([]);
+  const [collectionsLoading, setCollectionsLoading] = useState(false);
 
   const isAuthenticated = !!user && apiService.isAuthenticated();
 
-  // Load auth collections
-  const loadAuthCollections = async () => {
+  // Load auth collections - memoized to prevent continuous re-renders
+  const loadAuthCollections = useCallback(async () => {
+    // Prevent multiple simultaneous calls
+    if (collectionsLoading) return;
+    
+    setCollectionsLoading(true);
     try {
       const collectionsData = await apiService.getAuthCollections();
       setAuthCollections(collectionsData.collections);
     } catch (error) {
       console.error('Failed to load auth collections:', error);
       setAuthCollections([]);
+    } finally {
+      setCollectionsLoading(false);
     }
-  };
+  }, [collectionsLoading]);
 
   // Check if user is already authenticated on app start
   useEffect(() => {
@@ -74,7 +81,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     };
 
     initializeAuth();
-  }, []);
+  }, []); // Remove loadAuthCollections from dependencies since it's called directly
 
   const login = async (collection: string, identifier: string, credential: string): Promise<void> => {
     try {

@@ -12,7 +12,7 @@ import { useAuth } from '../contexts/AuthContext';
 
 const Login: React.FC = () => {
   const navigate = useNavigate();
-  const { login, authCollections, loadAuthCollections } = useAuth();
+  const { login, authCollections } = useAuth();
   const [formData, setFormData] = useState({
     collection: '',
     identifier: '',
@@ -22,12 +22,7 @@ const Login: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Load auth collections on component mount
-  useEffect(() => {
-    loadAuthCollections();
-  }, [loadAuthCollections]);
-
-  // Auto-select the first available collection
+  // Auto-select the first available collection when collections are loaded
   useEffect(() => {
     if (authCollections.length > 0 && !formData.collection) {
       // Prefer 'users' collection if available, otherwise use the first one

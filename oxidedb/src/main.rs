@@ -91,7 +91,7 @@ impl PluginEventBridge {
 #[tokio::main]
 async fn main() -> Result<(), AppError> {
     // Initialize logging
-    fmt().with_max_level(Level::INFO).init();
+    fmt().with_max_level(Level::DEBUG).init();
 
     info!("Starting OxideDB - Milestone 4 with Plugin Integration Test");
 
@@ -189,7 +189,7 @@ async fn main() -> Result<(), AppError> {
     let jwt_secret = std::env::var("JWT_SECRET")
         .unwrap_or_else(|_| "dev_secret_key_change_in_production".to_string());
     let auth_config = oxide_core::auth::AuthServiceConfig::new(jwt_secret);
-    let mut auth_service = AuthService::new(auth_config);
+    let auth_service = Arc::new(AuthService::new(auth_config));
     info!("✅ Authentication service initialized");
 
     // Initialize the database with event integration
@@ -197,7 +197,7 @@ async fn main() -> Result<(), AppError> {
     let database = Arc::new(SqliteDb::new(
         database_path,
         Arc::clone(&event_bus),
-        Arc::new(auth_service.clone()), // Clone for database initialization
+        Arc::clone(&auth_service), // Clone for database initialization
     )?);
     database.initialize().await?;
     info!("✅ SQLite database initialized with event integration and authentication");
@@ -205,7 +205,6 @@ async fn main() -> Result<(), AppError> {
     // Update auth service configuration with discovered auth collections
     let auth_collections = database.list_auth_collections().await?;
     auth_service.update_auth_collections(&auth_collections);
-    let auth_service = Arc::new(auth_service);
     info!("✅ Auth service updated with {} auth collections", auth_collections.len());
 
     // Create permission service for authorization hooks
@@ -271,7 +270,7 @@ async fn main() -> Result<(), AppError> {
                     })),
                 };
 
-                match database.register_user(register_request, superuser_config).await {
+                match database.register_user(register_request, &superuser_config).await {
                     Ok(superuser_id) => {
                         info!("✅ Sample superuser registered with ID: {} in collection '{}'", superuser_id, superuser_collection);
                     }
@@ -296,7 +295,7 @@ async fn main() -> Result<(), AppError> {
                     })),
                 };
 
-                match database.register_user(register_request, user_config).await {
+                match database.register_user(register_request, &user_config).await {
                     Ok(user_id) => {
                         info!("✅ Sample user registered with ID: {} in collection '{}'", user_id, user_collection);
                     }
@@ -315,7 +314,7 @@ async fn main() -> Result<(), AppError> {
                 credential: "secure_password_123".to_string(),
             };
 
-            match database.authenticate_user(auth_request, superuser_config).await {
+            match database.authenticate_user(auth_request, &superuser_config).await {
                 Ok(auth_response) => {
                     info!(
                         "✅ User authenticated. ID: {}, Collection: {}, Token starts with: {}...",

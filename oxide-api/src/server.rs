@@ -9,7 +9,7 @@ use std::sync::Arc;
 use tokio::net::TcpListener;
 use tracing::info;
 
-use crate::routes::{build_router_with_config, RouteConfig};
+use crate::routes::{build_router_with_config, build_router_with_config_and_middleware, RouteConfig};
 
 /// Shared application state
 #[derive(Clone)]
@@ -72,12 +72,7 @@ impl ApiServer {
             auth_service: Arc::clone(&self.auth_service),
         };
 
-        let app = build_router_with_config(config)
-            .route_layer(axum::middleware::from_fn_with_state(
-                state.clone(),
-                crate::middleware::auth_middleware,
-            ))
-            .with_state(state);
+        let app = build_router_with_config_and_middleware(config, state);
 
         let listener = TcpListener::bind(&self.address()).await.map_err(|e| {
             AppError::internal(format!("Failed to bind to {}: {}", self.address(), e))

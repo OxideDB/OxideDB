@@ -96,25 +96,54 @@ impl AuthorizationHook {
         let permissions = match self.permission_service.get_permissions(&collection).await? {
             Some(perms) => perms,
             None => {
-                // Create default restrictive permissions for unknown collections
-                if self.config.default_auth_required {
-                    CollectionPermissions::new(collection.clone())
+                // For collections without explicit permissions, we need to handle auth collections
+                // specially to allow custom rules to work properly
+                if self.is_auth_collection(&collection) {
+                    // Auth collections like "users" should not get restrictive defaults
+                    // that would block custom rule evaluation. Instead, return early with
+                    // a permissive default that allows the request to proceed to other hooks
+                    // where custom rules can be evaluated.
+                    debug!("No explicit permissions found for auth collection '{}', allowing request to proceed for custom rule evaluation", collection);
+                    return Ok(());
+                } else if self.is_system_collection(&collection) {
+                    // System collections get restrictive defaults
+                    if self.config.default_auth_required {
+                        CollectionPermissions::new(collection.clone())
+                    } else {
+                        CollectionPermissions::public(collection.clone())
+                    }
                 } else {
-                    CollectionPermissions::public(collection.clone())
+                    // User collections get default permissions that allow custom rules to work
+                    // Use restrictive defaults but don't store them, so custom rules can override
+                    debug!("No explicit permissions found for collection '{}', using runtime-only defaults", collection);
+                    if self.config.default_auth_required {
+                        CollectionPermissions::new(collection.clone())
+                    } else {
+                        CollectionPermissions::public(collection.clone())
+                    }
                 }
             }
         };
 
-        // Create permission context
+        // Create permission context with request metadata
+        let mut metadata = std::collections::HashMap::new();
+        metadata.insert("headers".to_string(), headers.clone());
+        metadata.insert("method".to_string(), serde_json::Value::String(method.to_string()));
+        metadata.insert("path".to_string(), serde_json::Value::String(path.to_string()));
+        
         let permission_context = PermissionContext::new(
             user_claims,
             operation.clone(),
             collection.clone(),
-            None, // Record ID
-        );
+            None, // Record ID - could be extracted from path if needed
+        ).with_metadata(metadata);
+        warn!("🔍 Permission context: {:?}", permission_context);
+        warn!("🔍 Permissions: {:?}", permissions);
 
         // Check permission using the permission service
+        debug!("🔍 Authorization: About to call permission_service.check_permission");
         let allowed = self.permission_service.check_permission(&permissions, &permission_context)?;
+        debug!("🔍 Authorization: permission_service.check_permission returned: {}", allowed);
 
         if !allowed {
             let user_info = permission_context.user_claims
@@ -249,13 +278,10 @@ impl AuthorizationHook {
 
     /// Initialize default permissions for system collections
     pub async fn initialize_default_permissions(&self) -> Result<(), AppError> {
-        // Auth collections should be superuser only by default
-        let auth_collections = ["users", "superusers"];
-        for collection in &auth_collections {
-            let permissions = CollectionPermissions::new(collection.to_string());
-            self.permission_service.store_permissions(&permissions).await?;
-        }
-
+        // Only initialize permissions for truly internal system collections
+        // Auth collections like "users" should NOT get default permissions
+        // so that custom rules can be applied to them
+        
         // Collections endpoint permissions - require authentication for all operations
         let collections_permissions = CollectionPermissions::new("collections".to_string());
         // All collection operations require at least authenticated user by default
@@ -264,9 +290,25 @@ impl AuthorizationHook {
 
         // Note: Admin UI routes are handled via bypass_collections in AuthorizationConfig
         // They remain publicly accessible for authentication purposes only
+        
+        // Note: We no longer initialize default permissions for "users" and "superusers"
+        // collections to allow custom rules to work properly
 
-        info!("🔐 Default authorization permissions initialized");
+        info!("🔐 Default authorization permissions initialized (auth collections left for custom rules)");
         Ok(())
+    }
+
+    /// Check if a collection is a system collection that should have restrictive defaults
+    fn is_system_collection(&self, collection: &str) -> bool {
+        // System collections that should have restrictive defaults
+        // Note: "users" is NOT included here to allow custom rules to work on auth collections
+        matches!(collection, "_internal" | "_system" | "_meta")
+    }
+
+    /// Check if a collection is an auth collection
+    fn is_auth_collection(&self, collection: &str) -> bool {
+        // Use the auth service to check if this is a configured auth collection
+        self.auth_service.config().is_auth_collection(collection)
     }
 }
 

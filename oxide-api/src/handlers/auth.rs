@@ -129,7 +129,7 @@ impl AuthHandlers {
         };
 
         // Authenticate user
-        let auth_response = db.authenticate_user(auth_request, auth_config).await
+        let auth_response = db.authenticate_user(auth_request, &auth_config).await
             .map_err(|e| {
                 warn!("Authentication failed for user: {} in collection '{}' - {}", identifier, collection, e);
                 ApiError::auth("Invalid credentials".to_string())
@@ -187,7 +187,7 @@ impl AuthHandlers {
         };
 
         // Register user
-        let user_id = db.register_user(register_request, auth_config).await
+        let user_id = db.register_user(register_request, &auth_config).await
             .map_err(|e| {
                 warn!("Registration failed for user: {} in collection '{}' - {}", identifier, collection, e);
                 match e {

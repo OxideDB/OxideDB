@@ -4,7 +4,7 @@
 //! application errors into appropriate HTTP responses with proper status codes.
 
 use axum::{
-    http::StatusCode,
+    http::{StatusCode, HeaderValue},
     response::{IntoResponse, Json},
 };
 use oxide_core::AppError;
@@ -196,7 +196,17 @@ impl IntoResponse for ApiError {
             request_id: None, // TODO: Extract from request context
         };
         
-        (status, Json(error_response)).into_response()
+        // Build response with CORS headers
+        let mut response = (status, Json(error_response)).into_response();
+        let headers = response.headers_mut();
+        
+        // Add CORS headers to ensure cross-origin requests work properly
+        headers.insert("Access-Control-Allow-Origin", HeaderValue::from_static("*"));
+        headers.insert("Access-Control-Allow-Methods", HeaderValue::from_static("GET, POST, PUT, DELETE, OPTIONS"));
+        headers.insert("Access-Control-Allow-Headers", HeaderValue::from_static("Content-Type, Authorization, Accept, Origin, X-Requested-With"));
+        headers.insert("Access-Control-Max-Age", HeaderValue::from_static("86400"));
+        
+        response
     }
 }
 

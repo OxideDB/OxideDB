@@ -2,8 +2,11 @@ import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-d
 import { ThemeProvider } from './components/theme-provider';
 import { AuthProvider } from './contexts/AuthContext';
 import ProtectedRoute from './components/ProtectedRoute';
-import Layout from './components/Layout';
+import { SidebarProvider } from './components/ui/sidebar';
+import { AppSidebar } from './components/AppSidebar';
+import { Toaster } from './components/ui/toaster';
 import Login from './pages/Login';
+import Dashboard from './pages/Dashboard';
 import Collections from './pages/Collections';
 import Records from './pages/Records';
 import EditRecord from './pages/EditRecord';
@@ -23,26 +26,35 @@ function App() {
             <Route path="/login" element={<Login />} />
             
             {/* Protected admin routes */}
-            <Route path="/" element={
+            <Route path="/*" element={
               <ProtectedRoute>
-                <Layout />
+                <SidebarProvider defaultOpen={false}>
+                  <AppSidebar />
+                  <main className="flex-1 min-w-0">
+                    <div className="px-6 py-8">
+                      <Routes>
+                        <Route index element={<Dashboard />} />
+                        <Route path="dashboard" element={<Dashboard />} />
+                        <Route path="collections" element={<Collections />} />
+                        <Route path="collections/new" element={<CreateCollection />} />
+                        <Route path="collections/:collection" element={<Records />} />
+                        <Route path="collections/:collection/edit" element={<EditCollection />} />
+                        <Route path="collections/:collection/new" element={<EditRecord />} />
+                        <Route path="collections/:collection/edit/:recordId" element={<EditRecord />} />
+                        <Route path="health" element={<Health />} />
+                        <Route path="permissions" element={
+                          <ProtectedRoute requireSuperuser={true}>
+                            <Permissions />
+                          </ProtectedRoute>
+                        } />
+                        <Route path="settings" element={<Settings />} />
+                      </Routes>
+                    </div>
+                  </main>
+                  <Toaster />
+                </SidebarProvider>
               </ProtectedRoute>
-            }>
-              <Route index element={<Navigate to="/collections" replace />} />
-              <Route path="collections" element={<Collections />} />
-              <Route path="collections/new" element={<CreateCollection />} />
-              <Route path="collections/:collection" element={<Records />} />
-              <Route path="collections/:collection/edit" element={<EditCollection />} />
-              <Route path="collections/:collection/new" element={<EditRecord />} />
-              <Route path="collections/:collection/edit/:recordId" element={<EditRecord />} />
-              <Route path="health" element={<Health />} />
-              <Route path="permissions" element={
-                <ProtectedRoute requireSuperuser={true}>
-                  <Permissions />
-                </ProtectedRoute>
-              } />
-              <Route path="settings" element={<Settings />} />
-            </Route>
+            } />
             
             {/* Catch all - redirect to login */}
             <Route path="*" element={<Navigate to="/login" replace />} />
