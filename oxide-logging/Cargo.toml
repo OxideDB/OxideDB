@@ -1,0 +1,55 @@
+[package]
+name = "oxide-logging"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "High-performance, non-blocking logging system for OxideDB"
+repository.workspace = true
+keywords = ["logging", "audit", "sqlite", "async", "performance"]
+categories = ["database-implementations", "development-tools::debugging"]
+
+[dependencies]
+# Internal dependencies
+oxide-core = { path = "../oxide-core" }
+
+# Core async runtime
+tokio = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+
+# Logging and tracing
+tracing = { workspace = true }
+
+# Time handling
+chrono = { workspace = true }
+
+# SQLite database
+rusqlite = { version = "0.30", features = ["bundled", "chrono", "serde_json"] }
+
+# Async SQLite
+tokio-rusqlite = "0.5"
+
+# High-performance collections
+dashmap = "5.5"
+
+# UUID generation for correlation IDs
+uuid = { version = "1.6", features = ["v4", "serde"] }
+
+# JSON handling
+simd-json = { version = "0.13", optional = true }
+
+# Metrics collection
+metrics = { version = "0.21", optional = true }
+
+# Compression for log archival
+flate2 = { version = "1.0", optional = true }
+
+[features]
+default = ["simd-json", "metrics", "compression"]
+compression = ["flate2"] 

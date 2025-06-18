@@ -18,6 +18,7 @@ pub mod collection;
 pub mod error;
 pub mod event;
 pub mod field_types;
+pub mod logging;
 pub mod plugin_api;
 pub mod plugin_security;
 pub mod hooks;
@@ -36,6 +37,10 @@ pub use event::{
     BeforeEventHandler, AfterEventHandler, EventBus, InMemoryEventBus,
     // Legacy compatibility
     Event, EventHandler,
+};
+pub use logging::{
+    ApplicationLogger, SecurityAuditor, LoggingService, LogLevel, AuditEventType,
+    LogContext, LoggingMetrics, CorrelationIdTrait, NoOpLogger, LoggingResult
 };
 pub use plugin_api::{PluginError, PluginResult, EventPayload, PluginResponse};
 pub use plugin_security::{

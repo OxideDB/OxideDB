@@ -9,10 +9,11 @@ use axum::{
     Router,
 };
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
+use std::path::PathBuf;
 
 use crate::{
     handlers::{
-        admin::{serve_admin_static, serve_admin_ui},
+        admin::{serve_admin_static, serve_admin_ui, serve_external_admin_ui, serve_external_admin_static},
         auth::{
             validate_token, get_current_user, logout,
             list_auth_collections, login_collection, register_collection,
@@ -22,6 +23,11 @@ use crate::{
             list_collections, update_collection_schema,
         },
         health::health_check,
+        logs::{
+            get_logs, get_audit_events, get_dashboard_metrics, get_recent_logs,
+            get_retention_stats, create_log_entry, create_audit_event, flush_logs,
+            get_logs_by_correlation, get_user_logs, get_collection_logs, logging_health,
+        },
         permissions::{
             get_collection_permissions, update_collection_permissions, list_all_permissions,
             reset_collection_permissions, create_permissions_from_preset,
@@ -32,6 +38,83 @@ use crate::{
     server::AppState,
 };
 
+/// Admin UI mode configuration
+#[derive(Debug, Clone)]
+pub enum AdminUiMode {
+    /// Use embedded admin UI (built into the binary)
+    Embedded,
+    /// Serve admin UI from external filesystem path
+    External(PathBuf),
+    /// Admin UI is completely disabled
+    Disabled,
+}
+
+impl Default for AdminUiMode {
+    fn default() -> Self {
+        Self::Embedded
+    }
+}
+
+/// Route configuration for different environments
+pub struct RouteConfig {
+    /// Enable admin UI routes
+    pub enable_admin: bool,
+    /// Admin UI mode and configuration
+    pub admin_mode: AdminUiMode,
+    /// Admin UI path prefix (e.g., "/admin")
+    pub admin_path: String,
+    /// Enable CORS middleware
+    pub enable_cors: bool,
+    /// Enable request tracing
+    pub enable_tracing: bool,
+}
+
+impl Default for RouteConfig {
+    fn default() -> Self {
+        Self {
+            enable_admin: true,
+            admin_mode: AdminUiMode::Embedded,
+            admin_path: "/admin".to_string(),
+            enable_cors: true,
+            enable_tracing: true,
+        }
+    }
+}
+
+impl RouteConfig {
+    /// Create a production configuration
+    pub fn production() -> Self {
+        Self {
+            enable_admin: false, // Disable admin UI in production
+            admin_mode: AdminUiMode::Disabled,
+            admin_path: "/admin".to_string(),
+            enable_cors: false,  // Configure CORS more restrictively
+            enable_tracing: true,
+        }
+    }
+    
+    /// Create a development configuration
+    pub fn development() -> Self {
+        Self {
+            enable_admin: true,
+            admin_mode: AdminUiMode::Embedded,
+            admin_path: "/admin".to_string(),
+            enable_cors: true,
+            enable_tracing: true,
+        }
+    }
+
+    /// Create a configuration for external admin UI
+    pub fn with_external_admin(admin_path: PathBuf, url_prefix: String) -> Self {
+        Self {
+            enable_admin: true,
+            admin_mode: AdminUiMode::External(admin_path),
+            admin_path: url_prefix,
+            enable_cors: true,
+            enable_tracing: true,
+        }
+    }
+}
 
 /// Build the complete router with all routes and middleware
 pub fn build_router() -> Router<AppState> {
@@ -41,10 +124,10 @@ pub fn build_router() -> Router<AppState> {
         // Auth routes (no auth required for login/register)
         .merge(auth_routes())
         // Admin UI routes (no auth required for static files)
-        .merge(admin_routes())
+        .merge(admin_routes(AdminUiMode::Embedded, "/admin".to_string()))
         // API routes (with auth middleware)
         .merge(api_routes())
-        // Apply middleware
+        // Apply middleware - note: logging middleware is only available with state
         .layer(TraceLayer::new_for_http())
         .layer(CorsLayer::permissive())
 }
@@ -76,6 +159,8 @@ fn api_routes() -> Router<AppState> {
         .merge(record_routes())
         // Permission management routes
         .merge(permission_routes())
+        // Logging routes
+        .merge(logging_routes())
 }
 
 /// Collection management routes
@@ -129,49 +214,51 @@ fn permission_routes() -> Router<AppState> {
         )
 }
 
-/// Admin UI routes
-fn admin_routes() -> Router<AppState> {
+/// Logging routes
+fn logging_routes() -> Router<AppState> {
     Router::new()
-        .route("/admin", get(serve_admin_ui))
-        .route("/admin/*path", get(serve_admin_static))
+        .route("/logs", get(get_logs))
+        .route("/logs/audit-events", get(get_audit_events))
+        .route("/logs/dashboard-metrics", get(get_dashboard_metrics))
+        .route("/logs/recent", get(get_recent_logs))
+        .route("/logs/retention-stats", get(get_retention_stats))
+        .route("/logs/create-log-entry", axum::routing::post(create_log_entry))
+        .route("/logs/create-audit-event", axum::routing::post(create_audit_event))
+        .route("/logs/flush", axum::routing::post(flush_logs))
+        .route("/logs/correlation/:correlation_id", get(get_logs_by_correlation))
+        .route("/logs/user/:user_id", get(get_user_logs))
+        .route("/logs/collection/:collection", get(get_collection_logs))
+        .route("/logs/health", get(logging_health))
 }
 
-/// Route configuration for different environments
-pub struct RouteConfig {
-    /// Enable admin UI routes
-    pub enable_admin: bool,
-    /// Enable CORS middleware
-    pub enable_cors: bool,
-    /// Enable request tracing
-    pub enable_tracing: bool,
-}
-
-impl Default for RouteConfig {
-    fn default() -> Self {
-        Self {
-            enable_admin: true,
-            enable_cors: true,
-            enable_tracing: true,
+/// Admin UI routes with configurable mode
+fn admin_routes(mode: AdminUiMode, path_prefix: String) -> Router<AppState> {
+    match mode {
+        AdminUiMode::Embedded => {
+            Router::new()
+                .route(&path_prefix, get(serve_admin_ui))
+                .route(&format!("{}/*path", path_prefix), get(serve_admin_static))
         }
-    }
-}
-
-impl RouteConfig {
-    /// Create a production configuration
-    pub fn production() -> Self {
-        Self {
-            enable_admin: false, // Disable admin UI in production
-            enable_cors: false,  // Configure CORS more restrictively
-            enable_tracing: true,
+        AdminUiMode::External(admin_path) => {
+            use axum::extract::Path;
+            
+            // For external mode, we need to create a custom handler that includes the path
+            // We'll use a simple approach that works with Axum's routing
+            Router::new()
+                .route(&path_prefix, get({
+                    let admin_path = admin_path.clone();
+                    || async move { serve_external_admin_ui(admin_path).await }
+                }))
+                .route(&format!("{}/*path", path_prefix), get({
+                    let admin_path = admin_path.clone();
+                    |path: Path<String>| async move {
+                        serve_external_admin_static(admin_path, path).await
+                    }
+                }))
         }
-    }
-    
-    /// Create a development configuration
-    pub fn development() -> Self {
-        Self {
-            enable_admin: true,
-            enable_cors: true,
-            enable_tracing: true,
+        AdminUiMode::Disabled => {
+            // Return empty router when admin is disabled
+            Router::new()
         }
     }
 }
@@ -185,9 +272,9 @@ pub fn build_router_with_config(config: RouteConfig) -> Router<AppState> {
     // Add API routes
     router = router.merge(api_routes());
     
-    // Conditionally add admin routes
+    // Conditionally add admin routes based on configuration
     if config.enable_admin {
-        router = router.merge(admin_routes());
+        router = router.merge(admin_routes(config.admin_mode, config.admin_path));
     }
     
     router
@@ -208,10 +295,16 @@ pub fn build_router_with_config_and_middleware(config: RouteConfig, state: AppSt
             ))
     );
     
-    // Conditionally add admin routes
+    // Conditionally add admin routes based on configuration
     if config.enable_admin {
-        router = router.merge(admin_routes());
+        router = router.merge(admin_routes(config.admin_mode, config.admin_path));
     }
+    
+    // Apply logging middleware to all routes (should be applied before CORS and tracing)
+    router = router.layer(axum::middleware::from_fn_with_state(
+        state.clone(),
+        crate::middleware::request_logging_middleware,
+    ));
     
     // Apply middleware based on configuration - CORS should be outermost
     if config.enable_tracing {

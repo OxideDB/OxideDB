@@ -224,6 +224,28 @@ impl Default for ResourceLimits {
     }
 }
 
+impl ResourceLimits {
+    /// Create conservative resource limits for strict security
+    pub fn conservative() -> Self {
+        Self {
+            max_memory: 4 * 1024 * 1024,  // 4MB
+            max_execution_time: 1000,     // 1 second
+            max_host_calls: 50,           // 50 calls per execution
+            rate_limit: 10,               // 10 executions per minute
+        }
+    }
+
+    /// Create relaxed resource limits for development
+    pub fn relaxed() -> Self {
+        Self {
+            max_memory: 64 * 1024 * 1024, // 64MB
+            max_execution_time: 30000,    // 30 seconds
+            max_host_calls: 5000,         // 5000 calls per execution
+            rate_limit: 300,              // 300 executions per minute
+        }
+    }
+}
+
 impl Default for SecurityPolicies {
     fn default() -> Self {
         Self {

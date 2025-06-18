@@ -8,6 +8,7 @@ license.workspace = true
 [dependencies]
 oxide-core = { path = "../oxide-core" }
 oxide-db = { path = "../oxide-db" }
+oxide-logging = { path = "../oxide-logging" }
 axum = "0.7"
 tower = "0.4"
 tower-http = { version = "0.5", features = ["cors", "trace", "fs"] }
@@ -22,3 +23,4 @@ include_dir = "0.7"
 mime_guess = "2.0"
 async-trait = "0.1"
 chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1.0", features = ["v4", "serde"] }

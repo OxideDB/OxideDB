@@ -20,6 +20,7 @@ pub mod admin;
 pub mod auth;
 pub mod collections;
 pub mod health;
+pub mod logs;
 pub mod permissions;
 pub mod records;
 
