@@ -129,9 +129,9 @@ impl RegisterSuperuserCommand {
         // Find superuser collection or use default
         let auth_collections = services.database.list_auth_collections().await?;
         let superuser_collection = auth_collections.iter()
-            .find(|c| c.name == "superusers")
+            .find(|c| c.name == "_superusers")
             .map(|c| c.name.as_str())
-            .unwrap_or("users");
+            .unwrap_or("_users");
 
         if let Some(superuser_config) = services.auth_service.config().get_auth_collection(superuser_collection) {
             let register_request = oxide_db::db::RegisterRequest {

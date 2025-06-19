@@ -25,15 +25,18 @@ pub struct PasswordHashConfig {
     pub password_field: String,
     /// Whether to add metadata about the hashing operation
     pub add_metadata: bool,
+    /// Optional pepper for password hashing
+    pub pepper: Option<String>,
 }
 
 impl Default for PasswordHashConfig {
     fn default() -> Self {
         Self {
             schema_aware: true,
-            auth_collections: vec!["users".to_string(), "superusers".to_string()],
+            auth_collections: vec!["_users".to_string(), "_superusers".to_string()],
             password_field: "password".to_string(),
             add_metadata: true,
+            pepper: None,
         }
     }
 }
@@ -269,6 +272,7 @@ mod tests {
             auth_collections: vec!["custom_users".to_string()],
             password_field: "pwd".to_string(),
             add_metadata: false,
+            pepper: None,
         };
         let hook = PasswordHashingHook::with_config(auth_service, config);
 

@@ -149,7 +149,7 @@ const Collections: React.FC = () => {
         <div className="grid gap-4 grid-cols-1 md:grid-cols-2 xl:grid-cols-3">
           {filteredCollections.map((collection) => {
             const stats = collectionStats[collection.name];
-            const isSystemCollection = collection.collection_type === 'auth';
+            const isSystemCollection = collection.collection_type === 'auth' || collection.name.startsWith('_');
             
             return (
               <Card key={collection.id} className={`hover:shadow-md transition-shadow ${isSystemCollection ? 'border-orange-200' : ''}`}>

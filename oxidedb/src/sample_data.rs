@@ -4,8 +4,8 @@
 //! with sample data for demonstration and testing purposes.
 
 use crate::Result;
-use oxide_core::{AppError, AuthService, LogContext, ApplicationLogger, SecurityAuditor};
-use oxide_db::SqliteDb;
+use oxide_core::{AppError, AuthService, LogContext, ApplicationLogger, SecurityAuditor, event::context::RequestContext};
+use oxide_db::{SqliteDb, db::{AuthRequest, RegisterRequest}};
 use oxide_logging::LogServiceBridge;
 use std::sync::Arc;
 use tracing::{info, warn};
@@ -34,89 +34,95 @@ pub async fn populate_database_samples(
     register_sample_superuser(database, auth_service, &auth_collections).await?;
     register_sample_user(database, auth_service, &auth_collections).await?;
 
-    // Demonstrate authentication
+    // Demonstrate authentication and permissions
     demonstrate_authentication(database, auth_service, &auth_collections).await?;
 
     info!("✅ Database sample data populated successfully");
     Ok(())
 }
 
-/// Register a sample superuser
+/// Register a sample superuser for testing
 async fn register_sample_superuser(
     database: &Arc<SqliteDb>,
     auth_service: &Arc<AuthService>,
     auth_collections: &[oxide_core::CollectionSchema],
 ) -> Result<()> {
-    // Try to register a superuser in the "superusers" collection if it exists
+    // Try to register a superuser in the "_superusers" collection if it exists
     let superuser_collection = auth_collections.iter()
-        .find(|c| c.name == "superusers")
+        .find(|c| c.name == "_superusers")
         .map(|c| c.name.as_str())
-        .unwrap_or("users"); // Fallback to users if superusers doesn't exist
+        .unwrap_or("_users"); // Fallback to _users if _superusers doesn't exist
 
-    if let Some(superuser_config) = auth_service.config().get_auth_collection(superuser_collection) {
-        if superuser_config.registration_enabled {
-            let register_request = oxide_db::db::RegisterRequest {
-                collection: superuser_collection.to_string(),
-                identifier: "admin@example.com".to_string(),
-                credential: "secure_password_123".to_string(),
-                additional_data: Some(serde_json::json!({
-                    "verified": true,
-                    "name": "System Administrator",
-                    "role": "superuser"
-                })),
-            };
+    // Check if this auth collection exists and has the right config
+    if let Some(auth_config) = auth_service.config().get_auth_collection(superuser_collection) {
+        info!("📝 Registering sample superuser in collection '{}'", superuser_collection);
 
-            match database.register_user(register_request, &superuser_config).await {
-                Ok(superuser_id) => {
-                    info!("✅ Sample superuser registered with ID: {} in collection '{}'", 
-                          superuser_id, superuser_collection);
-                }
-                Err(e) => {
-                    warn!("Failed to register superuser: {} (this may be expected if user already exists)", e);
-                }
+        let register_request = RegisterRequest {
+            collection: superuser_collection.to_string(),
+            identifier: "admin@oxide.rs".to_string(),
+            credential: "admin123".to_string(),
+            additional_data: Some(serde_json::json!({
+                "name": "System Administrator",
+                "role": "admin"
+            })),
+        };
+
+        match database.register_user(register_request, &auth_config).await {
+            Ok(user_id) => {
+                info!("✅ Sample superuser registered with ID: {}", user_id);
             }
-        } else {
-            info!("Registration is disabled for collection '{}'", superuser_collection);
+            Err(e) if e.to_string().contains("already exists") => {
+                info!("ℹ️ Sample superuser already exists");
+            }
+            Err(e) => {
+                warn!("❌ Failed to register sample superuser: {}", e);
+            }
         }
+    } else {
+        warn!("No superuser auth collection found");
     }
 
     Ok(())
 }
 
-/// Register a sample regular user
+/// Register a sample user for testing
 async fn register_sample_user(
     database: &Arc<SqliteDb>,
     auth_service: &Arc<AuthService>,
     auth_collections: &[oxide_core::CollectionSchema],
 ) -> Result<()> {
     let user_collection = auth_collections.iter()
-        .find(|c| c.name == "users")
+        .find(|c| c.name == "_users")
         .map(|c| c.name.as_str())
-        .unwrap_or_else(|| auth_collections.first().map(|c| c.name.as_str()).unwrap_or("users"));
+        .unwrap_or_else(|| auth_collections.first().map(|c| c.name.as_str()).unwrap_or("_users"));
 
-    if let Some(user_config) = auth_service.config().get_auth_collection(user_collection) {
-        if user_config.registration_enabled {
-            let register_request = oxide_db::db::RegisterRequest {
-                collection: user_collection.to_string(),
-                identifier: "user@example.com".to_string(),
-                credential: "user_password_456".to_string(),
-                additional_data: Some(serde_json::json!({
-                    "verified": false,
-                    "name": "Regular User",
-                    "role": "user"
-                })),
-            };
+    // Check if this auth collection exists and has the right config
+    if let Some(auth_config) = auth_service.config().get_auth_collection(user_collection) {
+        info!("📝 Registering sample user in collection '{}'", user_collection);
 
-            match database.register_user(register_request, &user_config).await {
-                Ok(user_id) => {
-                    info!("✅ Sample user registered with ID: {} in collection '{}'", 
-                          user_id, user_collection);
-                }
-                Err(e) => {
-                    warn!("Failed to register user: {} (this may be expected if user already exists)", e);
-                }
+        let register_request = RegisterRequest {
+            collection: user_collection.to_string(),
+            identifier: "user@oxide.rs".to_string(),
+            credential: "user123".to_string(),
+            additional_data: Some(serde_json::json!({
+                "name": "Sample User",
+                "role": "member"
+            })),
+        };
+
+        match database.register_user(register_request, &auth_config).await {
+            Ok(user_id) => {
+                info!("✅ Sample user registered with ID: {}", user_id);
+            }
+            Err(e) if e.to_string().contains("already exists") => {
+                info!("ℹ️ Sample user already exists");
+            }
+            Err(e) => {
+                warn!("❌ Failed to register sample user: {}", e);
             }
         }
+    } else {
+        warn!("No user auth collection found");
     }
 
     Ok(())
@@ -129,31 +135,74 @@ async fn demonstrate_authentication(
     auth_collections: &[oxide_core::CollectionSchema],
 ) -> Result<()> {
     let superuser_collection = auth_collections.iter()
-        .find(|c| c.name == "superusers")
+        .find(|c| c.name == "_superusers")
         .map(|c| c.name.as_str())
-        .unwrap_or("users");
+        .unwrap_or("_users");
 
-    if let Some(superuser_config) = auth_service.config().get_auth_collection(superuser_collection) {
-        let auth_request = oxide_db::db::AuthRequest {
+    if let Some(auth_config) = auth_service.config().get_auth_collection(superuser_collection) {
+        info!("🔐 Testing authentication for sample superuser");
+
+        let auth_request = AuthRequest {
             collection: superuser_collection.to_string(),
-            identifier: "admin@example.com".to_string(),
-            credential: "secure_password_123".to_string(),
+            identifier: "admin@oxide.rs".to_string(),
+            credential: "admin123".to_string(),
         };
 
-        match database.authenticate_user(auth_request, &superuser_config).await {
+        match database.authenticate_user(auth_request, &auth_config).await {
             Ok(auth_response) => {
-                info!(
-                    "✅ User authenticated. ID: {}, Collection: {}, Token starts with: {}...",
-                    auth_response.user_id,
-                    auth_response.auth_collection,
-                    &auth_response.token[..20.min(auth_response.token.len())]
-                );
+                info!("✅ Superuser authentication successful! Token generated for user: {}", auth_response.user_id);
+                info!("   Role: {}", auth_response.role);
+                info!("   Collection: {}", auth_response.auth_collection);
             }
             Err(e) => {
-                warn!("Authentication failed: {}", e);
+                warn!("❌ Failed to authenticate sample superuser: {}", e);
             }
         }
     }
+
+    // Also test with a test collection creation to ensure everything is working
+    info!("🗂️ Creating test collection to verify database functionality");
+    create_test_collection(database).await?;
+
+    Ok(())
+}
+
+/// Create a test collection
+async fn create_test_collection(database: &Arc<SqliteDb>) -> Result<()> {
+    let test_schema = oxide_core::CollectionSchema::new("test_collection".to_string(), oxide_core::CollectionType::Base);
+
+    match database.create_collection_with_schema(test_schema).await {
+        Ok(_) => {
+            info!("✅ Test collection created successfully");
+        }
+        Err(e) if e.to_string().contains("already exists") => {
+            info!("ℹ️ Test collection already exists");
+        }
+        Err(e) => {
+            warn!("❌ Failed to create test collection: {}", e);
+        }
+    }
+
+    // Test record creation context (just for demonstrating the new system)
+    let test_record = serde_json::json!({
+        "message": "Hello from OxideDB!",
+        "timestamp": std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs(),
+        "active": true
+    });
+
+    let _request_context = RequestContext::anonymous();
+    let _create_context = oxide_core::event::context::BeforeEventContext::new_create(
+        "_users".to_string(),
+        test_record,
+    );
+
+    info!("📝 Sample data setup complete! You can now:");
+    info!("   - Login as admin@oxide.rs with password 'admin123'");
+    info!("   - Login as user@oxide.rs with password 'user123'");
+    info!("   - Use the API to manage collections and records");
 
     Ok(())
 }

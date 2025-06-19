@@ -5,32 +5,32 @@ use crate::db::{Db, ListParams, AuthRequest, AuthResponse, RegisterRequest};
 use oxide_core::{
     AppError, CollectionType,
     BeforeEventContext, AfterEventContext, BeforeEventType, AfterEventType,
-    auth::{AuthCollectionConfig, Claims},
+    auth::{AuthCollectionConfig, AuthTokens},
 };
 use tracing::{info, debug, warn};
 use uuid::Uuid;
 
 impl SqliteDb {
-    /// Initialize authentication collections (users and superusers) - legacy support
+    /// Initialize authentication collections (_users and _superusers) - legacy support
     pub(super) async fn initialize_auth_collections(&self) -> Result<(), AppError> {
         use oxide_core::auth::create_auth_collections;
         
         let (users_schema, superusers_schema) = create_auth_collections();
         
-        // Create users collection if it doesn't exist
-        if !self.collection_exists("users").await? {
+        // Create _users collection if it doesn't exist
+        if !self.collection_exists("_users").await? {
             self.create_collection_with_schema(users_schema).await?;
-            info!("✅ Created users auth collection");
+            info!("✅ Created _users auth collection");
         } else {
-            debug!("Users auth collection already exists");
+            debug!("_users auth collection already exists");
         }
         
-        // Create superusers collection if it doesn't exist
-        if !self.collection_exists("superusers").await? {
+        // Create _superusers collection if it doesn't exist
+        if !self.collection_exists("_superusers").await? {
             self.create_collection_with_schema(superusers_schema).await?;
-            info!("✅ Created superusers auth collection");
+            info!("✅ Created _superusers auth collection");
         } else {
-            debug!("Superusers auth collection already exists");
+            debug!("_superusers auth collection already exists");
         }
         
         info!("✅ Auth collections initialized");
@@ -72,23 +72,20 @@ impl SqliteDb {
             return Err(AppError::auth("Invalid credentials"));
         }
 
-        // Generate JWT token with custom claims
-        let mut claims = Claims::new(
+        // Generate authentication tokens based on collection configuration
+        let role = auth_config.default_role.clone();
+        let auth_tokens = self.auth_service.generate_auth_tokens(
             user_record.id.clone(),
             auth_request.identifier.clone(),
-            auth_config.default_role.to_string(),
+            role.clone(),
             auth_request.collection.clone(),
-            self.auth_service.config().token_expiry_hours,
-        );
+        )?;
 
-        // Add custom claims from the auth config
-        for field_name in &auth_config.custom_claim_fields {
-            if let Some(value) = user_record.data.get(field_name) {
-                claims.add_custom_claim(field_name.clone(), value.clone());
-            }
-        }
-
-        let token = self.auth_service.generate_token_with_claims(claims)?;
+        // Extract tokens from the response
+        let (access_token, refresh_token) = match auth_tokens {
+            AuthTokens::AccessOnly(token) => (token, None),
+            AuthTokens::Pair(pair) => (pair.access_token, Some(pair.refresh_token)),
+        };
 
         // Dispatch AfterUserAuth event
         let request_context = oxide_core::event::context::RequestContext::authenticated(user_record.id.clone());
@@ -110,13 +107,15 @@ impl SqliteDb {
         
         let response = AuthResponse {
             user_id: user_record.id,
-            token,
+            token: access_token,
+            refresh_token,
             auth_collection: auth_request.collection,
-            role: auth_config.default_role.to_string(),
+            role: role.to_string(),
             user_data: user_record.data,
         };
 
-        info!("✅ User authenticated successfully: {} from collection '{}'", identifier, collection_name);
+        info!("✅ User authenticated successfully: {} from collection '{}' (refresh_token: {})", 
+              identifier, collection_name, response.refresh_token.is_some());
         Ok(response)
     }
 

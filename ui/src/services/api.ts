@@ -15,9 +15,20 @@ interface PaginatedResponse<T> {
   success: boolean;
 }
 
+// Refresh token response type
+interface RefreshTokenResponse {
+  access_token: string;
+  refresh_token: string;
+  expires_in: number;
+  refresh_expires_in: number;
+}
+
 class ApiService {
   private baseUrl: string;
   private token: string | null = null;
+  private refreshToken: string | null = null;
+  private isRefreshing: boolean = false;
+  private refreshPromise: Promise<string> | null = null;
 
   constructor(baseUrl?: string) {
     // Auto-detect base URL based on environment
@@ -30,7 +41,10 @@ class ApiService {
       // Development mode
       this.baseUrl = 'http://localhost:8080';
     }
-    this.token = localStorage.getItem('auth_token');
+    
+    // Load tokens from storage with fallback to sessionStorage
+    this.token = localStorage.getItem('auth_token') || sessionStorage.getItem('auth_token');
+    this.refreshToken = localStorage.getItem('refresh_token') || sessionStorage.getItem('refresh_token');
   }
 
   private async request<T>(
@@ -38,19 +52,38 @@ class ApiService {
     options: RequestInit = {}
   ): Promise<T> {
     const url = `${this.baseUrl}${endpoint}`;
-    const headers: Record<string, string> = {
+    let headers: Record<string, string> = {
       'Content-Type': 'application/json',
       ...(options.headers as Record<string, string>),
     };
 
+    // Add authorization header if we have a token
     if (this.token) {
       headers['Authorization'] = `Bearer ${this.token}`;
     }
 
-    const response = await fetch(url, {
+    let response = await fetch(url, {
       ...options,
       headers,
     });
+
+    // If we get a 401 and have a refresh token, try to refresh
+    if (response.status === 401 && this.refreshToken && !this.isRefreshing) {
+      try {
+        const newAccessToken = await this.performTokenRefresh();
+        
+        // Retry the original request with the new token
+        headers['Authorization'] = `Bearer ${newAccessToken}`;
+        response = await fetch(url, {
+          ...options,
+          headers,
+        });
+      } catch (refreshError) {
+        console.error('Token refresh failed:', refreshError);
+        this.clearTokens();
+        throw new Error('Session expired. Please log in again.');
+      }
+    }
 
     if (!response.ok) {
       let errorMessage = `HTTP ${response.status}`;
@@ -70,6 +103,53 @@ class ApiService {
     }
 
     return response.json();
+  }
+
+  private async performTokenRefresh(): Promise<string> {
+    // If already refreshing, wait for the existing refresh
+    if (this.isRefreshing && this.refreshPromise) {
+      return this.refreshPromise;
+    }
+
+    this.isRefreshing = true;
+    this.refreshPromise = this.doTokenRefresh();
+
+    try {
+      const newToken = await this.refreshPromise;
+      return newToken;
+    } finally {
+      this.isRefreshing = false;
+      this.refreshPromise = null;
+    }
+  }
+
+  private async doTokenRefresh(): Promise<string> {
+    if (!this.refreshToken) {
+      throw new Error('No refresh token available');
+    }
+
+    const response = await fetch(`${this.baseUrl}/auth/refresh`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ refresh_token: this.refreshToken }),
+    });
+
+    if (!response.ok) {
+      throw new Error('Token refresh failed');
+    }
+
+    const data: ApiResponse<RefreshTokenResponse> = await response.json();
+    
+    // Update stored tokens
+    this.token = data.data.access_token;
+    this.refreshToken = data.data.refresh_token;
+    
+    localStorage.setItem('auth_token', this.token);
+    localStorage.setItem('refresh_token', this.refreshToken);
+
+    return this.token;
   }
 
   // Generic HTTP methods
@@ -96,18 +176,33 @@ class ApiService {
   }
 
   // Auth methods
-  setToken(token: string) {
-    this.token = token;
-    localStorage.setItem('auth_token', token);
+  setTokens(accessToken: string, refreshToken?: string) {
+    this.token = accessToken;
+    localStorage.setItem('auth_token', accessToken);
+    sessionStorage.setItem('auth_token', accessToken);
+    
+    if (refreshToken) {
+      this.refreshToken = refreshToken;
+      localStorage.setItem('refresh_token', refreshToken);
+      sessionStorage.setItem('refresh_token', refreshToken);
+    }
   }
 
-  clearToken() {
+  clearTokens() {
     this.token = null;
+    this.refreshToken = null;
     localStorage.removeItem('auth_token');
+    localStorage.removeItem('refresh_token');
+    sessionStorage.removeItem('auth_token');
+    sessionStorage.removeItem('refresh_token');
   }
 
   isAuthenticated(): boolean {
     return !!this.token;
+  }
+
+  hasRefreshToken(): boolean {
+    return !!this.refreshToken;
   }
 
   // Get available auth collections
@@ -122,8 +217,8 @@ class ApiService {
       credential,
     });
     
-    // Store the token automatically
-    this.setToken(response.data.token);
+    // Store the tokens automatically
+    this.setTokens(response.data.token, response.data.refresh_token || undefined);
     return response.data;
   }
 
@@ -139,8 +234,8 @@ class ApiService {
     try {
       await this.post<void>('/auth/logout');
     } finally {
-      // Always clear token, even if logout request fails
-      this.clearToken();
+      // Always clear tokens, even if logout request fails
+      this.clearTokens();
     }
   }
 
@@ -155,8 +250,10 @@ class ApiService {
       });
       
       return response.data.valid;
-    } catch {
-      this.clearToken();
+    } catch (error) {
+      console.error('Token validation failed:', error);
+      // Don't automatically clear tokens here - let the caller decide
+      // The error might be network-related, not an auth failure
       return false;
     }
   }
@@ -164,6 +261,21 @@ class ApiService {
   async getCurrentUser(): Promise<User> {
     const response = await this.get<ApiResponse<User>>('/auth/me');
     return response.data;
+  }
+
+  // Manual token refresh (can be called by components)
+  async refreshTokens(): Promise<boolean> {
+    try {
+      if (!this.refreshToken) {
+        return false;
+      }
+      
+      await this.performTokenRefresh();
+      return true;
+    } catch {
+      this.clearTokens();
+      return false;
+    }
   }
 
   // Health check
@@ -193,7 +305,7 @@ class ApiService {
 
   // Helper method to check if a collection is a system collection
   isSystemCollection(schema: CollectionSchema): boolean {
-    return schema.collection_type === 'auth';
+    return schema.collection_type === 'auth' || schema.name.startsWith('_');
   }
 
   async getCollectionStats(collection: string): Promise<CollectionStats> {

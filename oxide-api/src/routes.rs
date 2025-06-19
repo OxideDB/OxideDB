@@ -15,7 +15,7 @@ use crate::{
     handlers::{
         admin::{serve_admin_static, serve_admin_ui, serve_external_admin_ui, serve_external_admin_static},
         auth::{
-            validate_token, get_current_user, logout,
+            validate_token, get_current_user, logout, refresh_token,
             list_auth_collections, login_collection, register_collection,
         },
         collections::{
@@ -147,12 +147,15 @@ fn auth_routes() -> Router<AppState> {
         // Common auth routes
         .route("/auth/validate", axum::routing::post(validate_token))
         .route("/auth/logout", axum::routing::post(logout))
-        .route("/auth/me", get(get_current_user))
+        .route("/auth/refresh", axum::routing::post(refresh_token))
+        // Note: /auth/me moved to protected_auth_routes()
 }
 
 /// Core API routes
 fn api_routes() -> Router<AppState> {
     Router::new()
+        // Protected auth routes (require authentication)
+        .merge(protected_auth_routes())
         // Collection management routes
         .merge(collection_routes())
         // Record management routes
@@ -161,6 +164,12 @@ fn api_routes() -> Router<AppState> {
         .merge(permission_routes())
         // Logging routes
         .merge(logging_routes())
+}
+
+/// Protected authentication routes that require authentication
+fn protected_auth_routes() -> Router<AppState> {
+    Router::new()
+        .route("/auth/me", get(get_current_user))
 }
 
 /// Collection management routes

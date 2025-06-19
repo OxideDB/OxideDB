@@ -84,6 +84,7 @@ const userCollections = [
 
 const systemCollections = [
   { name: "_users", recordCount: 23 },
+  { name: "_superusers", recordCount: 5 },
   { name: "_permissions", recordCount: 45 },
   { name: "_api_keys", recordCount: 12 },
   { name: "_audit_logs", recordCount: 8934 },
@@ -94,6 +95,7 @@ export function AppSidebar() {
   const { user, logout } = useAuth()
   const location = useLocation()
 
+  // Filter collections based on whether we want to show system collections
   const collectionsToShow = showSystemCollections ? [...userCollections, ...systemCollections] : userCollections
 
   const handleLogout = async () => {

@@ -68,10 +68,10 @@ impl Default for SecurityAuditConfig {
     fn default() -> Self {
         Self {
             sensitive_collections: vec![
-                "users".to_string(),
-                "superusers".to_string(),
-                "admin".to_string(),
-                "auth".to_string(),
+                "_users".to_string(),
+                "_superusers".to_string(),
+                "_permissions".to_string(),
+                "_audit".to_string(),
             ],
             sensitive_actions: vec![
                 "delete".to_string(),
@@ -341,7 +341,7 @@ mod tests {
         let config = SecurityAuditConfig::default();
         let hook = SecurityAuditHook::with_config(config);
 
-        assert!(hook.config.sensitive_collections.contains(&"users".to_string()));
+        assert!(hook.config.sensitive_collections.contains(&"_users".to_string()));
         assert!(hook.config.enable_anomaly_detection);
     }
 
@@ -349,8 +349,8 @@ mod tests {
     fn test_sensitive_collection_detection() {
         let hook = SecurityAuditHook::new();
 
-        assert!(hook.is_sensitive_collection("users"));
-        assert!(hook.is_sensitive_collection("superusers"));
+        assert!(hook.is_sensitive_collection("_users"));
+        assert!(hook.is_sensitive_collection("_superusers"));
         assert!(!hook.is_sensitive_collection("posts"));
     }
 
@@ -368,7 +368,7 @@ mod tests {
         let hook = SecurityAuditHook::new();
 
         let context = BeforeEventContext::new_create(
-            "users".to_string(),
+            "_users".to_string(),
             json!({
                 "email": "test@example.com",
                 "malicious": "DROP TABLE users"
@@ -388,10 +388,10 @@ mod tests {
         let hook = SecurityAuditHook::with_config(config);
 
         // First two requests should pass
-        assert!(hook.check_rate_limit("users", "create").is_ok());
-        assert!(hook.check_rate_limit("users", "create").is_ok());
+        assert!(hook.check_rate_limit("_users", "create").is_ok());
+        assert!(hook.check_rate_limit("_users", "create").is_ok());
         
         // Third request should be rate limited
-        assert!(hook.check_rate_limit("users", "create").is_err());
+        assert!(hook.check_rate_limit("_users", "create").is_err());
     }
 } 

@@ -33,11 +33,13 @@ pub struct LoginRequest {
 #[derive(Debug, Serialize)]
 pub struct LoginResponse {
     pub token: String,
+    pub refresh_token: Option<String>,
     pub user_id: String,
     pub email: String,
     pub role: String,
     pub auth_collection: String,
     pub expires_in: i64,
+    pub refresh_expires_in: Option<i64>,
     pub custom_claims: Option<serde_json::Value>,
 }
 
@@ -103,6 +105,21 @@ pub struct AuthCollectionInfo {
     pub email_verification_required: bool,
 }
 
+/// Refresh token request payload
+#[derive(Debug, Deserialize)]
+pub struct RefreshTokenRequest {
+    pub refresh_token: String,
+}
+
+/// Refresh token response
+#[derive(Debug, Serialize)]
+pub struct RefreshTokenResponse {
+    pub access_token: String,
+    pub refresh_token: String,
+    pub expires_in: i64,
+    pub refresh_expires_in: i64,
+}
+
 /// Handlers for authentication operations
 pub struct AuthHandlers;
 
@@ -137,11 +154,17 @@ impl AuthHandlers {
 
         let response = LoginResponse {
             token: auth_response.token,
+            refresh_token: auth_response.refresh_token.clone(),
             user_id: auth_response.user_id,
             email: identifier.clone(), // For now, using identifier as email
             role: auth_response.role,
             auth_collection: auth_response.auth_collection,
             expires_in: auth_service.config().token_expiry_hours * 3600,
+            refresh_expires_in: if auth_response.refresh_token.is_some() {
+                Some(auth_service.config().refresh_token_expiry_days * 24 * 3600)
+            } else {
+                None
+            },
             custom_claims: if auth_response.user_data.as_object().map_or(false, |obj| !obj.is_empty()) {
                 Some(auth_response.user_data)
             } else {
@@ -274,6 +297,31 @@ impl AuthHandlers {
     }
 
     /// Get current user information from token
+    /// Refresh an access token using a refresh token
+    pub async fn refresh_token(
+        auth_service: Arc<oxide_core::AuthService>,
+        refresh_token: String,
+    ) -> Result<RefreshTokenResponse, ApiError> {
+        debug!("🔄 Processing token refresh request");
+
+        // Refresh the token pair
+        let token_pair = auth_service.refresh_token_pair(&refresh_token)
+            .map_err(|e| {
+                warn!("Token refresh failed: {}", e);
+                ApiError::auth("Invalid or expired refresh token".to_string())
+            })?;
+
+        let response = RefreshTokenResponse {
+            access_token: token_pair.access_token,
+            refresh_token: token_pair.refresh_token,
+            expires_in: token_pair.access_token_expires_in,
+            refresh_expires_in: token_pair.refresh_token_expires_in,
+        };
+
+        info!("✅ Token refresh successful");
+        Ok(response)
+    }
+
     pub async fn get_current_user(
         claims: Claims,
     ) -> Result<CurrentUserResponse, ApiError> {
@@ -374,4 +422,15 @@ pub async fn logout() -> Result<Json<ApiResponse<String>>, ApiError> {
     // In a real implementation, you might want to maintain a blacklist of revoked tokens
     info!("👋 User logout processed");
     Ok(Json(ApiResponse::success("Logged out successfully".to_string())))
+}
+
+/// Refresh token handler
+///
+/// POST /auth/refresh
+pub async fn refresh_token(
+    State(state): State<AppState>,
+    Json(request): Json<RefreshTokenRequest>,
+) -> Result<Json<ApiResponse<RefreshTokenResponse>>, ApiError> {
+    let response = AuthHandlers::refresh_token(state.auth_service, request.refresh_token).await?;
+    Ok(Json(ApiResponse::success(response)))
 }

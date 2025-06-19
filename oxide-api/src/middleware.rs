@@ -314,8 +314,17 @@ const PUBLIC_ENDPOINTS: &[&str] = &[
 
 /// List of public endpoint prefixes that don't require authentication
 const PUBLIC_ENDPOINT_PREFIXES: &[&str] = &[
-    "/auth/",      // All auth endpoints should be public
-    "/admin",      // Admin UI endpoints should be publicly accessible
+    "/auth/collections",     // List auth collections
+    "/auth/validate",        // Token validation
+    "/auth/logout",          // Logout (though this doesn't need auth anyway)
+    "/auth/refresh",         // Token refresh
+    "/admin",                // Admin UI endpoints should be publicly accessible
+];
+
+/// List of public endpoint patterns that don't require authentication
+const PUBLIC_ENDPOINT_PATTERNS: &[&str] = &[
+    "/auth/*/login",    // Collection-specific login endpoints
+    "/auth/*/register", // Collection-specific register endpoints
 ];
 
 /// Check if the given path is a public endpoint
@@ -325,8 +334,36 @@ fn is_public_endpoint(path: &str) -> bool {
         return true;
     }
     
-    // Check prefix matches for parameterized routes
-    PUBLIC_ENDPOINT_PREFIXES.iter().any(|&prefix| path.starts_with(prefix))
+    // Check prefix matches
+    if PUBLIC_ENDPOINT_PREFIXES.iter().any(|&prefix| path.starts_with(prefix)) {
+        return true;
+    }
+    
+    // Check pattern matches for parameterized auth routes
+    for pattern in PUBLIC_ENDPOINT_PATTERNS {
+        if pattern.contains('*') {
+            // Simple pattern matching for /auth/*/login and /auth/*/register
+            let pattern_parts: Vec<&str> = pattern.split('/').collect();
+            let path_parts: Vec<&str> = path.split('/').collect();
+            
+            if pattern_parts.len() == path_parts.len() {
+                let mut matches = true;
+                for (i, &pattern_part) in pattern_parts.iter().enumerate() {
+                    if pattern_part != "*" && pattern_part != path_parts[i] {
+                        matches = false;
+                        break;
+                    }
+                }
+                if matches {
+                    return true;
+                }
+            }
+        } else if path == *pattern {
+            return true;
+        }
+    }
+    
+    false
 }
 
 /// Authentication and authorization middleware

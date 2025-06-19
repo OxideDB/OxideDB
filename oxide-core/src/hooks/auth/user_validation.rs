@@ -26,7 +26,7 @@ pub struct UserValidationConfig {
 impl Default for UserValidationConfig {
     fn default() -> Self {
         Self {
-            auth_collections: vec!["users".to_string(), "superusers".to_string()],
+            auth_collections: vec!["_users".to_string(), "_superusers".to_string()],
             min_password_length: 8,
             validate_email: true,
             check_duplicate_email: false, // Requires DB access, handled elsewhere

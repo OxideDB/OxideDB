@@ -9,12 +9,12 @@ use std::collections::HashMap;
 
 /// Create default auth collections schemas (legacy support)
 /// 
-/// This function creates the default "users" and "superusers" collections
+/// This function creates the default "_users" and "_superusers" collections
 /// that were previously hardcoded in the authentication system. This provides
 /// backward compatibility for existing installations.
 pub fn create_auth_collections() -> (CollectionSchema, CollectionSchema) {
     // Users collection schema
-    let mut users_schema = CollectionSchema::new("users".to_string(), CollectionType::Auth);
+    let mut users_schema = CollectionSchema::new("_users".to_string(), CollectionType::Auth);
     let mut users_fields = HashMap::new();
     
     users_fields.insert("email".to_string(), FieldDefinition {
@@ -44,7 +44,7 @@ pub fn create_auth_collections() -> (CollectionSchema, CollectionSchema) {
     users_schema.fields = users_fields;
     
     // Superusers collection schema
-    let mut superusers_schema = CollectionSchema::new("superusers".to_string(), CollectionType::Auth);
+    let mut superusers_schema = CollectionSchema::new("_superusers".to_string(), CollectionType::Auth);
     let mut superusers_fields = HashMap::new();
     
     superusers_fields.insert("email".to_string(), FieldDefinition {

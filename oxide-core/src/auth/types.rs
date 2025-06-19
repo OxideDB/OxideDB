@@ -79,6 +79,10 @@ pub struct AuthCollectionConfig {
     pub email_verification_required: bool,
     /// Custom fields to include in JWT claims
     pub custom_claim_fields: Vec<String>,
+    /// Whether refresh tokens are enabled for this collection
+    pub refresh_tokens_enabled: bool,
+    /// Whether refresh tokens are required for this collection (enforced for superusers)
+    pub refresh_tokens_required: bool,
 }
 
 impl Default for AuthCollectionConfig {
@@ -92,6 +96,8 @@ impl Default for AuthCollectionConfig {
             registration_enabled: true,
             email_verification_required: false,
             custom_claim_fields: Vec::new(),
+            refresh_tokens_enabled: false,
+            refresh_tokens_required: false,
         }
     }
 }
@@ -103,6 +109,8 @@ pub struct AuthServiceConfig {
     pub jwt_secret: String,
     /// Token expiration time in hours
     pub token_expiry_hours: i64,
+    /// Refresh token expiration time in days
+    pub refresh_token_expiry_days: i64,
     /// Authentication configurations per collection (with interior mutability)
     pub auth_collections: RwLock<HashMap<String, AuthCollectionConfig>>,
 }
@@ -113,6 +121,7 @@ impl AuthServiceConfig {
         Self {
             jwt_secret,
             token_expiry_hours: 24,
+            refresh_token_expiry_days: 30,
             auth_collections: RwLock::new(HashMap::new()),
         }
     }

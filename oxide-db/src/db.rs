@@ -38,8 +38,10 @@ pub struct AuthRequest {
 pub struct AuthResponse {
     /// The authenticated user's record ID
     pub user_id: String,
-    /// JWT token for the authenticated user
+    /// JWT access token for the authenticated user
     pub token: String,
+    /// Optional refresh token (if enabled for the collection)
+    pub refresh_token: Option<String>,
     /// The auth collection the user authenticated from
     pub auth_collection: String,
     /// User's role

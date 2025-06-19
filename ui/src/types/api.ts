@@ -43,10 +43,14 @@ export interface CollectionPermissions {
 // Additional types that are not auto-generated from Rust
 export interface AuthResponse {
   token: string;
+  refresh_token?: string;
   user_id: string;
   email: string;
   role: string;
+  auth_collection: string;
   expires_in: number;
+  refresh_expires_in?: number;
+  custom_claims?: unknown;
 }
 
 export interface TokenValidationResponse {

@@ -279,7 +279,7 @@ impl AuthorizationHook {
     /// Initialize default permissions for system collections
     pub async fn initialize_default_permissions(&self) -> Result<(), AppError> {
         // Only initialize permissions for truly internal system collections
-        // Auth collections like "users" should NOT get default permissions
+                        // Auth collections like "_users" should NOT get default permissions
         // so that custom rules can be applied to them
         
         // Collections endpoint permissions - require authentication for all operations
@@ -291,7 +291,7 @@ impl AuthorizationHook {
         // Note: Admin UI routes are handled via bypass_collections in AuthorizationConfig
         // They remain publicly accessible for authentication purposes only
         
-        // Note: We no longer initialize default permissions for "users" and "superusers"
+        // Note: We no longer initialize default permissions for "_users" and "_superusers"
         // collections to allow custom rules to work properly
 
         info!("🔐 Default authorization permissions initialized (auth collections left for custom rules)");
@@ -301,7 +301,7 @@ impl AuthorizationHook {
     /// Check if a collection is a system collection that should have restrictive defaults
     fn is_system_collection(&self, collection: &str) -> bool {
         // System collections that should have restrictive defaults
-        // Note: "users" is NOT included here to allow custom rules to work on auth collections
+        // Note: "_users" is NOT included here to allow custom rules to work on auth collections
         matches!(collection, "_internal" | "_system" | "_meta")
     }
 

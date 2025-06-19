@@ -59,14 +59,14 @@ pub use types::{
     CrudOperation, PermissionLevel
 };
 
-pub use jwt::{Claims, JwtService};
+pub use jwt::{Claims, RefreshClaims, TokenPair, JwtService};
 pub use password::PasswordService;
 pub use permissions::{
     OperationRule, CollectionPermissions, PermissionContext, 
     PermissionService, DefaultPermissionService
 };
 pub use rules::RuleEvaluator;
-pub use service::AuthService;
+pub use service::{AuthService, AuthTokens};
 pub use legacy::create_auth_collections;
 
 #[cfg(test)]
@@ -94,6 +94,8 @@ mod tests {
             registration_enabled: true,
             email_verification_required: false,
             custom_claim_fields: vec!["name".to_string()],
+            refresh_tokens_enabled: false,
+            refresh_tokens_required: false,
         };
         
         config.add_auth_collection(auth_config);

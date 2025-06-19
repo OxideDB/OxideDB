@@ -47,6 +47,12 @@ const CreateCollection: React.FC = () => {
     e.preventDefault();
     if (!collectionName.trim()) return;
 
+    // Validate collection name
+    if (collectionName.trim().startsWith('_')) {
+      setError('Collection names cannot start with underscore (reserved for system collections)');
+      return;
+    }
+
     try {
       setCreating(true);
       const now = Date.now();
