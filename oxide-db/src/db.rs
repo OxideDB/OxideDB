@@ -6,7 +6,7 @@
 
 use crate::Record;
 use oxide_core::{AppError, CollectionSchema, CollectionPermissions};
-use oxide_core::event::{RecordData, RecordId};
+use oxide_core::event::types::{RecordData, RecordId};
 use oxide_core::auth::AuthCollectionConfig;
 
 /// Parameters for listing records
@@ -78,6 +78,9 @@ pub trait SchemaAdapter {
     
     /// Convert a field type to the appropriate SQL column type
     fn field_type_to_sql(&self, field_type: &oxide_core::FieldType) -> &'static str;
+    
+    /// Generate SQL statements to migrate a table from old schema to new schema
+    fn generate_migration_sql(&self, old_schema: &CollectionSchema, new_schema: &CollectionSchema) -> Vec<String>;
 }
 
 /// Main database trait for CRUD operations

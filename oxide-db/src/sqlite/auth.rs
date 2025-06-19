@@ -8,6 +8,7 @@ use oxide_core::{
     auth::{AuthCollectionConfig, Claims},
 };
 use tracing::{info, debug, warn};
+use uuid::Uuid;
 
 impl SqliteDb {
     /// Initialize authentication collections (users and superusers) - legacy support
@@ -48,15 +49,13 @@ impl SqliteDb {
         ).await?;
 
         // Create context for BeforeUserAuth event
-        let mut auth_context = BeforeEventContext {
-            collection: auth_request.collection.clone(),
-            data: serde_json::json!({
+        let mut auth_context = BeforeEventContext::new_read(
+            auth_request.collection.clone(),
+            user_record.id.clone(),
+            serde_json::json!({
                 auth_config.identifier_field.clone(): auth_request.identifier.clone()
             }),
-            metadata: serde_json::json!({}),
-            record_id: Some(user_record.id.clone()),
-            old_data: Some(user_record.data.clone()),
-        };
+        );
         
         // Dispatch BeforeUserAuth event
         self.event_bus
@@ -92,10 +91,17 @@ impl SqliteDb {
         let token = self.auth_service.generate_token_with_claims(claims)?;
 
         // Dispatch AfterUserAuth event
+        let request_context = oxide_core::event::context::RequestContext::authenticated(user_record.id.clone());
         self.event_bus
             .dispatch_after(AfterEventType::UserAuthenticated, &AfterEventContext::UserAuthenticated {
+                event_id: Uuid::new_v4().to_string(),
+                timestamp: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as u64,
                 user_id: user_record.id.clone(),
                 email: auth_request.identifier.clone(),
+                request_context,
             })
             .await?;
 
@@ -164,11 +170,18 @@ impl SqliteDb {
         let record = <Self as Db>::create_record(self, &register_request.collection, user_data).await?;
 
         // Dispatch user registration event
+        let request_context = oxide_core::event::context::RequestContext::anonymous();
         self.event_bus
             .dispatch_after(AfterEventType::UserRegistered, &AfterEventContext::UserRegistered {
+                event_id: Uuid::new_v4().to_string(),
+                timestamp: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as u64,
                 user_id: record.id.clone(),
                 email: register_request.identifier.clone(),
                 metadata: record.data.clone(),
+                request_context,
             })
             .await?;
 

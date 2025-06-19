@@ -4,7 +4,7 @@ use crate::db::SchemaAdapter;
 use super::schema_adapter::SqliteSchemaAdapter;
 use oxide_core::{
     AppError, AuthService, EventBus,
-    event::RecordId,
+    event::types::RecordId,
 };
 use rusqlite::Connection;
 use std::sync::{Arc, Mutex};
@@ -138,8 +138,17 @@ impl SqliteDb {
         self.migrate_to_collection_tables().await?;
 
         // Dispatch OnSystemStartup event
+        let startup_context = AfterEventContext::SystemStartup {
+            event_id: Uuid::new_v4().to_string(),
+            timestamp: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64,
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            config: serde_json::json!({"database_path": "sqlite"}),
+        };
         self.event_bus
-            .dispatch_after(AfterEventType::SystemStartup, &AfterEventContext::SystemStartup)
+            .dispatch_after(AfterEventType::SystemStartup, &startup_context)
             .await?;
 
         // Initialize system collections
@@ -361,8 +370,17 @@ impl SqliteDb {
         info!("Closing SQLite database connection");
 
         // Dispatch OnSystemShutdown event
+        let shutdown_context = AfterEventContext::SystemShutdown {
+            event_id: Uuid::new_v4().to_string(),
+            timestamp: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64,
+            reason: "Database connection closed".to_string(),
+            uptime_ms: 0, // We don't track uptime at the DB level
+        };
         self.event_bus
-            .dispatch_after(AfterEventType::SystemShutdown, &AfterEventContext::SystemShutdown)
+            .dispatch_after(AfterEventType::SystemShutdown, &shutdown_context)
             .await?;
 
         info!("✅ Database connection closed");

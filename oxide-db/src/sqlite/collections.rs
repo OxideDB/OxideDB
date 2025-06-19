@@ -9,6 +9,7 @@ use oxide_core::{
 };
 use tokio::task::spawn_blocking;
 use tracing::{info, debug};
+use uuid::Uuid;
 
 impl SqliteDb {
     /// Initialize system collections like _collections
@@ -37,13 +38,10 @@ impl SqliteDb {
     /// Create a collection with a specific schema
     pub async fn create_collection_with_schema(&self, schema: CollectionSchema) -> Result<(), AppError> {
         // Create a mutable context for BeforeCollectionCreate event
-        let mut context = BeforeEventContext {
-            collection: schema.name.clone(),
-            data: serde_json::to_value(&schema).unwrap_or_default(),
-            metadata: serde_json::json!({}),
-            record_id: None,
-            old_data: None,
-        };
+        let mut context = BeforeEventContext::new_create(
+            schema.name.clone(),
+            serde_json::to_value(&schema).unwrap_or_default(),
+        );
 
         // Dispatch BeforeCollectionCreate event
         self.event_bus
@@ -53,6 +51,7 @@ impl SqliteDb {
         let connection = self.connection.clone();
         let schema_name = schema.name.clone();
         let schema_name_for_events = schema.name.clone();
+        let schema_for_events = schema.clone(); // Clone schema for after event dispatch
         let schema_json = serde_json::to_string(&schema)
             .map_err(|e| AppError::database(format!("Failed to serialize schema: {}", e)))?;
 
@@ -113,9 +112,17 @@ impl SqliteDb {
         .map_err(|e| AppError::internal(format!("Task join error: {}", e)))??;
 
         // Dispatch AfterCollectionCreate event
+        let request_context = oxide_core::event::context::RequestContext::anonymous();
         self.event_bus
             .dispatch_after(AfterEventType::CollectionCreated, &AfterEventContext::CollectionCreated { 
+                event_id: Uuid::new_v4().to_string(),
+                timestamp: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as u64,
                 collection: schema_name_for_events.clone(),
+                schema: serde_json::to_value(&schema_for_events).unwrap_or_default(),
+                request_context,
             })
             .await?;
 
@@ -159,6 +166,21 @@ impl SqliteDb {
 
     /// Update the schema for a collection
     pub async fn update_collection_schema(&self, collection: &str, mut schema: CollectionSchema) -> Result<(), AppError> {
+        // Get the current schema to compare for migration
+        let old_schema = self.get_collection_schema(collection).await?;
+
+        // Create a mutable context for BeforeCollectionUpdate event
+        let mut context = BeforeEventContext::new_collection_update(
+            collection.to_string(),
+            serde_json::to_value(&old_schema).unwrap_or_default(),
+            serde_json::to_value(&schema).unwrap_or_default(),
+        );
+
+        // Dispatch BeforeCollectionUpdate event
+        self.event_bus
+            .dispatch_before(BeforeEventType::CollectionUpdate, &mut context)
+            .await?;
+        
         let connection = self.connection.clone();
         let collection_name = collection.to_string();
 
@@ -171,12 +193,27 @@ impl SqliteDb {
         let schema_json = serde_json::to_string(&schema)
             .map_err(|e| AppError::database(format!("Failed to serialize schema: {}", e)))?;
 
+        // Generate migration SQL using schema adapter
+        let schema_adapter = super::schema_adapter::SqliteSchemaAdapter::new();
+        let migration_statements = schema_adapter.generate_migration_sql(&old_schema, &schema);
+
         spawn_blocking(move || {
             let conn = connection
                 .lock()
                 .map_err(|_| AppError::database("Failed to acquire database lock"))?;
 
-            let rows_affected = conn
+            // Start a transaction for atomicity
+            let tx = conn.unchecked_transaction()
+                .map_err(|e| AppError::database(format!("Failed to start transaction: {}", e)))?;
+
+            // Execute migration statements to update the table structure
+            for migration_sql in migration_statements {
+                tx.execute(&migration_sql, [])
+                    .map_err(|e| AppError::database(format!("Failed to execute migration SQL '{}': {}", migration_sql, e)))?;
+            }
+
+            // Update the schema metadata
+            let rows_affected = tx
                 .execute(
                     "UPDATE collections SET schema = ?1, updated_at = ?2 WHERE name = ?3",
                     [&schema_json, &schema.updated_at.to_string(), &collection_name],
@@ -187,25 +224,39 @@ impl SqliteDb {
                 return Err(AppError::not_found("collection", &collection_name));
             }
 
+            // Commit the transaction
+            tx.commit()
+                .map_err(|e| AppError::database(format!("Failed to commit schema update transaction: {}", e)))?;
+
             Ok::<(), AppError>(())
         })
         .await
         .map_err(|e| AppError::internal(format!("Task join error: {}", e)))??;
 
-        info!("Updated schema for collection: {}", collection);
+        // Dispatch AfterCollectionUpdated event
+        let request_context = oxide_core::event::context::RequestContext::anonymous();
+        let after_context = oxide_core::event::AfterEventContext::collection_updated(
+            collection.to_string(),
+            serde_json::to_value(&old_schema).unwrap_or_default(),
+            serde_json::to_value(&schema).unwrap_or_default(),
+            request_context,
+        );
+        self.event_bus
+            .dispatch_after(AfterEventType::CollectionUpdated, &after_context)
+            .await?;
+
+        info!("Updated schema and migrated table for collection: {}", collection);
         Ok(())
     }
 
     /// Delete a collection and all its records
     pub async fn delete_collection(&self, collection: &str) -> Result<(), AppError> {
-        // Create a mutable context for BeforeCollectionDelete event
-        let mut context = BeforeEventContext {
-            collection: collection.to_string(),
-            data: serde_json::json!({"collection": collection}),
-            metadata: serde_json::json!({}),
-            record_id: None,
-            old_data: None,
-        };
+        // Create a mutable context for BeforeCollectionDelete event  
+        let mut context = BeforeEventContext::new_delete(
+            collection.to_string(),
+            "".to_string(), // No specific record ID for collection operations
+            serde_json::json!({"collection": collection}),
+        );
 
         // Dispatch BeforeCollectionDelete event
         self.event_bus
@@ -255,9 +306,16 @@ impl SqliteDb {
         .map_err(|e| AppError::internal(format!("Task join error: {}", e)))??;
 
         // Dispatch AfterCollectionDelete event
+        let request_context = oxide_core::event::context::RequestContext::anonymous();
         self.event_bus
             .dispatch_after(AfterEventType::CollectionDeleted, &AfterEventContext::CollectionDeleted {
+                event_id: Uuid::new_v4().to_string(),
+                timestamp: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as u64,
                 collection: collection_clone.clone(),
+                request_context,
             })
             .await?;
 

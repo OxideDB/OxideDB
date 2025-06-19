@@ -4,7 +4,7 @@
 //! including create, read, update, delete, and list operations.
 
 use axum::{extract::{Path, Query, State}, http::StatusCode, response::Json};
-use oxide_core::event::{RecordData, RecordId};
+use oxide_core::event::types::{RecordData, RecordId};
 use oxide_db::{db::ListParams, Db, Record};
 use std::sync::Arc;
 use tracing::{debug, info};

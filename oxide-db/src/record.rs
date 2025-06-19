@@ -1,6 +1,6 @@
 //! Record data structures and utilities
 
-use oxide_core::event::{RecordData, RecordId};
+use oxide_core::event::types::{RecordData, RecordId};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 

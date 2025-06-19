@@ -129,6 +129,81 @@ impl SchemaAdapter for SqliteSchemaAdapter {
         // Use the new extensible field type system
         field_type.sql_type()
     }
+    
+    /// Generate SQL statements to migrate a table from old schema to new schema
+    fn generate_migration_sql(&self, old_schema: &CollectionSchema, new_schema: &CollectionSchema) -> Vec<String> {
+        let table_name = self.get_table_name(&new_schema.name);
+        let mut migration_statements = Vec::new();
+        
+        // Find new fields that need to be added
+        for (field_name, field_def) in &new_schema.fields {
+            if !old_schema.fields.contains_key(field_name) {
+                // This is a new field, generate ALTER TABLE ADD COLUMN statement
+                let mut column_def = format!("{} {}", field_name, self.field_type_to_sql(&field_def.field_type));
+                
+                // Add constraints - Note: SQLite doesn't support adding NOT NULL columns without defaults
+                // so we'll add as nullable first, then handle required fields separately if needed
+                if field_def.unique {
+                    // For unique constraints, we'll add them as separate indexes since SQLite
+                    // doesn't support adding UNIQUE constraints via ALTER TABLE
+                    migration_statements.push(format!(
+                        "CREATE UNIQUE INDEX IF NOT EXISTS idx_{}_unique_{} ON {}({})",
+                        table_name, field_name, table_name, field_name
+                    ));
+                }
+                
+                // Add default value if specified
+                if let Some(default) = &field_def.default {
+                    match field_def.field_type.sql_type() {
+                        "TEXT" => {
+                            if let Some(s) = default.as_str() {
+                                column_def.push_str(&format!(" DEFAULT '{}'", s.replace('\'', "''")));
+                            } else {
+                                // For JSON fields, serialize the default value
+                                column_def.push_str(&format!(" DEFAULT '{}'", default.to_string().replace('\'', "''")));
+                            }
+                        }
+                        "REAL" => {
+                            if let Some(n) = default.as_f64() {
+                                column_def.push_str(&format!(" DEFAULT {}", n));
+                            }
+                        }
+                        "INTEGER" => {
+                            if default.is_boolean() {
+                                if let Some(b) = default.as_bool() {
+                                    column_def.push_str(&format!(" DEFAULT {}", if b { 1 } else { 0 }));
+                                }
+                            } else if let Some(i) = default.as_i64() {
+                                column_def.push_str(&format!(" DEFAULT {}", i));
+                            }
+                        }
+                        _ => {
+                            // Fallback to text representation
+                            column_def.push_str(&format!(" DEFAULT '{}'", default.to_string().replace('\'', "''")));
+                        }
+                    }
+                }
+                
+                migration_statements.push(format!("ALTER TABLE {} ADD COLUMN {}", table_name, column_def));
+            }
+        }
+        
+        // Add indexes for new fields that need them
+        for index_def in &new_schema.indexes {
+            // Check if this index involves new fields
+            let has_new_fields = index_def.fields.iter().any(|field| !old_schema.fields.contains_key(field));
+            if has_new_fields {
+                let index_type = if index_def.unique { "UNIQUE INDEX" } else { "INDEX" };
+                let fields_str = index_def.fields.join(", ");
+                migration_statements.push(format!(
+                    "CREATE {} IF NOT EXISTS {} ON {}({})",
+                    index_type, index_def.name, table_name, fields_str
+                ));
+            }
+        }
+        
+        migration_statements
+    }
 }
 
 #[cfg(test)]
@@ -189,6 +264,54 @@ mod tests {
 
         let indexes = adapter.generate_index_sql(&schema);
         assert!(!indexes.is_empty());
+    }
+
+    #[test]
+    fn test_migration_sql_generation() {
+        let adapter = SqliteSchemaAdapter::new();
+        
+        // Create original schema
+        let mut old_schema = CollectionSchema::new("users".to_string(), CollectionType::Base);
+        old_schema.add_field(
+            "email".to_string(),
+            FieldDefinition {
+                field_type: FieldType::Email,
+                required: true,
+                unique: true,
+                default: None,
+                validation: None,
+            },
+        );
+        
+        // Create new schema with additional field
+        let mut new_schema = old_schema.clone();
+        new_schema.add_field(
+            "age".to_string(),
+            FieldDefinition {
+                field_type: FieldType::Number,
+                required: false,
+                unique: false,
+                default: Some(serde_json::json!(0)),
+                validation: None,
+            },
+        );
+        new_schema.add_field(
+            "verified".to_string(),
+            FieldDefinition {
+                field_type: FieldType::Boolean,
+                required: false,
+                unique: false,
+                default: Some(serde_json::json!(false)),
+                validation: None,
+            },
+        );
+        
+        let migration_sql = adapter.generate_migration_sql(&old_schema, &new_schema);
+        
+        // Should generate ALTER TABLE statements for new fields
+        assert!(migration_sql.len() >= 2); // At least two new fields
+        assert!(migration_sql.iter().any(|sql| sql.contains("ALTER TABLE collection_users ADD COLUMN age REAL DEFAULT 0")));
+        assert!(migration_sql.iter().any(|sql| sql.contains("ALTER TABLE collection_users ADD COLUMN verified INTEGER DEFAULT 0")));
     }
 
     #[test]

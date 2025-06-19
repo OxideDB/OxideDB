@@ -390,17 +390,14 @@ mod tests {
         permission_service.store_permissions(&permissions).await.unwrap();
 
         // Create a request context with user token
-        let mut context = BeforeEventContext {
-            collection: "api".to_string(),
-            data: serde_json::json!({
+        let mut context = BeforeEventContext::new_create(
+            "api".to_string(),
+            serde_json::json!({
                 "method": "GET",
                 "path": "/collections/sensitive_data/records",
                 "headers": {}
             }),
-            metadata: serde_json::json!({}),
-            record_id: None,
-            old_data: None,
-        };
+        );
 
         // Should fail for unauthenticated request
         let result = hook.handle_before_api_request(&mut context).await;

@@ -362,21 +362,18 @@ pub async fn auth_middleware(
     let headers_json = headers_to_json(&headers);
 
     // Create context for BeforeApiRequest event (this will trigger authorization)
-    let mut context = BeforeEventContext {
-        collection: "api".to_string(),
-        data: serde_json::json!({
+    let mut context = BeforeEventContext::new_create(
+        "api".to_string(),
+        serde_json::json!({
             "method": method.to_string(),
             "path": path,
             "headers": headers_json
         }),
-        metadata: serde_json::json!({}),
-        record_id: None,
-        old_data: None,
-    };
+    );
 
     // Dispatch BeforeApiRequest event - this will trigger authorization hooks
     match state.event_bus.dispatch_before(BeforeEventType::ApiRequest, &mut context).await {
-        Ok(()) => {
+        Ok(_results) => {
             // Authorization passed, continue with the request
             debug!("✅ Authorization passed for {} {}", method, uri);
             Ok(next.run(request).await)

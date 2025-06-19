@@ -237,16 +237,13 @@ mod tests {
         let hook = UserValidationHook::new().unwrap();
 
         // Valid user data
-        let mut context = BeforeEventContext {
-            collection: "users".to_string(),
-            data: json!({
+        let mut context = BeforeEventContext::new_create(
+            "users".to_string(),
+            json!({
                 "email": "test@example.com",
                 "password": "strongPassword123"
             }),
-            metadata: json!({}),
-            record_id: None,
-            old_data: None,
-        };
+        );
 
         assert!(hook.handle_before_record_create(&mut context).is_ok());
 
@@ -280,16 +277,13 @@ mod tests {
         let hook = UserValidationHook::with_config(config).unwrap();
 
         // Should accept company.com emails
-        let mut context = BeforeEventContext {
-            collection: "custom_users".to_string(),
-            data: json!({
+        let mut context = BeforeEventContext::new_create(
+            "custom_users".to_string(),
+            json!({
                 "email": "john@company.com",
                 "password": "verylongpassword123"
             }),
-            metadata: json!({}),
-            record_id: None,
-            old_data: None,
-        };
+        );
 
         assert!(hook.handle_before_record_create(&mut context).is_ok());
 
@@ -308,16 +302,13 @@ mod tests {
 
         // Test data that would result from password hashing hook running
         // The password field now contains the hash directly
-        let mut context = BeforeEventContext {
-            collection: "superusers".to_string(),
-            data: json!({
+        let mut context = BeforeEventContext::new_create(
+            "superusers".to_string(),
+            json!({
                 "email": "admin@example.com",
                 "password": "$argon2id$v=19$m=65536,t=3,p=4$abcdef..."
             }),
-            metadata: json!({}),
-            record_id: None,
-            old_data: None,
-        };
+        );
 
         // This should pass since password field is present (even though it contains a hash)
         assert!(hook.handle_before_record_create(&mut context).is_ok());
@@ -367,16 +358,13 @@ mod tests {
         assert!(password_hook.register_schema("superusers".to_string(), schema).is_ok());
 
         // Original data with plain text password
-        let mut context = BeforeEventContext {
-            collection: "superusers".to_string(),
-            data: json!({
+        let mut context = BeforeEventContext::new_create(
+            "superusers".to_string(),
+            json!({
                 "email": "admin@example.com",
                 "password": "securepassword123"
             }),
-            metadata: json!({}),
-            record_id: None,
-            old_data: None,
-        };
+        );
 
         // Step 1: Password hashing hook processes the data
         assert!(password_hook.handle_before_record_create(&mut context).is_ok());

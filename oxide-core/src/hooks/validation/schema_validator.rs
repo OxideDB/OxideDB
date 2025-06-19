@@ -253,16 +253,13 @@ mod tests {
         let schema = create_test_schema();
         hook.register_schema("test".to_string(), schema).unwrap();
 
-        let mut context = BeforeEventContext {
-            collection: "test".to_string(),
-            data: json!({
+        let mut context = BeforeEventContext::new_create(
+            "test".to_string(),
+            json!({
                 "name": "John Doe",
                 "age": 30
             }),
-            metadata: json!({}),
-            record_id: None,
-            old_data: None,
-        };
+        );
 
         assert!(hook.handle_before_record_create(&mut context).is_ok());
     }
@@ -276,16 +273,13 @@ mod tests {
         let schema = create_test_schema();
         hook.register_schema("test".to_string(), schema).unwrap();
 
-        let mut context = BeforeEventContext {
-            collection: "test".to_string(),
-            data: json!({
+        let mut context = BeforeEventContext::new_create(
+            "test".to_string(),
+            json!({
                 "name": "John Doe",
                 "age": "30"  // String that should be converted to number
             }),
-            metadata: json!({}),
-            record_id: None,
-            old_data: None,
-        };
+        );
 
         assert!(hook.handle_before_record_create(&mut context).is_ok());
         
@@ -302,17 +296,14 @@ mod tests {
         let schema = create_test_schema();
         hook.register_schema("test".to_string(), schema).unwrap();
 
-        let mut context = BeforeEventContext {
-            collection: "test".to_string(),
-            data: json!({
+        let mut context = BeforeEventContext::new_create(
+            "test".to_string(),
+            json!({
                 "name": "John Doe",
                 "age": 30,
                 "unknown_field": "should fail"
             }),
-            metadata: json!({}),
-            record_id: None,
-            old_data: None,
-        };
+        );
 
         // Should fail due to unknown field in strict mode
         assert!(hook.handle_before_record_create(&mut context).is_err());

@@ -238,16 +238,13 @@ mod tests {
         config.schema_aware = false; // Use config mode for this test
         let hook = PasswordHashingHook::with_config(auth_service, config);
 
-        let mut context = BeforeEventContext {
-            collection: "users".to_string(),
-            data: json!({
+        let mut context = BeforeEventContext::new_create(
+            "users".to_string(),
+            json!({
                 "email": "test@example.com",
                 "password": "plain_password_123"
             }),
-            metadata: json!({}),
-            record_id: None,
-            old_data: None,
-        };
+        );
 
         // Test password hashing
         assert!(hook.handle_before_record_create(&mut context).is_ok());
@@ -275,16 +272,13 @@ mod tests {
         };
         let hook = PasswordHashingHook::with_config(auth_service, config);
 
-        let mut context = BeforeEventContext {
-            collection: "custom_users".to_string(),
-            data: json!({
+        let mut context = BeforeEventContext::new_create(
+            "custom_users".to_string(),
+            json!({
                 "email": "test@example.com",
                 "pwd": "plain_password_123"
             }),
-            metadata: json!({}),
-            record_id: None,
-            old_data: None,
-        };
+        );
 
         assert!(hook.handle_before_record_create(&mut context).is_ok());
         
@@ -329,17 +323,14 @@ mod tests {
         // Register the schema
         assert!(hook.register_schema("users".to_string(), schema).is_ok());
 
-        let mut context = BeforeEventContext {
-            collection: "users".to_string(),
-            data: json!({
+        let mut context = BeforeEventContext::new_create(
+            "users".to_string(),
+            json!({
                 "email": "test@example.com",
                 "password": "main_password_123",
                 "backup_password": "backup_password_456"
             }),
-            metadata: json!({}),
-            record_id: None,
-            old_data: None,
-        };
+        );
 
         // Test schema-aware password hashing
         assert!(hook.handle_before_record_create(&mut context).is_ok());

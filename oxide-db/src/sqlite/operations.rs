@@ -4,8 +4,8 @@ use super::connection::SqliteDb;
 use crate::{db::{Db, ListParams, SchemaAdapter}, Record};
 use oxide_core::{
     AppError, FieldType,
-    BeforeEventContext, AfterEventContext, BeforeEventType, AfterEventType,
-    event::{RecordData, RecordId},
+    BeforeEventContext, BeforeEventType, AfterEventType,
+    event::types::{RecordData, RecordId},
 };
 use tokio::task::spawn_blocking;
 use tracing::debug;
@@ -230,12 +230,15 @@ impl Db for SqliteDb {
         .map_err(|e| AppError::internal(format!("Task join error: {}", e)))??;
 
         // Dispatch AfterRecordCreate event
+        let request_context = oxide_core::event::RequestContext::authenticated("system".to_string()); // Default system context
+        let after_context = oxide_core::event::AfterEventContext::record_created(
+            record.collection.clone(),
+            record.id.clone(),
+            record.data.clone(),
+            request_context,
+        );
         self.event_bus
-            .dispatch_after(AfterEventType::RecordCreated, &AfterEventContext::RecordCreated {
-                collection: record.collection.clone(),
-                record_id: record.id.clone(),
-                data: record.data.clone(),
-            })
+            .dispatch_after(AfterEventType::RecordCreated, &after_context)
             .await?;
 
         debug!(
@@ -250,14 +253,12 @@ impl Db for SqliteDb {
         collection: &str,
         record_id: &RecordId,
     ) -> Result<Record, AppError> {
-        // Create a mutable context for BeforeRecordRead event
-        let mut context = BeforeEventContext {
-            collection: collection.to_string(),
-            data: serde_json::json!({"record_id": record_id}),
-            metadata: serde_json::json!({}),
-            record_id: Some(record_id.clone()),
-            old_data: None,
-        };
+        // Create a mutable context for BeforeRecordRead event using the factory method
+        let mut context = BeforeEventContext::new_read(
+            collection.to_string(),
+            record_id.clone(),
+            serde_json::json!({"record_id": record_id}),
+        );
 
         // Dispatch BeforeRecordRead event
         self.event_bus
@@ -299,12 +300,21 @@ impl Db for SqliteDb {
         .map_err(|e| AppError::internal(format!("Task join error: {}", e)))??;
 
         // Dispatch AfterRecordRead event
+        let request_context = oxide_core::event::RequestContext::authenticated("system".to_string());
+        // Note: There's no direct factory method for RecordRead, so we'll use the enum variant with all fields
+        let after_context = oxide_core::event::AfterEventContext::RecordRead {
+            event_id: uuid::Uuid::new_v4().to_string(),
+            timestamp: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64,
+            collection: record.collection.clone(),
+            record_id: record.id.clone(),
+            data: record.data.clone(),
+            request_context,
+        };
         self.event_bus
-            .dispatch_after(AfterEventType::RecordRead, &AfterEventContext::RecordRead {
-                collection: record.collection.clone(),
-                record_id: record.id.clone(),
-                data: record.data.clone(),
-            })
+            .dispatch_after(AfterEventType::RecordRead, &after_context)
             .await?;
 
         debug!(
@@ -414,13 +424,16 @@ impl Db for SqliteDb {
         .map_err(|e| AppError::internal(format!("Task join error: {}", e)))??;
 
         // Dispatch AfterRecordUpdate event
+        let request_context = oxide_core::event::RequestContext::authenticated("system".to_string());
+        let after_context = oxide_core::event::AfterEventContext::record_updated(
+            updated_record.collection.clone(),
+            updated_record.id.clone(),
+            old_record.data,
+            updated_record.data.clone(),
+            request_context,
+        );
         self.event_bus
-            .dispatch_after(AfterEventType::RecordUpdated, &AfterEventContext::RecordUpdated {
-                collection: updated_record.collection.clone(),
-                record_id: updated_record.id.clone(),
-                old_data: old_record.data,
-                new_data: updated_record.data.clone(),
-            })
+            .dispatch_after(AfterEventType::RecordUpdated, &after_context)
             .await?;
 
         debug!(
@@ -479,12 +492,15 @@ impl Db for SqliteDb {
         .map_err(|e| AppError::internal(format!("Task join error: {}", e)))??;
 
         // Dispatch AfterRecordDelete event
+        let request_context = oxide_core::event::RequestContext::authenticated("system".to_string());
+        let after_context = oxide_core::event::AfterEventContext::record_deleted(
+            record.collection.clone(),
+            record.id.clone(),
+            record.data.clone(),
+            request_context,
+        );
         self.event_bus
-            .dispatch_after(AfterEventType::RecordDeleted, &AfterEventContext::RecordDeleted {
-                collection: record.collection.clone(),
-                record_id: record.id.clone(),
-                data: record.data.clone(),
-            })
+            .dispatch_after(AfterEventType::RecordDeleted, &after_context)
             .await?;
 
         debug!(

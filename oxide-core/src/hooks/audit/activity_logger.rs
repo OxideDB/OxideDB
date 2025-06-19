@@ -99,7 +99,7 @@ impl ActivityLoggerHook {
     /// Handle After events (all types)
     pub fn handle_after_event(&self, event_type: &str, context: &AfterEventContext) -> Result<(), AppError> {
         match context {
-            AfterEventContext::RecordCreated { collection, record_id, data } => {
+            AfterEventContext::RecordCreated { collection, record_id, data, .. } => {
                 if self.should_log_collection(collection) {
                     let sanitized_data = if self.config.log_data_content {
                         Some(self.sanitize_data(data))
@@ -116,7 +116,7 @@ impl ActivityLoggerHook {
                     );
                 }
             }
-            AfterEventContext::RecordUpdated { collection, record_id, old_data, new_data } => {
+            AfterEventContext::RecordUpdated { collection, record_id, old_data, new_data, .. } => {
                 if self.should_log_collection(collection) {
                     let old_sanitized = if self.config.log_data_content {
                         Some(self.sanitize_data(old_data))
@@ -139,7 +139,7 @@ impl ActivityLoggerHook {
                     );
                 }
             }
-            AfterEventContext::RecordDeleted { collection, record_id, data: _ } => {
+            AfterEventContext::RecordDeleted { collection, record_id, data: _, .. } => {
                 if self.should_log_collection(collection) {
                     info!(
                         "🗑️ [AFTER] {} | Collection: '{}' | Record ID: {} | Deleted data logged separately",
@@ -157,7 +157,7 @@ impl ActivityLoggerHook {
                     email
                 );
             }
-            AfterEventContext::UserAuthenticated { user_id, email } => {
+            AfterEventContext::UserAuthenticated { user_id, email, .. } => {
                 info!(
                     "🔐 [AFTER] {} | User ID: {} | Email: {}",
                     event_type,
@@ -165,21 +165,28 @@ impl ActivityLoggerHook {
                     email
                 );
             }
-            AfterEventContext::CollectionCreated { collection } => {
+            AfterEventContext::CollectionCreated { collection, .. } => {
                 info!(
                     "📁 [AFTER] {} | Collection: '{}'",
                     event_type,
                     collection
                 );
             }
-            AfterEventContext::CollectionDeleted { collection } => {
+            AfterEventContext::CollectionUpdated { collection, .. } => {
+                info!(
+                    "📝 [AFTER] {} | Collection: '{}'",
+                    event_type,
+                    collection
+                );
+            }
+            AfterEventContext::CollectionDeleted { collection, .. } => {
                 info!(
                     "🗂️ [AFTER] {} | Collection: '{}'",
                     event_type,
                     collection
                 );
             }
-            AfterEventContext::ErrorOccurred { error_type, message, context: error_context } => {
+            AfterEventContext::ErrorOccurred { error_type, message, context: error_context, .. } => {
                 error!(
                     "❌ [AFTER] {} | Error Type: {} | Message: {} | Context: {}",
                     event_type,

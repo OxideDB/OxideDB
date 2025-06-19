@@ -289,16 +289,13 @@ mod tests {
     fn test_html_stripping() {
         let hook = DataSanitizerHook::new().unwrap();
 
-        let mut context = BeforeEventContext {
-            collection: "posts".to_string(),
-            data: json!({
+        let mut context = BeforeEventContext::new_create(
+            "posts".to_string(),
+            json!({
                 "title": "<script>alert('xss')</script>Hello World",
                 "content": "This should <b>not</b> be stripped"
             }),
-            metadata: json!({}),
-            record_id: None,
-            old_data: None,
-        };
+        );
 
         assert!(hook.handle_before_record_create(&mut context).is_ok());
         
@@ -313,16 +310,13 @@ mod tests {
     fn test_whitespace_trimming() {
         let hook = DataSanitizerHook::new().unwrap();
 
-        let mut context = BeforeEventContext {
-            collection: "users".to_string(),
-            data: json!({
+        let mut context = BeforeEventContext::new_create(
+            "users".to_string(),
+            json!({
                 "name": "  John Doe  ",
                 "email": "  JOHN@EXAMPLE.COM  "
             }),
-            metadata: json!({}),
-            record_id: None,
-            old_data: None,
-        };
+        );
 
         assert!(hook.handle_before_record_create(&mut context).is_ok());
         
@@ -339,15 +333,12 @@ mod tests {
         config.max_string_length = 10;
         let hook = DataSanitizerHook::with_config(config).unwrap();
 
-        let mut context = BeforeEventContext {
-            collection: "posts".to_string(),
-            data: json!({
+        let mut context = BeforeEventContext::new_create(
+            "posts".to_string(),
+            json!({
                 "title": "This is a very long title that exceeds the limit"
             }),
-            metadata: json!({}),
-            record_id: None,
-            old_data: None,
-        };
+        );
 
         // Should fail due to length limit
         assert!(hook.handle_before_record_create(&mut context).is_err());
@@ -357,9 +348,9 @@ mod tests {
     fn test_nested_object_sanitization() {
         let hook = DataSanitizerHook::new().unwrap();
 
-        let mut context = BeforeEventContext {
-            collection: "complex".to_string(),
-            data: json!({
+        let mut context = BeforeEventContext::new_create(
+            "complex".to_string(),
+            json!({
                 "user": {
                     "name": "  John  ",
                     "profile": {
@@ -367,10 +358,7 @@ mod tests {
                     }
                 }
             }),
-            metadata: json!({}),
-            record_id: None,
-            old_data: None,
-        };
+        );
 
         assert!(hook.handle_before_record_create(&mut context).is_ok());
         

@@ -142,7 +142,7 @@ impl SecurityAuditHook {
     /// Handle After events for security monitoring
     pub fn handle_after_event(&self, event_type: &str, context: &AfterEventContext) -> Result<(), AppError> {
         match context {
-            AfterEventContext::UserAuthenticated { user_id, email } => {
+            AfterEventContext::UserAuthenticated { user_id, email, .. } => {
                 self.log_security_event(SecurityEvent::AuthenticationAttempt {
                     email: email.clone(),
                     success: true,
@@ -367,16 +367,13 @@ mod tests {
     fn test_anomaly_detection() {
         let hook = SecurityAuditHook::new();
 
-        let context = BeforeEventContext {
-            collection: "users".to_string(),
-            data: json!({
+        let context = BeforeEventContext::new_create(
+            "users".to_string(),
+            json!({
                 "email": "test@example.com",
                 "malicious": "DROP TABLE users"
             }),
-            metadata: json!({}),
-            record_id: None,
-            old_data: None,
-        };
+        );
 
         // This should detect the suspicious SQL pattern
         assert!(hook.detect_anomalies(&context).is_ok());

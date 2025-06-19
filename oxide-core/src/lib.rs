@@ -32,11 +32,15 @@ pub use collection::{CollectionSchema, CollectionType, FieldDefinition};
 pub use error::AppError;
 pub use field_types::FieldType;
 pub use event::{
-    // New event system
+    // Event system core types
     BeforeEventContext, AfterEventContext, BeforeEventType, AfterEventType,
     BeforeEventHandler, AfterEventHandler, EventBus, InMemoryEventBus,
-    // Legacy compatibility
-    Event, EventHandler,
+    // Configuration and utilities
+    EventSystemConfig, BusConfig as EventBusConfig, EventBusHealth, EventMetrics,
+    HandlerMetadata, HandlerExecutionResult, EventFilter,
+    // Middleware
+    TimeoutMiddleware, RetryMiddleware, CircuitBreakerMiddleware,
+    CompositeBeforeMiddleware, CompositeAfterMiddleware,
 };
 pub use logging::{
     ApplicationLogger, SecurityAuditor, LoggingService, LogLevel, AuditEventType,
