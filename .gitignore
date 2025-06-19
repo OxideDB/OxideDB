@@ -2,3 +2,4 @@
 phase*.txt
 prd.txt
 .cursor
+*.sqlite
