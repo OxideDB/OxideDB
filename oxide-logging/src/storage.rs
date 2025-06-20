@@ -425,47 +425,47 @@ impl SqliteLogStorage {
 
         let entries = conn.call(move |conn| {
             let mut sql = String::from("SELECT * FROM log_entries WHERE 1=1");
-            let mut param_count = 0;
+            let mut params = Vec::<Box<dyn rusqlite::ToSql>>::new();
 
-            // Build WHERE clause based on filter
-            if query.filter.min_level.is_some() {
+            // Build WHERE clause based on filter and collect parameters
+            if let Some(min_level) = query.filter.min_level {
                 sql.push_str(" AND level <= ?");
-                param_count += 1;
+                params.push(Box::new(min_level as i32));
             }
 
-            if query.filter.start_time.is_some() {
+            if let Some(start_time) = query.filter.start_time {
                 sql.push_str(" AND timestamp >= ?");
-                param_count += 1;
+                params.push(Box::new(start_time.timestamp()));
             }
 
-            if query.filter.end_time.is_some() {
+            if let Some(end_time) = query.filter.end_time {
                 sql.push_str(" AND timestamp <= ?");
-                param_count += 1;
+                params.push(Box::new(end_time.timestamp()));
             }
 
-            if query.filter.correlation_id.is_some() {
+            if let Some(ref correlation_id) = query.filter.correlation_id {
                 sql.push_str(" AND correlation_id = ?");
-                param_count += 1;
+                params.push(Box::new(correlation_id.to_string()));
             }
 
-            if query.filter.module.is_some() {
+            if let Some(ref module) = query.filter.module {
                 sql.push_str(" AND module = ?");
-                param_count += 1;
+                params.push(Box::new(module.clone()));
             }
 
-            if query.filter.user_id.is_some() {
+            if let Some(ref user_id) = query.filter.user_id {
                 sql.push_str(" AND json_extract(context_json, '$.user_id') = ?");
-                param_count += 1;
+                params.push(Box::new(user_id.clone()));
             }
 
-            if query.filter.collection.is_some() {
+            if let Some(ref collection) = query.filter.collection {
                 sql.push_str(" AND json_extract(context_json, '$.collection') = ?");
-                param_count += 1;
+                params.push(Box::new(collection.clone()));
             }
 
-            if query.filter.message_contains.is_some() {
+            if let Some(ref message_search) = query.filter.message_contains {
                 sql.push_str(" AND message LIKE ?");
-                param_count += 1;
+                params.push(Box::new(format!("%{}%", message_search)));
             }
 
             // Add ordering
@@ -476,72 +476,22 @@ impl SqliteLogStorage {
             }
 
             // Add pagination
-            if query.limit.is_some() {
-                sql.push_str(" LIMIT ?");
-                param_count += 1;
-            }
-
-            if query.offset.is_some() {
-                sql.push_str(" OFFSET ?");
-                param_count += 1;
-            }
-
-            // Prepare statement and bind parameters
-            let mut stmt = conn.prepare(&sql)?;
-            let mut param_index = 1;
-
-            // Bind parameters in the same order as the WHERE clauses
-            if let Some(min_level) = query.filter.min_level {
-                stmt.raw_bind_parameter(param_index, min_level as i32)?;
-                param_index += 1;
-            }
-
-            if let Some(start_time) = query.filter.start_time {
-                stmt.raw_bind_parameter(param_index, start_time.timestamp())?;
-                param_index += 1;
-            }
-
-            if let Some(end_time) = query.filter.end_time {
-                stmt.raw_bind_parameter(param_index, end_time.timestamp())?;
-                param_index += 1;
-            }
-
-            if let Some(ref correlation_id) = query.filter.correlation_id {
-                stmt.raw_bind_parameter(param_index, correlation_id.to_string())?;
-                param_index += 1;
-            }
-
-            if let Some(ref module) = query.filter.module {
-                stmt.raw_bind_parameter(param_index, module)?;
-                param_index += 1;
-            }
-
-            if let Some(ref user_id) = query.filter.user_id {
-                stmt.raw_bind_parameter(param_index, user_id)?;
-                param_index += 1;
-            }
-
-            if let Some(ref collection) = query.filter.collection {
-                stmt.raw_bind_parameter(param_index, collection)?;
-                param_index += 1;
-            }
-
-            if let Some(ref message_search) = query.filter.message_contains {
-                stmt.raw_bind_parameter(param_index, format!("%{}%", message_search))?;
-                param_index += 1;
-            }
-
             if let Some(limit) = query.limit {
-                stmt.raw_bind_parameter(param_index, limit as i64)?;
-                param_index += 1;
+                sql.push_str(" LIMIT ?");
+                params.push(Box::new(limit as i64));
             }
 
             if let Some(offset) = query.offset {
-                stmt.raw_bind_parameter(param_index, offset as i64)?;
-                param_index += 1;
+                sql.push_str(" OFFSET ?");
+                params.push(Box::new(offset as i64));
             }
 
-            let rows = stmt.query_map([], |row| {
+            // Convert parameters to references for the query
+            let param_refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+
+            // Execute query
+            let mut stmt = conn.prepare(&sql)?;
+            let rows = stmt.query_map(param_refs.as_slice(), |row| {
                 parse_log_entry_row(row)
             })?;
 
@@ -563,26 +513,32 @@ impl SqliteLogStorage {
 
         let events = conn.call(move |conn| {
             let mut sql = String::from("SELECT * FROM audit_events WHERE 1=1");
+            let mut params = Vec::<Box<dyn rusqlite::ToSql>>::new();
 
-            // Build WHERE clause based on filter
-            if query.filter.min_level.is_some() {
+            // Build WHERE clause based on filter and collect parameters
+            if let Some(min_level) = query.filter.min_level {
                 sql.push_str(" AND severity <= ?");
+                params.push(Box::new(min_level as i32));
             }
 
-            if query.filter.start_time.is_some() {
+            if let Some(start_time) = query.filter.start_time {
                 sql.push_str(" AND timestamp >= ?");
+                params.push(Box::new(start_time.timestamp()));
             }
 
-            if query.filter.end_time.is_some() {
+            if let Some(end_time) = query.filter.end_time {
                 sql.push_str(" AND timestamp <= ?");
+                params.push(Box::new(end_time.timestamp()));
             }
 
-            if query.filter.correlation_id.is_some() {
+            if let Some(ref correlation_id) = query.filter.correlation_id {
                 sql.push_str(" AND correlation_id = ?");
+                params.push(Box::new(correlation_id.to_string()));
             }
 
-            if query.filter.audit_event_type.is_some() {
+            if let Some(ref audit_event_type) = query.filter.audit_event_type {
                 sql.push_str(" AND event_type = ?");
+                params.push(Box::new(audit_event_type.as_str().to_string()));
             }
 
             // Add ordering
@@ -593,54 +549,22 @@ impl SqliteLogStorage {
             }
 
             // Add pagination
-            if query.limit.is_some() {
-                sql.push_str(" LIMIT ?");
-            }
-
-            if query.offset.is_some() {
-                sql.push_str(" OFFSET ?");
-            }
-
-            // Prepare statement and bind parameters
-            let mut stmt = conn.prepare(&sql)?;
-            let mut param_index = 1;
-
-            if let Some(min_level) = query.filter.min_level {
-                stmt.raw_bind_parameter(param_index, min_level as i32)?;
-                param_index += 1;
-            }
-
-            if let Some(start_time) = query.filter.start_time {
-                stmt.raw_bind_parameter(param_index, start_time.timestamp())?;
-                param_index += 1;
-            }
-
-            if let Some(end_time) = query.filter.end_time {
-                stmt.raw_bind_parameter(param_index, end_time.timestamp())?;
-                param_index += 1;
-            }
-
-            if let Some(ref correlation_id) = query.filter.correlation_id {
-                stmt.raw_bind_parameter(param_index, correlation_id.to_string())?;
-                param_index += 1;
-            }
-
-            if let Some(ref audit_event_type) = query.filter.audit_event_type {
-                stmt.raw_bind_parameter(param_index, audit_event_type.as_str())?;
-                param_index += 1;
-            }
-
             if let Some(limit) = query.limit {
-                stmt.raw_bind_parameter(param_index, limit as i64)?;
-                param_index += 1;
+                sql.push_str(" LIMIT ?");
+                params.push(Box::new(limit as i64));
             }
 
             if let Some(offset) = query.offset {
-                stmt.raw_bind_parameter(param_index, offset as i64)?;
-                param_index += 1;
+                sql.push_str(" OFFSET ?");
+                params.push(Box::new(offset as i64));
             }
 
-            let rows = stmt.query_map([], |row| {
+            // Convert parameters to references for the query
+            let param_refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+
+            // Execute query
+            let mut stmt = conn.prepare(&sql)?;
+            let rows = stmt.query_map(param_refs.as_slice(), |row| {
                 parse_audit_event_row(row)
             })?;
 

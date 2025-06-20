@@ -1,4 +1,4 @@
-import { Database, Shield, Settings, BarChart3, FileText, Key, Eye, EyeOff, Activity, User, LogOut } from "lucide-react"
+import { Database, Shield, Settings, BarChart3, FileText, Key, Eye, EyeOff, Activity, User, LogOut, FileSearch } from "lucide-react"
 import { useState } from "react"
 import { Link, useLocation } from "react-router-dom"
 
@@ -45,6 +45,11 @@ const staticNavigationItems = [
         title: "Health",
         url: "/health",
         icon: Activity,
+      },
+      {
+        title: "Logs",
+        url: "/logs",
+        icon: FileSearch,
       },
     ],
   },

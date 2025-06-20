@@ -15,6 +15,7 @@ import EditCollection from './pages/EditCollection';
 import Health from './pages/Health';
 import Settings from './pages/Settings';
 import Permissions from './pages/Permissions';
+import Logs from './pages/Logs';
 
 function App() {
   return (
@@ -48,6 +49,7 @@ function App() {
                           </ProtectedRoute>
                         } />
                         <Route path="settings" element={<Settings />} />
+                        <Route path="logs" element={<Logs />} />
                       </Routes>
                     </div>
                   </main>

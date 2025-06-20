@@ -1,4 +1,11 @@
-import type { ApiError, CollectionStats, CreateCollectionRequest, DbRecord, HealthStatus, CollectionSchema, CollectionPermissionsInfo, CollectionPermissions, PermissionPresetType, ApiResponse, AuthResponse, User, TokenValidationResponse } from '../types/api';
+import type { 
+  ApiError, CollectionStats, CreateCollectionRequest, DbRecord, HealthStatus, 
+  CollectionSchema, CollectionPermissionsInfo, CollectionPermissions, PermissionPresetType, 
+  ApiResponse, AuthResponse, User, TokenValidationResponse,
+  LogQueryParams, AuditQueryParams, LogResponse, LogEntry, SecurityAuditEvent,
+  DashboardMetrics, RetentionStats, CreateLogRequest, CreateAuditRequest,
+  CreateLogResponse, LoggingHealthResponse
+} from '../types/api';
 
 // Import PaginatedResponse from generated bindings
 interface PaginatedResponse<T> {
@@ -382,6 +389,134 @@ class ApiService {
 
   async applyPermissionPreset(collection: string, preset: PermissionPresetType): Promise<void> {
     return this.post<void>(`/collections/${encodeURIComponent(collection)}/permissions/preset`, preset);
+  }
+
+  // Logging API methods
+  async getLogs(params?: LogQueryParams): Promise<LogResponse<LogEntry>> {
+    const searchParams = new URLSearchParams();
+    if (params?.level) searchParams.set('level', params.level);
+    if (params?.start_time) searchParams.set('start_time', params.start_time);
+    if (params?.end_time) searchParams.set('end_time', params.end_time);
+    if (params?.correlation_id) searchParams.set('correlation_id', params.correlation_id);
+    if (params?.module) searchParams.set('module', params.module);
+    if (params?.user_id) searchParams.set('user_id', params.user_id);
+    if (params?.collection) searchParams.set('collection', params.collection);
+    if (params?.search) searchParams.set('search', params.search);
+    if (params?.limit) searchParams.set('limit', params.limit.toString());
+    if (params?.offset) searchParams.set('offset', params.offset.toString());
+    if (params?.sort) searchParams.set('sort', params.sort);
+    
+    const query = searchParams.toString();
+    const endpoint = `/logs${query ? `?${query}` : ''}`;
+    
+    const response = await this.get<ApiResponse<LogResponse<LogEntry>>>(endpoint);
+    return response.data;
+  }
+
+  async getAuditEvents(params?: AuditQueryParams): Promise<LogResponse<SecurityAuditEvent>> {
+    const searchParams = new URLSearchParams();
+    if (params?.severity) searchParams.set('severity', params.severity);
+    if (params?.start_time) searchParams.set('start_time', params.start_time);
+    if (params?.end_time) searchParams.set('end_time', params.end_time);
+    if (params?.event_type) searchParams.set('event_type', params.event_type);
+    if (params?.actor) searchParams.set('actor', params.actor);
+    if (params?.target) searchParams.set('target', params.target);
+    if (params?.correlation_id) searchParams.set('correlation_id', params.correlation_id);
+    if (params?.min_risk_score) searchParams.set('min_risk_score', params.min_risk_score.toString());
+    if (params?.limit) searchParams.set('limit', params.limit.toString());
+    if (params?.offset) searchParams.set('offset', params.offset.toString());
+    if (params?.sort) searchParams.set('sort', params.sort);
+    
+    const query = searchParams.toString();
+    const endpoint = `/logs/audit${query ? `?${query}` : ''}`;
+    
+    const response = await this.get<ApiResponse<LogResponse<SecurityAuditEvent>>>(endpoint);
+    return response.data;
+  }
+
+  async getDashboardMetrics(): Promise<DashboardMetrics> {
+    const response = await this.get<ApiResponse<DashboardMetrics>>('/logs/dashboard');
+    return response.data;
+  }
+
+  async getRecentLogs(limit?: number): Promise<LogEntry[]> {
+    const searchParams = new URLSearchParams();
+    if (limit) searchParams.set('limit', limit.toString());
+    
+    const query = searchParams.toString();
+    const endpoint = `/logs/recent${query ? `?${query}` : ''}`;
+    
+    const response = await this.get<ApiResponse<LogEntry[]>>(endpoint);
+    return response.data;
+  }
+
+  async getRetentionStats(): Promise<RetentionStats | null> {
+    const response = await this.get<ApiResponse<RetentionStats | null>>('/logs/retention');
+    return response.data;
+  }
+
+  async getLogsByCorrelation(correlationId: string): Promise<LogResponse<LogEntry>> {
+    const response = await this.get<ApiResponse<LogResponse<LogEntry>>>(`/logs/correlation/${encodeURIComponent(correlationId)}`);
+    return response.data;
+  }
+
+  async getUserLogs(userId: string, params?: LogQueryParams): Promise<LogResponse<LogEntry>> {
+    const searchParams = new URLSearchParams();
+    if (params?.level) searchParams.set('level', params.level);
+    if (params?.start_time) searchParams.set('start_time', params.start_time);
+    if (params?.end_time) searchParams.set('end_time', params.end_time);
+    if (params?.correlation_id) searchParams.set('correlation_id', params.correlation_id);
+    if (params?.module) searchParams.set('module', params.module);
+    if (params?.collection) searchParams.set('collection', params.collection);
+    if (params?.search) searchParams.set('search', params.search);
+    if (params?.limit) searchParams.set('limit', params.limit.toString());
+    if (params?.offset) searchParams.set('offset', params.offset.toString());
+    if (params?.sort) searchParams.set('sort', params.sort);
+    
+    const query = searchParams.toString();
+    const endpoint = `/logs/user/${encodeURIComponent(userId)}${query ? `?${query}` : ''}`;
+    
+    const response = await this.get<ApiResponse<LogResponse<LogEntry>>>(endpoint);
+    return response.data;
+  }
+
+  async getCollectionLogs(collection: string, params?: LogQueryParams): Promise<LogResponse<LogEntry>> {
+    const searchParams = new URLSearchParams();
+    if (params?.level) searchParams.set('level', params.level);
+    if (params?.start_time) searchParams.set('start_time', params.start_time);
+    if (params?.end_time) searchParams.set('end_time', params.end_time);
+    if (params?.correlation_id) searchParams.set('correlation_id', params.correlation_id);
+    if (params?.module) searchParams.set('module', params.module);
+    if (params?.user_id) searchParams.set('user_id', params.user_id);
+    if (params?.search) searchParams.set('search', params.search);
+    if (params?.limit) searchParams.set('limit', params.limit.toString());
+    if (params?.offset) searchParams.set('offset', params.offset.toString());
+    if (params?.sort) searchParams.set('sort', params.sort);
+    
+    const query = searchParams.toString();
+    const endpoint = `/logs/collection/${encodeURIComponent(collection)}${query ? `?${query}` : ''}`;
+    
+    const response = await this.get<ApiResponse<LogResponse<LogEntry>>>(endpoint);
+    return response.data;
+  }
+
+  async createLogEntry(request: CreateLogRequest): Promise<CreateLogResponse> {
+    const response = await this.post<ApiResponse<CreateLogResponse>>('/logs/create', request);
+    return response.data;
+  }
+
+  async createAuditEvent(request: CreateAuditRequest): Promise<CreateLogResponse> {
+    const response = await this.post<ApiResponse<CreateLogResponse>>('/logs/audit/create', request);
+    return response.data;
+  }
+
+  async flushLogs(): Promise<void> {
+    await this.post<ApiResponse<string>>('/logs/flush');
+  }
+
+  async getLoggingHealth(): Promise<LoggingHealthResponse> {
+    const response = await this.get<ApiResponse<LoggingHealthResponse>>('/logs/health');
+    return response.data;
   }
 }
 

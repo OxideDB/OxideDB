@@ -246,13 +246,21 @@ impl LogApiService {
         let execution_time_ms = start_time.elapsed().as_millis() as u64;
         let filters_applied = self.get_applied_filters(&query.filter);
         
+        // Calculate pagination info
+        let limit = query.limit.unwrap_or(100);
+        let offset = query.offset.unwrap_or(0);
+        let returned_count = logs.len();
+        
+        // has_more is true if we got exactly the limit we requested, indicating there might be more
+        let has_more = returned_count == limit;
+        
         let response = LogResponse {
             data: logs,
             pagination: PaginationInfo {
-                offset: query.offset.unwrap_or(0),
-                limit: query.limit.unwrap_or(100),
-                total: None, // Would require a separate count query
-                has_more: false, // Would be calculated based on total and current results
+                offset,
+                limit,
+                total: None, // Would require a separate count query for exact total
+                has_more,
             },
             metadata: QueryMetadata {
                 execution_time_ms,
@@ -277,13 +285,21 @@ impl LogApiService {
         let execution_time_ms = start_time.elapsed().as_millis() as u64;
         let filters_applied = self.get_applied_filters(&query.filter);
         
+        // Calculate pagination info
+        let limit = query.limit.unwrap_or(100);
+        let offset = query.offset.unwrap_or(0);
+        let returned_count = events.len();
+        
+        // has_more is true if we got exactly the limit we requested, indicating there might be more
+        let has_more = returned_count == limit;
+        
         let response = LogResponse {
             data: events,
             pagination: PaginationInfo {
-                offset: query.offset.unwrap_or(0),
-                limit: query.limit.unwrap_or(100),
-                total: None,
-                has_more: false,
+                offset,
+                limit,
+                total: None, // Would require a separate count query for exact total
+                has_more,
             },
             metadata: QueryMetadata {
                 execution_time_ms,
