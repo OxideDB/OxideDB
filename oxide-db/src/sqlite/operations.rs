@@ -653,4 +653,21 @@ impl Db for SqliteDb {
     async fn list_auth_collections(&self) -> Result<Vec<oxide_core::CollectionSchema>, AppError> {
         SqliteDb::list_auth_collections(self).await
     }
+
+    async fn populate_relationships(&self, collection: &str, records: &mut [Record]) -> Result<(), AppError> {
+        SqliteDb::populate_relationships(self, collection, records).await
+    }
+
+    async fn populate_specific_relationships(&self, collection: &str, records: &mut [Record], field_names: &[String]) -> Result<(), AppError> {
+        SqliteDb::populate_specific_relationships(self, collection, records, field_names).await
+    }
+
+    async fn get_related_records(
+        &self, 
+        target_collection: &str, 
+        record_ids: &[String],
+        display_field: Option<&str>
+    ) -> Result<std::collections::HashMap<String, serde_json::Value>, AppError> {
+        SqliteDb::get_related_records(self, target_collection, record_ids, display_field).await
+    }
 } 

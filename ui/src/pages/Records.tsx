@@ -246,6 +246,20 @@ const Records: React.FC = () => {
     );
   };
 
+  // Helper function to get display string for field type
+  const getFieldTypeDisplay = (fieldType: any): string => {
+    if (typeof fieldType === 'string') {
+      return fieldType;
+    } else if (typeof fieldType === 'object' && fieldType !== null) {
+      if ('relationship' in fieldType) {
+        return 'relationship';
+      }
+      // Handle other object field types if needed
+      return 'unknown';
+    }
+    return 'unknown';
+  };
+
   if (!collection) {
     return (
       <Card className="border-destructive">
@@ -267,7 +281,7 @@ const Records: React.FC = () => {
   // Convert schema fields to array format for easier rendering
   const schemaFields = schema ? Object.entries(schema.fields).map(([name, field]) => ({
     name,
-    type: field.field_type,
+    type: getFieldTypeDisplay(field.field_type),
     required: field.required || false,
     unique: false, // Placeholder - not in current schema
     indexed: false, // Placeholder - not in current schema

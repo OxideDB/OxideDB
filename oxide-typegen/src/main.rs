@@ -37,7 +37,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     type_definitions.push_str("// CORE TYPES - Basic building blocks from oxide-core\n");
     type_definitions.push_str("// ===================================================================\n\n");
     
-    type_definitions.push_str("export type FieldType = \"text\" | \"number\" | \"boolean\" | \"date\" | \"json\" | \"email\" | \"url\" | \"password\" | \"phone\";\n\n");
+    type_definitions.push_str("export type RelationshipConfig = {\n");
+    type_definitions.push_str("  /** The name of the target collection */\n");
+    type_definitions.push_str("  target_collection: string;\n");
+    type_definitions.push_str("  /** Whether this is a multiple relationship (array of IDs) or single (single ID) */\n");
+    type_definitions.push_str("  multiple: boolean;\n");
+    type_definitions.push_str("  /** Whether to cascade delete (delete related records when this record is deleted) */\n");
+    type_definitions.push_str("  cascade_delete: boolean;\n");
+    type_definitions.push_str("  /** Field name in the target collection to display when populated (optional) */\n");
+    type_definitions.push_str("  display_field?: string;\n");
+    type_definitions.push_str("};\n\n");
+    
+    type_definitions.push_str("export type FieldType = \n");
+    type_definitions.push_str("  | \"text\" \n");
+    type_definitions.push_str("  | \"number\" \n");
+    type_definitions.push_str("  | \"boolean\" \n");
+    type_definitions.push_str("  | \"date\" \n");
+    type_definitions.push_str("  | \"json\" \n");
+    type_definitions.push_str("  | \"email\" \n");
+    type_definitions.push_str("  | \"url\" \n");
+    type_definitions.push_str("  | \"password\" \n");
+    type_definitions.push_str("  | \"phone\"\n");
+    type_definitions.push_str("  | { relationship: RelationshipConfig };\n\n");
     
     type_definitions.push_str("export type CollectionType = \"base\" | \"auth\";\n\n");
     
@@ -160,6 +181,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     type_definitions.push_str("// - url: URL field with validation\n");
     type_definitions.push_str("// - password: Password field (automatically hashed)\n");
     type_definitions.push_str("// - phone: Phone number field with validation\n");
+    type_definitions.push_str("// - relationship: Relationship field referencing other collections\n");
     type_definitions.push_str("// \n");
     
     // Write to file
@@ -184,7 +206,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!();
     println!("📋 Field Type System:");
     println!("   OxideDB supports an extensible field type system. Current types:");
-    println!("   text, number, boolean, date, json, email, url, password, phone");
+    println!("   text, number, boolean, date, json, email, url, password, phone, relationship");
     
     Ok(())
 } 

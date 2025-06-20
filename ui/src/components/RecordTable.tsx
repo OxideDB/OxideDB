@@ -4,7 +4,7 @@ import { Edit, Trash2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Badge } from '@/components/ui/badge';
-import type { DbRecord, CollectionSchema } from '../types/api';
+import type { DbRecord, CollectionSchema, FieldType } from '../types/api';
 
 interface RecordTableProps {
   records: DbRecord[];
@@ -34,6 +34,16 @@ export const RecordTable: React.FC<RecordTableProps> = ({
       }
     });
     return Array.from(allKeys).sort();
+  };
+
+  const getFieldTypeDisplayName = (fieldType: FieldType): string => {
+    if (typeof fieldType === 'string') {
+      return fieldType;
+    }
+    if (typeof fieldType === 'object' && fieldType.relationship) {
+      return 'relationship';
+    }
+    return 'unknown';
   };
 
   const formatCellValue = (value: any): React.ReactNode => {
@@ -96,7 +106,7 @@ export const RecordTable: React.FC<RecordTableProps> = ({
                 <span>{column}</span>
                 {schema?.fields[column] && (
                   <Badge variant="outline" className="text-xs">
-                    {schema.fields[column].field_type}
+                    {getFieldTypeDisplayName(schema.fields[column].field_type)}
                   </Badge>
                 )}
               </div>

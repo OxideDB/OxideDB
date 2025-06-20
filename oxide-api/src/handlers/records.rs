@@ -135,8 +135,31 @@ impl RecordHandlers {
             return Err(ApiError::not_found(format!("Collection '{}'", collection)));
         }
 
-        let records = db.list_records(&collection, params.clone()).await?;
+        let mut records = db.list_records(&collection, params.clone()).await?;
         let total_count = db.count_records(&collection).await? as u64;
+
+        // Populate relationships if requested
+        if params.populate_relationships.unwrap_or(false) {
+            if let Some(ref populate_fields_str) = params.populate_fields {
+                // Parse comma-separated field names and populate only specified fields
+                let field_names: Vec<String> = populate_fields_str
+                    .split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect();
+                
+                if !field_names.is_empty() {
+                    debug!("Populating specific relationship fields for records in collection: {} - fields: {:?}", collection, field_names);
+                    db.populate_specific_relationships(&collection, &mut records, &field_names).await?;
+                } else {
+                    debug!("Populating all relationships for records in collection: {}", collection);
+                    db.populate_relationships(&collection, &mut records).await?;
+                }
+            } else {
+                debug!("Populating all relationships for records in collection: {}", collection);
+                db.populate_relationships(&collection, &mut records).await?;
+            }
+        }
 
         debug!(
             "Listed {} records from collection {} (total: {})",
@@ -202,8 +225,34 @@ pub async fn create_record(
 pub async fn get_record(
     State(state): State<AppState>,
     Path((collection, id)): Path<(String, RecordId)>,
+    Query(params): Query<ListParams>,
 ) -> Result<Json<ApiResponse<Record>>, ApiError> {
-    let record = RecordHandlers::get_record(state.db, collection, id).await?;
+    let mut record = RecordHandlers::get_record(state.db.clone(), collection.clone(), id).await?;
+    
+    // Populate relationships if requested
+    if params.populate_relationships.unwrap_or(false) {
+        let mut records = vec![record];
+        
+        if let Some(ref populate_fields_str) = params.populate_fields {
+            // Parse comma-separated field names and populate only specified fields
+            let field_names: Vec<String> = populate_fields_str
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+            
+            if !field_names.is_empty() {
+                state.db.populate_specific_relationships(&collection, &mut records, &field_names).await?;
+            } else {
+                state.db.populate_relationships(&collection, &mut records).await?;
+            }
+        } else {
+            state.db.populate_relationships(&collection, &mut records).await?;
+        }
+        
+        record = records.into_iter().next().unwrap();
+    }
+    
     Ok(Json(ApiResponse::success(record)))
 }
 

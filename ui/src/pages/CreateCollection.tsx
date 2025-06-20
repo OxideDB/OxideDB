@@ -1,12 +1,13 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ArrowLeft, Plus, X } from 'lucide-react';
+import { ArrowLeft, Plus, X, Save } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { apiService } from '../services/api';
-import type { CreateCollectionRequest, FieldDefinition, FieldType, CollectionType } from '../types/api';
+import type { CollectionSchema, FieldDefinition, FieldType, CollectionType, CreateCollectionRequest } from '../types/api';
+import type { RelationshipConfig } from '../types/generated';
 
 interface FieldFormData {
   name: string;
@@ -14,17 +15,38 @@ interface FieldFormData {
   required: boolean;
   unique: boolean;
   default?: string;
+  // Relationship configuration
+  relationshipConfig?: {
+    target_collection: string;
+    multiple: boolean;
+    cascade_delete: boolean;
+    display_field?: string;
+  };
 }
 
 const CreateCollection: React.FC = () => {
   const navigate = useNavigate();
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [collections, setCollections] = useState<CollectionSchema[]>([]);
 
   // Schema form state
   const [collectionName, setCollectionName] = useState('');
   const [collectionType, setCollectionType] = useState<CollectionType>('base');
   const [fields, setFields] = useState<FieldFormData[]>([]);
+
+  // Load collections for relationship field options
+  React.useEffect(() => {
+    const loadCollections = async () => {
+      try {
+        const collections = await apiService.getCollections();
+        setCollections(collections);
+      } catch (err) {
+        console.error('Failed to load collections:', err);
+      }
+    };
+    loadCollections();
+  }, []);
 
   const addField = () => {
     setFields([...fields, {
@@ -41,6 +63,58 @@ const CreateCollection: React.FC = () => {
 
   const removeField = (index: number) => {
     setFields(fields.filter((_, i) => i !== index));
+  };
+
+  const getFieldTypeString = (fieldType: FieldType): string => {
+    if (typeof fieldType === 'string') {
+      return fieldType;
+    } else if (typeof fieldType === 'object' && 'relationship' in fieldType) {
+      return 'relationship';
+    }
+    return 'text';
+  };
+
+  const updateFieldType = (index: number, newType: string) => {
+    const field = fields[index];
+    if (newType === 'relationship') {
+      updateField(index, {
+        field_type: {
+          relationship: {
+            target_collection: '',
+            multiple: false,
+            cascade_delete: false,
+            display_field: undefined,
+          }
+        },
+        relationshipConfig: {
+          target_collection: '',
+          multiple: false,
+          cascade_delete: false,
+          display_field: undefined,
+        }
+      });
+    } else {
+      updateField(index, {
+        field_type: newType as FieldType,
+        relationshipConfig: undefined
+      });
+    }
+  };
+
+  const updateRelationshipConfig = (index: number, config: Partial<RelationshipConfig>) => {
+    const field = fields[index];
+    const newConfig = { ...field.relationshipConfig, ...config };
+    updateField(index, {
+      relationshipConfig: newConfig,
+      field_type: {
+        relationship: {
+          target_collection: newConfig.target_collection || '',
+          multiple: newConfig.multiple || false,
+          cascade_delete: newConfig.cascade_delete || false,
+          display_field: newConfig.display_field,
+        }
+      }
+    });
   };
 
   const handleCreateCollection = async (e: React.FormEvent) => {
@@ -195,8 +269,8 @@ const CreateCollection: React.FC = () => {
                       <Label htmlFor={`field-type-${index}`}>Type</Label>
                       <select 
                         id={`field-type-${index}`}
-                        value={field.field_type} 
-                        onChange={(e) => updateField(index, { field_type: e.target.value as FieldType })}
+                        value={getFieldTypeString(field.field_type)} 
+                        onChange={(e) => updateFieldType(index, e.target.value)}
                         className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
                       >
                         <option value="text">Text</option>
@@ -207,6 +281,7 @@ const CreateCollection: React.FC = () => {
                         <option value="email">Email</option>
                         <option value="url">URL</option>
                         <option value="password">Password</option>
+                        <option value="relationship">Relationship</option>
                       </select>
                     </div>
 
@@ -219,6 +294,67 @@ const CreateCollection: React.FC = () => {
                         placeholder="JSON value"
                       />
                     </div>
+
+                    {/* Relationship Configuration */}
+                    {getFieldTypeString(field.field_type) === 'relationship' && (
+                      <div className="col-span-full space-y-4 p-4 border rounded-md bg-muted/50">
+                        <h4 className="font-medium text-sm">Relationship Configuration</h4>
+                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                          <div className="space-y-2">
+                            <Label htmlFor={`field-target-${index}`}>Target Collection</Label>
+                            <select
+                              id={`field-target-${index}`}
+                              value={field.relationshipConfig?.target_collection || ''}
+                              onChange={(e) => updateRelationshipConfig(index, { target_collection: e.target.value })}
+                              className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                            >
+                              <option value="">Select collection...</option>
+                              {collections.map((col) => (
+                                <option key={col.id} value={col.name}>
+                                  {col.name}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                          
+                          <div className="space-y-2">
+                            <Label htmlFor={`field-display-${index}`}>Display Field (optional)</Label>
+                            <Input
+                              id={`field-display-${index}`}
+                              value={field.relationshipConfig?.display_field || ''}
+                              onChange={(e) => updateRelationshipConfig(index, { display_field: e.target.value || undefined })}
+                              placeholder="name, title, etc."
+                            />
+                          </div>
+
+                          <div className="space-y-2">
+                            <Label>Relationship Options</Label>
+                            <div className="space-y-2">
+                              <div className="flex items-center space-x-2">
+                                <input
+                                  type="checkbox"
+                                  id={`field-multiple-${index}`}
+                                  checked={field.relationshipConfig?.multiple || false}
+                                  onChange={(e) => updateRelationshipConfig(index, { multiple: e.target.checked })}
+                                  className="h-4 w-4 rounded border border-input bg-background text-primary focus:ring-2 focus:ring-ring focus:ring-offset-2"
+                                />
+                                <Label htmlFor={`field-multiple-${index}`}>Multiple (many-to-many)</Label>
+                              </div>
+                              <div className="flex items-center space-x-2">
+                                <input
+                                  type="checkbox"
+                                  id={`field-cascade-${index}`}
+                                  checked={field.relationshipConfig?.cascade_delete || false}
+                                  onChange={(e) => updateRelationshipConfig(index, { cascade_delete: e.target.checked })}
+                                  className="h-4 w-4 rounded border border-input bg-background text-primary focus:ring-2 focus:ring-ring focus:ring-offset-2"
+                                />
+                                <Label htmlFor={`field-cascade-${index}`}>Cascade Delete</Label>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    )}
 
                     <div className="space-y-2">
                       <div className="flex items-center space-x-4">

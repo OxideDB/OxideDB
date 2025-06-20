@@ -10,7 +10,28 @@
 // CORE TYPES - Basic building blocks from oxide-core
 // ===================================================================
 
-export type FieldType = "text" | "number" | "boolean" | "date" | "json" | "email" | "url" | "password" | "phone";
+export type RelationshipConfig = {
+  /** The name of the target collection */
+  target_collection: string;
+  /** Whether this is a multiple relationship (array of IDs) or single (single ID) */
+  multiple: boolean;
+  /** Whether to cascade delete (delete related records when this record is deleted) */
+  cascade_delete: boolean;
+  /** Field name in the target collection to display when populated (optional) */
+  display_field?: string;
+};
+
+export type FieldType = 
+  | "text" 
+  | "number" 
+  | "boolean" 
+  | "date" 
+  | "json" 
+  | "email" 
+  | "url" 
+  | "password" 
+  | "phone"
+  | { relationship: RelationshipConfig };
 
 export type CollectionType = "base" | "auth";
 
@@ -128,4 +149,5 @@ export type Collection = string;
 // - url: URL field with validation
 // - password: Password field (automatically hashed)
 // - phone: Phone number field with validation
+// - relationship: Relationship field referencing other collections
 // 

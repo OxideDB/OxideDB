@@ -8,6 +8,7 @@ mod collections;
 mod connection;
 mod operations;
 mod permissions;
+mod relationships;
 mod schema_adapter;
 
 pub use connection::SqliteDb;

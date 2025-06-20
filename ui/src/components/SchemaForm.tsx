@@ -5,7 +5,12 @@ import { Textarea } from '@/components/ui/textarea';
 import { Switch } from '@/components/ui/switch';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import type { CollectionSchema, FieldDefinition } from '../types/api';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from '@/components/ui/command';
+import { Check, ChevronsUpDown, X } from 'lucide-react';
+import { cn } from '@/lib/utils';
+import { apiService } from '../services/api';
+import type { CollectionSchema, FieldDefinition, DbRecord } from '../types/api';
 
 interface SchemaFormProps {
   schema: CollectionSchema;
@@ -19,6 +24,271 @@ interface SchemaFormProps {
 interface FormData {
   [key: string]: any;
 }
+
+interface RelationshipFieldProps {
+  fieldName: string;
+  relationshipConfig: { target_collection: string; multiple: boolean; display_field?: string };
+  value: any;
+  onChange: (value: any) => void;
+  error?: string;
+  required?: boolean;
+}
+
+const RelationshipField: React.FC<RelationshipFieldProps> = ({
+  fieldName,
+  relationshipConfig,
+  value,
+  onChange,
+  error,
+  required = false,
+}) => {
+  const [open, setOpen] = useState(false);
+  const [records, setRecords] = useState<DbRecord[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [fetchError, setFetchError] = useState<string | null>(null);
+
+  useEffect(() => {
+    fetchRecords();
+  }, [relationshipConfig.target_collection]);
+
+  const fetchRecords = async () => {
+    try {
+      setLoading(true);
+      setFetchError(null);
+      const fetchedRecords = await apiService.getRecords(relationshipConfig.target_collection);
+      setRecords(fetchedRecords);
+    } catch (err) {
+      setFetchError(err instanceof Error ? err.message : 'Failed to fetch records');
+      setRecords([]);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const getDisplayValue = (record: DbRecord): string => {
+    if (relationshipConfig.display_field && record.data[relationshipConfig.display_field]) {
+      return `${record.data[relationshipConfig.display_field]} (${record.id})`;
+    }
+    return record.id;
+  };
+
+  const getPreviewData = (record: DbRecord): { primary: string; secondary: string; fields: Array<{ key: string; value: any }> } => {
+    const data = record.data;
+    const fields = Object.entries(data)
+      .filter(([key, value]) => value !== null && value !== undefined && value !== '')
+      .slice(0, 4) // Limit to first 4 fields for preview
+      .map(([key, value]) => ({
+        key,
+        value: typeof value === 'object' ? JSON.stringify(value).slice(0, 50) + '...' : String(value).slice(0, 50)
+      }));
+
+    let primary = record.id;
+    let secondary = '';
+
+    if (relationshipConfig.display_field && data[relationshipConfig.display_field]) {
+      primary = String(data[relationshipConfig.display_field]);
+      secondary = record.id;
+    } else {
+      // Try to find a meaningful field for display
+      const meaningfulFields = ['name', 'title', 'label', 'email', 'username'];
+      const foundField = meaningfulFields.find(field => data[field]);
+      if (foundField) {
+        primary = String(data[foundField]);
+        secondary = record.id;
+      }
+    }
+
+    return { primary, secondary, fields };
+  };
+
+  const getSelectedRecords = (): DbRecord[] => {
+    if (relationshipConfig.multiple) {
+      const selectedIds = Array.isArray(value) ? value : [];
+      return records.filter(record => selectedIds.includes(record.id));
+    } else {
+      return value ? records.filter(record => record.id === value) : [];
+    }
+  };
+
+  const handleSelect = (record: DbRecord) => {
+    if (relationshipConfig.multiple) {
+      const currentIds = Array.isArray(value) ? value : [];
+      const newIds = currentIds.includes(record.id)
+        ? currentIds.filter(id => id !== record.id)
+        : [...currentIds, record.id];
+      onChange(newIds);
+    } else {
+      onChange(record.id);
+      setOpen(false);
+    }
+  };
+
+  const handleRemove = (recordId: string) => {
+    if (relationshipConfig.multiple) {
+      const currentIds = Array.isArray(value) ? value : [];
+      onChange(currentIds.filter(id => id !== recordId));
+    } else {
+      onChange('');
+    }
+  };
+
+  const selectedRecords = getSelectedRecords();
+
+  if (fetchError) {
+    return (
+      <div className="space-y-2">
+        <div className="text-sm text-destructive">
+          Error loading {relationshipConfig.target_collection} records: {fetchError}
+        </div>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          onClick={fetchRecords}
+        >
+          Retry
+        </Button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-2">
+      <div className="text-sm text-muted-foreground">
+        {relationshipConfig.multiple ? 'Multiple' : 'Single'} relationship to {relationshipConfig.target_collection}
+      </div>
+      
+      {/* Selected items display */}
+      {selectedRecords.length > 0 && (
+        <div className="space-y-2 mb-2">
+          {selectedRecords.map((record) => {
+            const previewData = getPreviewData(record);
+            return (
+              <div
+                key={record.id}
+                className="flex items-center justify-between p-3 bg-muted/50 rounded-md border"
+              >
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2">
+                    <div className="font-medium text-sm truncate">
+                      {previewData.primary}
+                    </div>
+                    {previewData.secondary && (
+                      <Badge variant="outline" className="text-xs">
+                        {previewData.secondary}
+                      </Badge>
+                    )}
+                  </div>
+                  {previewData.fields.length > 0 && (
+                    <div className="mt-1 flex flex-wrap gap-2 text-xs text-muted-foreground">
+                      {previewData.fields.slice(0, 3).map((field, index) => (
+                        <span key={index} className="truncate">
+                          <span className="font-medium">{field.key}:</span> {field.value}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="h-8 w-8 p-0 hover:bg-destructive hover:text-destructive-foreground shrink-0 ml-2"
+                  onClick={() => handleRemove(record.id)}
+                >
+                  <X className="h-4 w-4" />
+                </Button>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      <Popover open={open} onOpenChange={setOpen}>
+        <PopoverTrigger asChild>
+          <Button
+            variant="outline"
+            role="combobox"
+            aria-expanded={open}
+            className="w-full justify-between"
+            disabled={loading}
+          >
+            {loading ? (
+              "Loading records..."
+            ) : selectedRecords.length > 0 ? (
+              relationshipConfig.multiple
+                ? `${selectedRecords.length} selected`
+                : getDisplayValue(selectedRecords[0])
+            ) : (
+              `Select ${relationshipConfig.target_collection} record${relationshipConfig.multiple ? 's' : ''}...`
+            )}
+            <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+          </Button>
+        </PopoverTrigger>
+        <PopoverContent className="w-full p-0">
+          <Command>
+            <CommandInput placeholder={`Search ${relationshipConfig.target_collection} records...`} />
+            <CommandList>
+              <CommandEmpty>No records found.</CommandEmpty>
+              <CommandGroup>
+                {records.map((record) => {
+                  const isSelected = relationshipConfig.multiple
+                    ? Array.isArray(value) && value.includes(record.id)
+                    : value === record.id;
+                  
+                  const previewData = getPreviewData(record);
+                  
+                  return (
+                    <CommandItem
+                      key={record.id}
+                      value={getDisplayValue(record)}
+                      onSelect={() => handleSelect(record)}
+                      className="flex-col items-start p-3 h-auto"
+                    >
+                      <div className="flex items-center w-full">
+                        <Check
+                          className={cn(
+                            "mr-2 h-4 w-4 shrink-0",
+                            isSelected ? "opacity-100" : "opacity-0"
+                          )}
+                        />
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center justify-between">
+                            <div className="font-medium text-sm truncate">
+                              {previewData.primary}
+                            </div>
+                            {previewData.secondary && (
+                              <div className="text-xs text-muted-foreground ml-2 shrink-0">
+                                {previewData.secondary}
+                              </div>
+                            )}
+                          </div>
+                          {previewData.fields.length > 0 && (
+                            <div className="mt-1 grid grid-cols-2 gap-1 text-xs text-muted-foreground">
+                              {previewData.fields.map((field, index) => (
+                                <div key={index} className="truncate">
+                                  <span className="font-medium">{field.key}:</span> {field.value}
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </CommandItem>
+                  );
+                })}
+              </CommandGroup>
+            </CommandList>
+          </Command>
+        </PopoverContent>
+      </Popover>
+      
+      {error && (
+        <p className="text-sm text-destructive">{error}</p>
+      )}
+    </div>
+  );
+};
 
 export const SchemaForm: React.FC<SchemaFormProps> = ({
   schema,
@@ -269,16 +539,33 @@ export const SchemaForm: React.FC<SchemaFormProps> = ({
         );
         break;
 
-      default: // text
-        fieldComponent = (
-          <Input
-            id={fieldId}
-            type="text"
-            value={value}
-            onChange={(e) => handleFieldChange(fieldName, e.target.value)}
-            placeholder="Enter text"
-          />
-        );
+      default:
+        if (typeof fieldDef.field_type === 'object' && 'relationship' in fieldDef.field_type) {
+          // Handle relationship field
+          const relationshipConfig = fieldDef.field_type.relationship;
+          
+          fieldComponent = (
+            <RelationshipField
+              fieldName={fieldName}
+              relationshipConfig={relationshipConfig}
+              value={value}
+              onChange={(newValue) => handleFieldChange(fieldName, newValue)}
+              error={error}
+              required={fieldDef.required}
+            />
+          );
+        } else {
+          // Default text field
+          fieldComponent = (
+            <Input
+              id={fieldId}
+              type="text"
+              value={value}
+              onChange={(e) => handleFieldChange(fieldName, e.target.value)}
+              placeholder="Enter text"
+            />
+          );
+        }
     }
 
     return (
@@ -293,7 +580,11 @@ export const SchemaForm: React.FC<SchemaFormProps> = ({
             </Badge>
           )}
           <Badge variant="outline" className="text-xs">
-            {fieldDef.field_type}
+            {typeof fieldDef.field_type === 'string' 
+              ? fieldDef.field_type 
+              : 'relationship' in fieldDef.field_type 
+                ? 'relationship'
+                : 'unknown'}
           </Badge>
         </div>
         {fieldComponent}

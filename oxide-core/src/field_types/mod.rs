@@ -33,6 +33,7 @@ pub mod email;
 pub mod url;
 pub mod password;
 pub mod phone;
+pub mod relationship;
 pub use text::TextFieldType;
 pub use number::NumberFieldType;
 pub use boolean::BooleanFieldType;
@@ -42,6 +43,7 @@ pub use email::EmailFieldType;
 pub use url::UrlFieldType;
 pub use password::PasswordFieldType;
 pub use phone::PhoneFieldType;
+pub use relationship::{RelationshipFieldType, RelationshipConfig};
 
 /// Trait that all field types must implement
 pub trait FieldTypeDefinition {
@@ -89,6 +91,8 @@ pub enum FieldType {
     Password,
     /// Phone number field (text with phone number validation)
     Phone,
+    /// Relationship field (references to other collections)
+    Relationship(RelationshipConfig),
 }
 
 impl FieldType {
@@ -104,6 +108,7 @@ impl FieldType {
             FieldType::Url => Box::new(UrlFieldType),
             FieldType::Password => Box::new(PasswordFieldType),
             FieldType::Phone => Box::new(PhoneFieldType),
+            FieldType::Relationship(config) => Box::new(RelationshipFieldType::new(config.clone())),
         }
     }
     
@@ -167,5 +172,35 @@ mod tests {
         // Test email validation
         assert!(FieldType::Email.validate("test", &json!("test@example.com")).is_ok());
         assert!(FieldType::Email.validate("test", &json!("invalid-email")).is_err());
+    }
+
+    #[test]
+    fn test_relationship_field_type() {
+        use serde_json::json;
+        
+        // Test single relationship
+        let single_config = RelationshipConfig {
+            target_collection: "users".to_string(),
+            multiple: false,
+            cascade_delete: false,
+            display_field: None,
+        };
+        let single_relationship = FieldType::Relationship(single_config);
+        
+        assert_eq!(single_relationship.to_string(), "relationship");
+        assert!(single_relationship.validate("test", &json!("user-123")).is_ok());
+        assert!(single_relationship.validate("test", &json!(["id1", "id2"])).is_err());
+        
+        // Test multiple relationship
+        let multiple_config = RelationshipConfig {
+            target_collection: "tags".to_string(),
+            multiple: true,
+            cascade_delete: false,
+            display_field: Some("name".to_string()),
+        };
+        let multiple_relationship = FieldType::Relationship(multiple_config);
+        
+        assert!(multiple_relationship.validate("test", &json!(["tag-12345678", "tag-87654321"])).is_ok());
+        assert!(multiple_relationship.validate("test", &json!("single-id")).is_err());
     }
 } 

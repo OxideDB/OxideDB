@@ -90,6 +90,16 @@ impl CollectionHandlers {
         Ok(collection_schemas)
     }
 
+    /// List all collections with relationship data populated
+    pub async fn list_collections_with_relationships(db: Arc<dyn Db>) -> Result<Vec<CollectionSchema>, ApiError> {
+        debug!("Listing collections with relationship data");
+
+        let collection_schemas = db.list_collections().await?;
+
+        debug!("Listed {} collections", collection_schemas.len());
+        Ok(collection_schemas)
+    }
+
     /// Get collection statistics
     pub async fn get_collection_stats(
         db: Arc<dyn Db>,

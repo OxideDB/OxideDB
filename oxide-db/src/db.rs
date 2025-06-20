@@ -20,6 +20,11 @@ pub struct ListParams {
     pub sort_field: Option<String>,
     /// Whether to sort in ascending order (default: true)
     pub sort_ascending: Option<bool>,
+    /// Whether to populate relationship fields (default: false)
+    pub populate_relationships: Option<bool>,
+    /// Specific relationship fields to populate (comma-separated field names)
+    /// If provided, only these fields will be populated. If empty and populate_relationships is true, all relationships are populated.
+    pub populate_fields: Option<String>,
 }
 
 /// Authentication request for generic auth collections
@@ -307,4 +312,49 @@ pub trait Db: Send + Sync {
     /// # Returns
     /// A vector of auth collection schemas
     async fn list_auth_collections(&self) -> Result<Vec<CollectionSchema>, AppError>;
+
+    /// Populate relationship fields in records
+    ///
+    /// This method takes a list of records and populates their relationship fields
+    /// by fetching the related records from the target collections.
+    ///
+    /// # Arguments
+    /// * `collection` - The name of the source collection
+    /// * `records` - A mutable reference to the records to populate
+    ///
+    /// # Returns
+    /// The populated records with relationship data
+    async fn populate_relationships(&self, collection: &str, records: &mut [Record]) -> Result<(), AppError>;
+
+    /// Populate specific relationship fields in records
+    ///
+    /// This method takes a list of records and populates only the specified relationship fields
+    /// by fetching the related records from the target collections.
+    ///
+    /// # Arguments
+    /// * `collection` - The name of the source collection
+    /// * `records` - A mutable reference to the records to populate
+    /// * `field_names` - A vector of field names to populate
+    ///
+    /// # Returns
+    /// The populated records with relationship data for specified fields only
+    async fn populate_specific_relationships(&self, collection: &str, records: &mut [Record], field_names: &[String]) -> Result<(), AppError>;
+
+    /// Get related records for a specific relationship field
+    ///
+    /// This method retrieves related records for a specific relationship field value.
+    ///
+    /// # Arguments
+    /// * `target_collection` - The name of the target collection
+    /// * `record_ids` - The IDs of the records to fetch
+    /// * `display_field` - Optional field to use as display value
+    ///
+    /// # Returns
+    /// A map of record ID to the related record data
+    async fn get_related_records(
+        &self, 
+        target_collection: &str, 
+        record_ids: &[String],
+        display_field: Option<&str>
+    ) -> Result<std::collections::HashMap<String, serde_json::Value>, AppError>;
 }
