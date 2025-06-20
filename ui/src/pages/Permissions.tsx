@@ -38,6 +38,7 @@ import {
   Database,
   Code
 } from 'lucide-react';
+import PageLayout from '@/components/PageLayout';
 import { apiService } from '@/services/api';
 import type { 
   CollectionPermissionsInfo, 
@@ -273,11 +274,7 @@ const Permissions: React.FC = () => {
 
   if (loading) {
     return (
-      <div className="space-y-6">
-        <div className="flex items-center space-x-2">
-          <Shield className="w-6 h-6" />
-          <h1 className="text-2xl font-bold">Collection Permissions</h1>
-        </div>
+      <PageLayout title="Collection Permissions">
         <div className="animate-pulse">
           <div className="grid gap-4">
             {[1, 2, 3].map((i) => (
@@ -285,37 +282,34 @@ const Permissions: React.FC = () => {
             ))}
           </div>
         </div>
-      </div>
+      </PageLayout>
     );
   }
 
   if (error) {
     return (
-      <div className="space-y-6">
-        <div className="flex items-center space-x-2">
-          <Shield className="w-6 h-6" />
-          <h1 className="text-2xl font-bold">Collection Permissions</h1>
-        </div>
+      <PageLayout title="Collection Permissions">
         <Alert variant="destructive">
           <AlertDescription>{error}</AlertDescription>
         </Alert>
         <Button onClick={loadPermissions}>Retry</Button>
-      </div>
+      </PageLayout>
     );
   }
 
+  const headerActions = (
+    <Button onClick={loadPermissions} variant="outline">
+      <RotateCcw className="w-4 h-4 mr-2" />
+      Refresh
+    </Button>
+  );
+
   return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center space-x-2">
-          <Shield className="w-6 h-6" />
-          <h1 className="text-2xl font-bold">Access Rules</h1>
-        </div>
-        <Button onClick={loadPermissions} variant="outline">
-          <RotateCcw className="w-4 h-4 mr-2" />
-          Refresh
-        </Button>
-      </div>
+    <PageLayout 
+      title="Access Rules" 
+      description="Manage access control rules for your collections"
+      headerActions={headerActions}
+    >
 
       <Tabs defaultValue="rules" className="w-full">
         <TabsList className="grid w-full grid-cols-3">
@@ -705,7 +699,7 @@ const Permissions: React.FC = () => {
           </Card>
         </TabsContent>
       </Tabs>
-    </div>
+    </PageLayout>
   );
 };
 

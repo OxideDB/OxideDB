@@ -1,16 +1,10 @@
 import React from 'react';
 import { Settings as SettingsIcon } from 'lucide-react';
+import PageLayout from '@/components/PageLayout';
 
 const Settings: React.FC = () => {
   return (
-    <div>
-      <div className="flex justify-between items-center mb-8">
-        <div>
-          <h1 className="text-2xl font-bold text-gray-900">Settings</h1>
-          <p className="text-gray-600 mt-1">Configure OxideDB settings and preferences</p>
-        </div>
-      </div>
-
+    <PageLayout title="Settings" description="Configure OxideDB settings and preferences">
       <div className="space-y-6">
         {/* Coming Soon */}
         <div className="card text-center py-12">
@@ -36,7 +30,7 @@ const Settings: React.FC = () => {
           </div>
         </div>
       </div>
-    </div>
+    </PageLayout>
   );
 };
 

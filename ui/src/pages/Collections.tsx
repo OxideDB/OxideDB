@@ -6,6 +6,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
+import PageLayout from '@/components/PageLayout';
 import { apiService } from '../services/api';
 import type { CollectionStats, CollectionSchema } from '../types/api';
 
@@ -73,39 +74,41 @@ const Collections: React.FC = () => {
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center h-64">
-        <div className="text-muted-foreground">Loading collections...</div>
-      </div>
+      <PageLayout title="Collections" description="Manage your database collections">
+        <div className="flex items-center justify-center h-64">
+          <div className="text-muted-foreground">Loading collections...</div>
+        </div>
+      </PageLayout>
     );
   }
 
+  const headerActions = (
+    <>
+      <div className="relative flex-1 max-w-full sm:max-w-sm">
+        <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+        <Input
+          placeholder="Search collections..."
+          value={searchTerm}
+          onChange={(e) => setSearchTerm(e.target.value)}
+          className="pl-10"
+        />
+      </div>
+
+      <Button asChild className="w-full sm:w-auto">
+        <Link to="/collections/new">
+          <Plus className="h-4 w-4 mr-2" />
+          Create Collection
+        </Link>
+      </Button>
+    </>
+  );
+
   return (
-    <div className="flex-1 space-y-4 md:space-y-6 p-4 md:p-6">
-      {/* Header */}
-      <div>
-        <h1 className="text-2xl font-bold text-foreground">Collections</h1>
-        <p className="text-muted-foreground mt-1">Manage your database collections</p>
-      </div>
-
-      {/* Header Actions */}
-      <div className="flex flex-col gap-3 sm:flex-row sm:gap-4 sm:justify-between">
-        <div className="relative flex-1 max-w-full sm:max-w-sm">
-          <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-          <Input
-            placeholder="Search collections..."
-            value={searchTerm}
-            onChange={(e) => setSearchTerm(e.target.value)}
-            className="pl-10"
-          />
-        </div>
-
-        <Button asChild className="w-full sm:w-auto">
-          <Link to="/collections/new">
-            <Plus className="h-4 w-4 mr-2" />
-            Create Collection
-          </Link>
-        </Button>
-      </div>
+    <PageLayout 
+      title="Collections" 
+      description="Manage your database collections"
+      headerActions={headerActions}
+    >
 
       {error && (
         <Card className="border-destructive">
@@ -235,7 +238,7 @@ const Collections: React.FC = () => {
           })}
         </div>
       )}
-    </div>
+    </PageLayout>
   );
 };
 

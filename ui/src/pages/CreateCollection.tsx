@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import PageLayout from '@/components/PageLayout';
 import { apiService } from '../services/api';
 import type { CollectionSchema, FieldDefinition, FieldType, CollectionType, CreateCollectionRequest } from '../types/api';
 import type { RelationshipConfig } from '../types/generated';
@@ -164,23 +165,24 @@ const CreateCollection: React.FC = () => {
     }
   };
 
+  const leftActions = (
+    <Button
+      onClick={() => navigate('/collections')}
+      variant="ghost"
+      size="sm"
+    >
+      <ArrowLeft className="h-4 w-4 mr-2" />
+      Back to Collections
+    </Button>
+  );
+
   return (
-    <div className="max-w-4xl mx-auto">
-      <div className="flex items-center mb-8">
-        <Button
-          onClick={() => navigate('/collections')}
-          variant="ghost"
-          size="sm"
-          className="mr-4"
-        >
-          <ArrowLeft className="h-4 w-4 mr-2" />
-          Back to Collections
-        </Button>
-        <div>
-          <h1 className="text-2xl font-bold text-foreground">Create New Collection</h1>
-          <p className="text-muted-foreground mt-1">Define a new collection with schema</p>
-        </div>
-      </div>
+    <PageLayout 
+      title="Create New Collection" 
+      description="Define a new collection with schema"
+      leftActions={leftActions}
+    >
+      <div className="max-w-4xl mx-auto">
 
       {error && (
         <Card className="mb-6 border-destructive">
@@ -415,7 +417,8 @@ const CreateCollection: React.FC = () => {
           </form>
         </CardContent>
       </Card>
-    </div>
+      </div>
+    </PageLayout>
   );
 };
 

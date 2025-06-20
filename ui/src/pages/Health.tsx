@@ -1,5 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { CheckCircle, XCircle, RefreshCw } from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import PageLayout from '@/components/PageLayout';
 import { apiService } from '../services/api';
 import type { HealthStatus } from '../types/api';
 
@@ -29,22 +31,24 @@ const Health: React.FC = () => {
 
   const isHealthy = health?.status === 'healthy' && health?.database === 'healthy';
 
+  const headerActions = (
+    <Button
+      onClick={fetchHealth}
+      disabled={loading}
+      variant="secondary"
+      className="flex items-center"
+    >
+      <RefreshCw className={`h-4 w-4 mr-2 ${loading ? 'animate-spin' : ''}`} />
+      Refresh
+    </Button>
+  );
+
   return (
-    <div>
-      <div className="flex justify-between items-center mb-8">
-        <div>
-          <h1 className="text-2xl font-bold text-gray-900">System Health</h1>
-          <p className="text-gray-600 mt-1">Monitor the status of OxideDB components</p>
-        </div>
-        <button
-          onClick={fetchHealth}
-          disabled={loading}
-          className="btn-secondary flex items-center"
-        >
-          <RefreshCw className={`h-4 w-4 mr-2 ${loading ? 'animate-spin' : ''}`} />
-          Refresh
-        </button>
-      </div>
+    <PageLayout 
+      title="System Health" 
+      description="Monitor the status of OxideDB components"
+      headerActions={headerActions}
+    >
 
       {error && (
         <div className="bg-red-50 border border-red-200 rounded-lg p-4 mb-6">
@@ -153,7 +157,7 @@ const Health: React.FC = () => {
           </div>
         </div>
       ) : null}
-    </div>
+    </PageLayout>
   );
 };
 

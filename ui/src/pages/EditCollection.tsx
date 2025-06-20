@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import PageLayout from '@/components/PageLayout';
 import { apiService } from '../services/api';
 import type { CollectionSchema, FieldDefinition, FieldType } from '../types/api';
 import type { RelationshipConfig } from '../types/generated';
@@ -198,51 +199,57 @@ const EditCollection: React.FC = () => {
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center h-64">
-        <div className="text-muted-foreground">Loading collection schema...</div>
-      </div>
+      <PageLayout title="Loading..." description="Loading collection schema...">
+        <div className="flex items-center justify-center h-64">
+          <div className="text-muted-foreground">Loading collection schema...</div>
+        </div>
+      </PageLayout>
     );
   }
 
   if (!schema) {
+    const leftActions = (
+      <Button
+        onClick={() => navigate('/collections')}
+        variant="ghost"
+        size="sm"
+      >
+        <ArrowLeft className="h-4 w-4 mr-2" />
+        Back to Collections
+      </Button>
+    );
+
     return (
-      <div className="max-w-4xl mx-auto">
-        <div className="flex items-center mb-8">
-          <Button
-            onClick={() => navigate('/collections')}
-            variant="ghost"
-            size="sm"
-            className="mr-4"
-          >
-            <ArrowLeft className="h-4 w-4 mr-2" />
-            Back to Collections
-          </Button>
-          <div>
-            <h1 className="text-2xl font-bold text-foreground">Collection Not Found</h1>
-            <p className="text-muted-foreground mt-1">The requested collection could not be found</p>
-          </div>
+      <PageLayout 
+        title="Collection Not Found" 
+        description="The requested collection could not be found"
+        leftActions={leftActions}
+      >
+        <div className="max-w-4xl mx-auto">
+          {/* Content if needed */}
         </div>
-      </div>
+      </PageLayout>
     );
   }
 
+  const leftActions = (
+    <Button
+      onClick={() => navigate(`/collections/${encodeURIComponent(collection!)}`)}
+      variant="ghost"
+      size="sm"
+    >
+      <ArrowLeft className="h-4 w-4 mr-2" />
+      Back to Records
+    </Button>
+  );
+
   return (
-    <div className="max-w-4xl mx-auto">
-      <div className="flex items-center mb-8">
-        <Button
-          onClick={() => navigate(`/collections/${encodeURIComponent(collection!)}`)}
-          variant="ghost"
-          size="sm"
-          className="mr-4"
-        >
-          <ArrowLeft className="h-4 w-4 mr-2" />
-          Back to Records
-        </Button>
-        <div>
-          <h1 className="text-2xl font-bold text-foreground">Edit Collection Schema</h1>
-          <p className="text-muted-foreground mt-1">Update schema for "{collection}"</p>
-        </div>
-      </div>
+    <PageLayout 
+      title="Edit Collection Schema" 
+      description={`Update schema for "${collection}"`}
+      leftActions={leftActions}
+    >
+      <div className="max-w-4xl mx-auto">
 
       {error && (
         <Card className="mb-6 border-destructive">
@@ -469,7 +476,8 @@ const EditCollection: React.FC = () => {
           </form>
         </CardContent>
       </Card>
-    </div>
+      </div>
+    </PageLayout>
   );
 };
 

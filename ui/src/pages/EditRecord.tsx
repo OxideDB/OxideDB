@@ -6,6 +6,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { SchemaForm } from '@/components/SchemaForm';
+import PageLayout from '@/components/PageLayout';
 import { apiService } from '../services/api';
 import type { DbRecord, CollectionSchema } from '../types/api';
 
@@ -106,74 +107,79 @@ const EditRecord: React.FC = () => {
 
   if (!collection) {
     return (
-      <Card className="border-destructive">
-        <CardContent className="p-6">
-          <div className="text-destructive">Collection parameter is required</div>
-        </CardContent>
-      </Card>
+      <PageLayout title="Error" description="Collection parameter is required">
+        <Card className="border-destructive">
+          <CardContent className="p-6">
+            <div className="text-destructive">Collection parameter is required</div>
+          </CardContent>
+        </Card>
+      </PageLayout>
     );
   }
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center h-64">
-        <div className="text-muted-foreground">Loading {isCreateMode ? 'schema' : 'record'}...</div>
-      </div>
+      <PageLayout title="Loading..." description={`Loading ${isCreateMode ? 'schema' : 'record'}...`}>
+        <div className="flex items-center justify-center h-64">
+          <div className="text-muted-foreground">Loading {isCreateMode ? 'schema' : 'record'}...</div>
+        </div>
+      </PageLayout>
     );
   }
 
   if (!isCreateMode && !record) {
     return (
-      <Card className="border-destructive">
-        <CardContent className="p-6">
-          <div className="text-destructive">Record not found</div>
-        </CardContent>
-      </Card>
+      <PageLayout title="Error" description="Record not found">
+        <Card className="border-destructive">
+          <CardContent className="p-6">
+            <div className="text-destructive">Record not found</div>
+          </CardContent>
+        </Card>
+      </PageLayout>
     );
   }
 
+  const leftActions = (
+    <Button
+      asChild
+      variant="ghost"
+      size="sm"
+    >
+      <Link to={`/collections/${encodeURIComponent(collection)}`}>
+        <ChevronLeft className="h-4 w-4 mr-2" />
+        Back to Collection
+      </Link>
+    </Button>
+  );
+
+  const headerActions = schema && Object.keys(schema.fields).length > 0 ? (
+    <div className="flex space-x-2">
+      <Button
+        variant={useSchemaForm ? "default" : "outline"}
+        size="sm"
+        onClick={() => setUseSchemaForm(true)}
+      >
+        <FileText className="h-4 w-4 mr-2" />
+        Form View
+      </Button>
+      <Button
+        variant={!useSchemaForm ? "default" : "outline"}
+        size="sm"
+        onClick={() => setUseSchemaForm(false)}
+      >
+        <Code className="h-4 w-4 mr-2" />
+        JSON Editor
+      </Button>
+    </div>
+  ) : undefined;
+
   return (
-    <div className="space-y-6">
-      {/* Header */}
-      <div className="flex items-center space-x-4">
-        <Button
-          asChild
-          variant="ghost"
-          size="icon"
-        >
-          <Link to={`/collections/${encodeURIComponent(collection)}`}>
-            <ChevronLeft className="h-4 w-4" />
-          </Link>
-        </Button>
-        <div className="flex-1">
-          <h1 className="text-2xl font-bold text-foreground">
-            {isCreateMode ? `Create Record in "${collection}"` : `Edit Record in "${collection}"`}
-          </h1>
-          <p className="text-muted-foreground mt-1">
-            {isCreateMode ? 'Add a new record to this collection' : `Record ID: ${record?.id}`}
-          </p>
-        </div>
-        {schema && Object.keys(schema.fields).length > 0 && (
-          <div className="flex space-x-2">
-            <Button
-              variant={useSchemaForm ? "default" : "outline"}
-              size="sm"
-              onClick={() => setUseSchemaForm(true)}
-            >
-              <FileText className="h-4 w-4 mr-2" />
-              Form View
-            </Button>
-            <Button
-              variant={!useSchemaForm ? "default" : "outline"}
-              size="sm"
-              onClick={() => setUseSchemaForm(false)}
-            >
-              <Code className="h-4 w-4 mr-2" />
-              JSON Editor
-            </Button>
-          </div>
-        )}
-      </div>
+    <PageLayout 
+      title={isCreateMode ? `Create Record in "${collection}"` : `Edit Record in "${collection}"`}
+      description={isCreateMode ? 'Add a new record to this collection' : `Record ID: ${record?.id}`}
+      leftActions={leftActions}
+      headerActions={headerActions}
+    >
 
       {/* Error Display */}
       {error && (
@@ -271,7 +277,7 @@ const EditRecord: React.FC = () => {
           )}
         </CardContent>
       </Card>
-    </div>
+    </PageLayout>
   );
 };
 

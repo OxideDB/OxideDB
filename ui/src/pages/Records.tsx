@@ -12,6 +12,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Textarea } from '@/components/ui/textarea';
 import { Input } from '@/components/ui/input';
 import { RecordTable } from '@/components/RecordTable';
+import PageLayout from '@/components/PageLayout';
 import { apiService } from '../services/api';
 import type { 
   DbRecord, 
@@ -272,9 +273,11 @@ const Records: React.FC = () => {
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center h-64">
-        <div className="text-muted-foreground">Loading records...</div>
-      </div>
+      <PageLayout title="Loading..." description="Loading collection data...">
+        <div className="flex items-center justify-center h-64">
+          <div className="text-muted-foreground">Loading records...</div>
+        </div>
+      </PageLayout>
     );
   }
 
@@ -287,20 +290,22 @@ const Records: React.FC = () => {
     indexed: false, // Placeholder - not in current schema
   })) : [];
 
+  const leftActions = (
+    <Link to="/collections">
+      <Button variant="ghost" size="sm">
+        <ArrowLeft className="h-4 w-4 mr-2" />
+        <span className="hidden sm:inline">Back to Collections</span>
+        <span className="sm:hidden">Back</span>
+      </Button>
+    </Link>
+  );
+
   return (
-    <div className="flex-1 space-y-4 md:space-y-6 p-4 md:p-6">
-      {/* Header */}
-      <header className="flex h-14 md:h-16 shrink-0 items-center gap-2 border-b pb-4 mb-6">
-        <Link to="/collections">
-          <Button variant="ghost" size="sm">
-            <ArrowLeft className="h-4 w-4 mr-2" />
-            <span className="hidden sm:inline">Back to Collections</span>
-            <span className="sm:hidden">Back</span>
-          </Button>
-        </Link>
-        <Separator orientation="vertical" className="mr-2 h-4" />
-        <h1 className="text-lg font-semibold truncate">{collection}</h1>
-      </header>
+    <PageLayout 
+      title={collection || 'Collection'} 
+      description="Manage records and collection settings"
+      leftActions={leftActions}
+    >
 
       {/* Error Display */}
       {error && (
@@ -725,7 +730,7 @@ const Records: React.FC = () => {
           )}
         </CardContent>
       </Card>
-    </div>
+    </PageLayout>
   );
 };
 
