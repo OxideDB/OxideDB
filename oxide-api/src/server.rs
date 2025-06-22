@@ -6,7 +6,7 @@
 use oxide_core::{event::EventBus, AppError, AuthService};
 use oxide_db::Db;
 use oxide_logging::LogServiceBridge;
-use crate::services::LoggingApiService;
+use crate::services::{LoggingApiService, DatabasePermissionService};
 use std::sync::Arc;
 use tokio::net::TcpListener;
 use tracing::{info, debug};
@@ -21,6 +21,8 @@ pub struct AppState {
     pub auth_service: Arc<AuthService>,
     pub logging_service: Option<Arc<LogServiceBridge>>,
     pub logging_api_service: Option<Arc<LoggingApiService>>,
+    pub plugin_manager: Option<Arc<oxide_plugin_runtime::PluginManager>>,
+    pub database_permission_service: Arc<DatabasePermissionService>,
 }
 
 /// The API server that handles HTTP requests
@@ -36,6 +38,14 @@ pub struct ApiServer {
     logging_api_service: Option<Arc<LoggingApiService>>,
     host: String,
     port: u16,
+}
+
+impl AppState {
+    /// Update the AppState with a plugin manager
+    pub fn with_plugin_manager(mut self, plugin_manager: Arc<oxide_plugin_runtime::PluginManager>) -> Self {
+        self.plugin_manager = Some(plugin_manager);
+        self
+    }
 }
 
 impl ApiServer {
@@ -137,15 +147,95 @@ impl ApiServer {
             info!("Admin UI is disabled by configuration");
         }
 
+        let database_permission_service = Arc::new(DatabasePermissionService::new(Arc::clone(&self.db)));
+        
         let state = AppState {
             db: Arc::clone(&self.db),
             event_bus: Arc::clone(&self.event_bus),
             auth_service: Arc::clone(&self.auth_service),
             logging_service: self.logging_service.clone(),
             logging_api_service: self.logging_api_service.clone(),
+            plugin_manager: None, // Will be set during startup if plugins are enabled
+            database_permission_service,
         };
 
-        let app = build_router_with_config_and_middleware(config, state);
+        let app = build_router_with_config_and_middleware(config.clone(), state.clone());
+
+        // Log all registered endpoints
+        crate::routes::log_registered_endpoints(&state, &config);
+
+        let listener = TcpListener::bind(&self.address()).await.map_err(|e| {
+            AppError::internal(format!("Failed to bind to {}: {}", self.address(), e))
+        })?;
+
+        info!("✅ API server listening on {}", self.address());
+
+        axum::serve(listener, app)
+            .await
+            .map_err(|e| AppError::internal(format!("Server error: {}", e)))?;
+
+        Ok(())
+    }
+
+    /// Start the API server with custom configuration and plugin manager
+    ///
+    /// This variant includes plugin support by passing the plugin manager to the app state.
+    pub async fn start_with_config_and_plugin_manager(
+        &self, 
+        config: RouteConfig, 
+        plugin_manager: Arc<oxide_plugin_runtime::PluginManager>
+    ) -> Result<(), AppError> {
+        info!("Starting API server on {}:{}", self.host, self.port);
+        debug!("Server configuration: Admin enabled: {}, CORS enabled: {}, Tracing enabled: {}", 
+               config.enable_admin, config.enable_cors, config.enable_tracing);
+
+        // Log admin UI configuration details
+        if config.enable_admin {
+            match &config.admin_mode {
+                crate::routes::AdminUiMode::Embedded => {
+                    info!("Admin UI mode: Embedded (built-in UI)");
+                    
+                    // Check if embedded UI is available
+                    if crate::handlers::admin::is_admin_ui_available() {
+                        info!("✅ Embedded admin UI is available");
+                    } else {
+                        info!("⚠️  Embedded admin UI is not available (UI files not found)");
+                    }
+                }
+                crate::routes::AdminUiMode::External(path) => {
+                    info!("Admin UI mode: External (serving from {:?})", path);
+                    
+                    // Check if external UI is available
+                    if crate::handlers::admin::is_external_admin_ui_available(path).await {
+                        info!("✅ External admin UI is available at {:?}", path);
+                    } else {
+                        info!("⚠️  External admin UI is not available at {:?}", path);
+                    }
+                }
+                crate::routes::AdminUiMode::Disabled => {
+                    info!("Admin UI is disabled");
+                }
+            }
+        } else {
+            info!("Admin UI is disabled by configuration");
+        }
+
+        let database_permission_service = Arc::new(DatabasePermissionService::new(Arc::clone(&self.db)));
+        
+        let state = AppState {
+            db: Arc::clone(&self.db),
+            event_bus: Arc::clone(&self.event_bus),
+            auth_service: Arc::clone(&self.auth_service),
+            logging_service: self.logging_service.clone(),
+            logging_api_service: self.logging_api_service.clone(),
+            plugin_manager: Some(plugin_manager),
+            database_permission_service,
+        };
+
+        let app = build_router_with_config_and_middleware(config.clone(), state.clone());
+
+        // Log all registered endpoints
+        crate::routes::log_registered_endpoints(&state, &config);
 
         let listener = TcpListener::bind(&self.address()).await.map_err(|e| {
             AppError::internal(format!("Failed to bind to {}: {}", self.address(), e))

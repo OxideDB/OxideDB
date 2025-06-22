@@ -14,12 +14,11 @@ oxide-core = { path = "../oxide-core" }
 oxide-db = { path = "../oxide-db" }
 oxide-api = { path = "../oxide-api" }
 oxide-logging = { path = "../oxide-logging" }
+oxide-plugin-runtime = { path = "../oxide-plugin-runtime" }
 tokio = { version = "1.0", features = ["full"] }
 tracing = "0.1"
 tracing-subscriber = "0.3"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-wasmtime = "25.0.0"
-wasmtime-wasi = "25.0"
 anyhow = "1.0"
 clap = { version = "4.4", features = ["derive"] }

@@ -1,0 +1,26 @@
+[package]
+name = "oxide-plugin-sdk"
+version = "0.1.0"
+edition = "2021"
+description = "SDK for developing OxideDB plugins with WASM"
+license = "MIT OR Apache-2.0"
+authors = ["OxideDB Team"]
+repository = "https://github.com/oxide-db/oxide"
+documentation = "https://docs.rs/oxide-plugin-sdk"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "1.0"
+
+[features]
+default = []
+# Enable additional debugging features for development
+debug = []
+# Enable HTTP route handling
+http = []
+# Enable database operations
+database = [] 

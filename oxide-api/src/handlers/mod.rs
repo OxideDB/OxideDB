@@ -23,6 +23,7 @@ pub mod health;
 pub mod logs;
 pub mod permissions;
 pub mod records;
+pub mod plugins;
 
 // Re-export commonly used types for convenience
 pub use auth::{AuthHandlers, LoginRequest, LoginResponse, RegisterRequest, RegisterResponse};

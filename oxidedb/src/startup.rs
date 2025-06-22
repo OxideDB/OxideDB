@@ -3,7 +3,8 @@
 //! This module provides centralized initialization logic for all OxideDB services
 //! including the event bus, database, authentication, plugins, and HTTP server.
 
-use crate::{OxideDbConfig, PluginManager, Result, sample_data};
+use crate::{OxideDbConfig, Result, sample_data};
+use oxide_plugin_runtime::PluginManager;
 use oxide_api::{server::ApiServer, services::{DatabasePermissionService, LoggingApiService}};
 use oxide_core::{AppError, AuthService, EventBus, InMemoryEventBus, register_system_hooks};
 use oxide_db::{Db, SqliteDb};
@@ -68,7 +69,10 @@ impl ApplicationBootstrap {
         ).await?;
 
         // 8. Initialize plugin system (optional)
-        let plugin_manager = self.initialize_plugin_system(Arc::clone(&event_bus)).await?;
+        let plugin_manager = self.initialize_plugin_system(
+            Arc::clone(&event_bus), 
+            Arc::clone(&database) as Arc<dyn oxide_db::Db>
+        ).await?;
 
         // 9. Create logging API service if logging is enabled
         let logging_api_service = self.create_logging_api_service(&logging_service);
@@ -122,8 +126,12 @@ impl ApplicationBootstrap {
         // Print startup information
         self.print_startup_info();
 
-        // Start the server
-        api_server.start_with_config(route_config).await?;
+        // Start the server with plugin manager if available
+        if let Some(plugin_manager) = services.plugin_manager {
+            api_server.start_with_config_and_plugin_manager(route_config, plugin_manager).await?;
+        } else {
+            api_server.start_with_config(route_config).await?;
+        }
 
         Ok(())
     }
@@ -231,6 +239,7 @@ impl ApplicationBootstrap {
     async fn initialize_plugin_system(
         &self,
         event_bus: Arc<dyn EventBus>,
+        database: Arc<dyn oxide_db::Db>,
     ) -> Result<Option<Arc<PluginManager>>> {
         if !self.config.plugins.plugin_folder.exists() {
             info!("Plugin folder {:?} does not exist, skipping plugin loading", 
@@ -239,6 +248,7 @@ impl ApplicationBootstrap {
         }
 
         let mut plugin_manager = PluginManager::new(
+            database,
             self.config.plugins.security_policy.clone().into(),
         )?;
 

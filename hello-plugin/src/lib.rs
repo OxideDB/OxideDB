@@ -1,312 +1,406 @@
-//! Hello Plugin - A simple WASM plugin for OxideDB
+//! Hello Plugin - A simple WASM plugin for OxideDB using the Plugin SDK
 //!
-//! This plugin demonstrates the basic plugin API by:
-//! 1. Importing host functions (log_info, log_error, set_error, get_event_payload)
-//! 2. Exporting the on_before_create function
-//! 3. Processing events and calling host functions
-//! 4. Working with the security-enhanced plugin system
+//! This plugin demonstrates how to use the high-level Plugin SDK to:
+//! 1. Handle database events (create, update, delete)
+//! 2. Process and validate data
+//! 3. Expose HTTP routes for custom business logic
+//! 4. Perform CRUD operations on database records
+//! 5. Implement security checks and data transformations
 
-use serde::{Deserialize, Serialize};
+use oxide_plugin_sdk::prelude::*;
 
-/// Plugin response structure matching the host contract
-#[derive(Debug, Serialize, Deserialize)]
-pub struct PluginResponse {
-    pub allow: bool,
-    pub modified_data: Option<String>,
-    pub error_message: Option<String>,
-    pub metadata: serde_json::Value,
-}
+/// Hello Plugin - demonstrates the Plugin SDK capabilities
+#[derive(Default)]
+pub struct HelloPlugin;
 
-/// Event payload structure matching the host contract
-#[derive(Debug, Deserialize)]
-pub struct EventPayload {
-    pub event_type: String,
-    pub collection: String,
-    pub data: String,
-    pub metadata: serde_json::Value,
-}
-
-// Import host functions that the plugin can call
-// These correspond to the security-enhanced plugin API
-extern "C" {
-    /// Get the current event payload as JSON string
-    /// Requires ReadEventData capability
-    fn get_event_payload() -> i32;
-
-    /// Log an info message to the host
-    /// Requires LogInfo capability
-    fn log_info(ptr: *const u8, len: usize);
-
-    /// Log an error message to the host
-    /// Requires LogError capability
-    fn log_error(ptr: *const u8, len: usize);
-
-    /// Set an error message (prevents operation from continuing)
-    /// Requires BlockOperations capability
-    fn set_error(ptr: *const u8, len: usize);
-
-    /// Get the result of get_event_payload call
-    fn get_result_ptr() -> i32;
-    fn get_result_len() -> i32;
-}
-
-use std::sync::Mutex;
-use std::sync::OnceLock;
-
-// Global buffer for sharing data with host
-static RESPONSE_BUFFER: OnceLock<Mutex<Vec<u8>>> = OnceLock::new();
-
-/// Helper function to call host's log_info
-/// This function requires the LogInfo capability to be granted to the plugin
-fn host_log_info(message: &str) {
-    let bytes = message.as_bytes();
-    unsafe {
-        log_info(bytes.as_ptr(), bytes.len());
-    }
-}
-
-/// Helper function to call host's log_error
-/// This function requires the LogError capability to be granted to the plugin
-fn host_log_error(message: &str) {
-    let bytes = message.as_bytes();
-    unsafe {
-        log_error(bytes.as_ptr(), bytes.len());
-    }
-}
-
-/// Helper function to call host's set_error
-/// This function requires the BlockOperations capability to be granted to the plugin
-fn host_set_error(message: &str) {
-    let bytes = message.as_bytes();
-    unsafe {
-        set_error(bytes.as_ptr(), bytes.len());
-    }
-}
-
-/// Helper function to get event payload from host
-fn host_get_event_payload() -> Result<EventPayload, String> {
-    unsafe {
-        let result = get_event_payload();
-        if result < 0 {
-            return Err("Failed to get event payload".to_string());
-        }
-
-        let ptr = get_result_ptr();
-        let len = get_result_len();
-
-        if ptr == 0 || len == 0 {
-            return Err("Invalid payload pointer or length".to_string());
-        }
-
-        let slice = std::slice::from_raw_parts(ptr as *const u8, len as usize);
-        let json_str = std::str::from_utf8(slice).map_err(|e| format!("Invalid UTF-8: {}", e))?;
-
-        serde_json::from_str(json_str).map_err(|e| format!("Failed to parse payload: {}", e))
-    }
-}
-
-/// Export function for memory allocation (required for string passing)
-#[no_mangle]
-pub extern "C" fn alloc(size: usize) -> *mut u8 {
-    let mut buf = Vec::with_capacity(size);
-    let ptr = buf.as_mut_ptr();
-    std::mem::forget(buf);
-    ptr
-}
-
-/// Export function for memory deallocation
-/// 
-/// # Safety
-/// 
-/// This function is unsafe because it reconstructs a Vec from raw parts.
-/// The caller must ensure that:
-/// - `ptr` was originally allocated by the `alloc` function in this module
-/// - `size` matches the original capacity used when allocating the memory
-/// - The pointer has not been deallocated previously
-/// - No other references to this memory exist
-#[no_mangle]
-pub unsafe extern "C" fn dealloc(ptr: *mut u8, size: usize) {
-    let _ = Vec::from_raw_parts(ptr, 0, size);
-}
-
-/// Set response data that the host can retrieve
-/// 
-/// # Safety
-/// 
-/// This function is unsafe because it dereferences a raw pointer (`ptr`) to create a slice.
-/// The caller must ensure that:
-/// - `ptr` is valid and points to at least `len` bytes of readable memory
-/// - The memory pointed to by `ptr` remains valid for the duration of this function call
-/// - `len` accurately represents the number of bytes available at `ptr`
-#[no_mangle]
-pub unsafe extern "C" fn set_response(ptr: *const u8, len: usize) {
-    let buffer = RESPONSE_BUFFER.get_or_init(|| Mutex::new(Vec::new()));
-    if let Ok(mut buf) = buffer.lock() {
-        buf.clear();
-        buf.extend_from_slice(std::slice::from_raw_parts(ptr, len));
-    }
-}
-
-/// Get response data length
-#[no_mangle]
-pub extern "C" fn get_response_len() -> usize {
-    let buffer = RESPONSE_BUFFER.get_or_init(|| Mutex::new(Vec::new()));
-    if let Ok(buf) = buffer.lock() {
-        buf.len()
-    } else {
-        0
-    }
-}
-
-/// Get response data pointer
-#[no_mangle]
-pub extern "C" fn get_response_ptr() -> *const u8 {
-    let buffer = RESPONSE_BUFFER.get_or_init(|| Mutex::new(Vec::new()));
-    if let Ok(buf) = buffer.lock() {
-        buf.as_ptr()
-    } else {
-        std::ptr::null()
-    }
-}
-
-/// Helper function to serialize and set plugin response
-fn set_plugin_response(response: &PluginResponse) -> Result<(), String> {
-    let response_json = serde_json::to_string(response)
-        .map_err(|e| format!("Failed to serialize response: {}", e))?;
-    
-    let bytes = response_json.as_bytes();
-    unsafe {
-        set_response(bytes.as_ptr(), bytes.len());
-    }
-    Ok(())
-}
-
-/// Main plugin function - called before create operations
-/// This function demonstrates:
-/// 1. Getting event payload from host
-/// 2. Processing the data
-/// 3. Logging information (both info and error)
-/// 4. Setting response data
-/// 5. Working with the security-enhanced plugin system
-#[no_mangle]
-pub extern "C" fn on_before_create() -> i32 {
-    host_log_info("Hello Plugin: on_before_create called");
-
-    // Get the event payload from the host
-    let payload = match host_get_event_payload() {
-        Ok(payload) => payload,
-        Err(e) => {
-            let error_msg = format!("Failed to get event payload: {}", e);
-            host_log_error(&error_msg);
-            host_set_error(&error_msg);
-            return 1; // Error code
-        }
-    };
-
-    host_log_info(&format!(
-        "Processing event: {} for collection: {}",
-        payload.event_type, payload.collection
-    ));
-
-    // Example: Validate collection name for security
-    if payload.collection.contains("admin") || payload.collection.contains("system") {
-        let error_msg = format!("Access denied to restricted collection: {}", payload.collection);
-        host_log_error(&error_msg);
+impl PluginEventHandler for HelloPlugin {
+    fn on_init(&mut self) -> PluginResult<()> {
+        log_info!("Hello Plugin initializing...");
         
-        let response = PluginResponse {
-             allow: false,
-             modified_data: None,
-             error_message: Some(error_msg.clone()),
-             metadata: serde_json::json!({
-                 "processed_by": "hello-plugin",
-                 "version": "1.0.0",
-                 "security_check": "failed"
-             }),
-         };
-         
-         match set_plugin_response(&response) {
-             Ok(_) => return 0, // Success code (operation blocked as intended)
-             Err(e) => {
-                 host_set_error(&format!("Failed to set response: {}", e));
-                 return 1; // Error code
-             }
-         }
+        // Register HTTP routes for custom business logic
+        Http::register_route("GET", "/api/hello/items", "handle_get_items")?;
+        Http::register_route("POST", "/api/hello/items", "handle_create_item")?;
+        Http::register_route("GET", "/api/hello/items/:id", "handle_get_item")?;
+        Http::register_route("POST", "/api/hello/process", "handle_process_data")?;
+        
+        log_info!("Hello Plugin routes registered successfully!");
+        Ok(())
     }
 
-    // Example: Modify the data by adding a timestamp and plugin info
-    let modified_data = if let Ok(mut data_obj) = serde_json::from_str::<serde_json::Value>(&payload.data) {
-        // Add plugin metadata
-        if let Some(obj) = data_obj.as_object_mut() {
-            obj.insert(
-                "plugin_processed_at".to_string(),
-                serde_json::Value::String("2024-01-01T00:00:00Z".to_string()),
-            );
-            obj.insert(
-                "plugin_name".to_string(),
-                serde_json::Value::String("hello-plugin".to_string()),
-            );
+    fn on_before_create(&mut self, event: &EventPayload) -> PluginResult<PluginResponse> {
+        log_info!("Processing create event for collection: {}", event.collection);
+
+        // Security check: block access to restricted collections
+        if event.collection.contains("admin") || event.collection.contains("system") {
+            let error_msg = format!("Access denied to restricted collection: {}", event.collection);
+            log_warn!("{}", error_msg);
+            return Ok(PluginResponse::deny(error_msg));
         }
-        Some(data_obj.to_string())
-    } else {
-        host_log_info("Could not parse data as JSON, leaving unchanged");
-        None
-    };
 
-    // Create response
-    let response = PluginResponse {
-        allow: true,
-        modified_data,
-        error_message: None,
-        metadata: serde_json::json!({
-            "processed_by": "hello-plugin",
-            "version": "1.0.0",
-            "security_check": "passed"
-        }),
-    };
+        // Parse and enhance the data
+        let mut data: JsonValue = serde_json::from_str(&event.data)?;
+        
+        if let Some(obj) = data.as_object_mut() {
+            // Add plugin metadata
+            obj.insert("plugin_processed_at".to_string(), json!("2024-01-01T00:00:00Z"));
+            obj.insert("plugin_name".to_string(), json!("hello-plugin"));
+            obj.insert("plugin_version".to_string(), json!("1.0.0"));
+            
+            // Validate and enhance name field if present
+            if let Some(name) = obj.get("name").and_then(|v| v.as_str()) {
+                if name.trim().is_empty() {
+                    return Ok(PluginResponse::deny("Name cannot be empty"));
+                }
+                
+                // Capitalize the name
+                obj.insert("name".to_string(), json!(capitalize_name(name)));
+            }
+        }
 
-    // Set the response for the host to retrieve
-      match set_plugin_response(&response) {
-          Ok(_) => {
-              host_log_info("Hello Plugin: Successfully processed create event");
-              0 // Success code
-          }
-          Err(e) => {
-              let error_msg = format!("Failed to set response: {}", e);
-              host_log_error(&error_msg);
-              host_set_error(&error_msg);
-              1 // Error code
-          }
-      }
+        log_info!("Data validation and enhancement completed");
+        Ok(PluginResponse::allow_with_data(&data)?)
+    }
+
+    fn on_after_create(&mut self, event: &EventPayload) -> PluginResult<PluginResponse> {
+        log_info!("Record created successfully in collection: {}", event.collection);
+
+        // Create an audit log entry
+        let audit_entry = json!({
+            "action": "record_created",
+            "collection": event.collection,
+            "timestamp": "2024-01-01T00:00:00Z",
+            "plugin": "hello-plugin"
+        });
+
+        // Try to create audit log (don't fail if collection doesn't exist)
+        if let Err(e) = Database::create("_audit_log", &audit_entry) {
+            log_warn!("Failed to create audit log: {}", e);
+        }
+
+        Ok(PluginResponse::allow())
+    }
+
+    fn on_before_update(&mut self, event: &EventPayload) -> PluginResult<PluginResponse> {
+        log_info!("Processing update event for collection: {}", event.collection);
+
+        // Parse and validate the update data
+        let mut data: JsonValue = serde_json::from_str(&event.data)?;
+
+        if let Some(obj) = data.as_object_mut() {
+            // Update the last modified timestamp
+            obj.insert("plugin_updated_at".to_string(), json!("2024-01-01T00:00:00Z"));
+
+            // Validate name field if being updated
+            if let Some(name) = obj.get("name").and_then(|v| v.as_str()) {
+                if name.trim().is_empty() {
+                    return Ok(PluginResponse::deny("Name cannot be empty"));
+                }
+                
+                obj.insert("name".to_string(), json!(capitalize_name(name)));
+            }
+                 }
+
+         Ok(PluginResponse::allow_with_data(&data)?)
+    }
+
+    fn on_before_delete(&mut self, event: &EventPayload) -> PluginResult<PluginResponse> {
+        log_info!("Processing delete event for collection: {}", event.collection);
+
+        // Parse the data to check if it's a protected record
+        let data: JsonValue = serde_json::from_str(&event.data)?;
+        
+        if let Some(protected) = data.get("protected").and_then(|v| v.as_bool()) {
+            if protected {
+                log_warn!("Attempted to delete protected record");
+                return Ok(PluginResponse::deny("Cannot delete protected records"));
+            }
+        }
+
+        Ok(PluginResponse::allow())
+    }
+
+    fn on_cleanup(&mut self) -> PluginResult<()> {
+        log_info!("Hello Plugin cleanup completed");
+        Ok(())
+    }
 }
 
-/// Plugin initialization function
-#[no_mangle]
-pub extern "C" fn plugin_init() -> i32 {
-    host_log_info("Hello plugin initialized!");
-    0
+/// HTTP handler implementation for our custom routes
+#[cfg(feature = "http")]
+impl PluginHttpHandler for HelloPlugin {
+    fn handle_request(&mut self, request: &HttpRequestContext) -> PluginResult<HttpResponse> {
+        match (request.method.as_str(), request.path.as_str()) {
+            ("GET", "/api/hello/items") => self.handle_get_items(request),
+            ("POST", "/api/hello/items") => self.handle_create_item(request),
+            ("GET", path) if path.starts_with("/api/hello/items/") => self.handle_get_item(request),
+            ("POST", "/api/hello/process") => self.handle_process_data(request),
+            _ => Ok(HttpResponse::error(404, "Route not found")),
+        }
+    }
 }
 
-/// Plugin cleanup function
-#[no_mangle]
-pub extern "C" fn plugin_cleanup() -> i32 {
-    host_log_info("Hello plugin cleaned up!");
-    0
+impl HelloPlugin {
+    /// Handle GET /api/hello/items - retrieve all items
+    fn handle_get_items(&mut self, _request: &HttpRequestContext) -> PluginResult<HttpResponse> {
+        log_info!("Handling GET /api/hello/items");
+
+        // Read records from the 'items' collection
+        match Database::read_typed("items") {
+            Ok(records) => {
+                log_info!("Retrieved {} items from database", records.len());
+                
+                let items: Vec<JsonValue> = records.into_iter()
+                    .map(|record| json!({
+                        "id": record.id,
+                        "data": record.data,
+                        "created_at": record.created_at,
+                        "updated_at": record.updated_at
+                    }))
+                    .collect();
+
+                JsonResponseBuilder::new().json(&items)
+            }
+            Err(e) => {
+                log_error!("Failed to read items: {}", e);
+                
+                // Return mock data for demo purposes
+                let mock_items = json!([
+                    {
+                        "id": "item1",
+                        "name": "Hello Item 1",
+                        "description": "Created by Hello Plugin",
+                        "created_at": "2024-01-01T00:00:00Z"
+                    },
+                    {
+                        "id": "item2", 
+                        "name": "Hello Item 2",
+                        "description": "Another item from Hello Plugin",
+                        "created_at": "2024-01-01T00:01:00Z"
+                    }
+                ]);
+                
+                JsonResponseBuilder::new().json(&mock_items)
+            }
+        }
+    }
+
+    /// Handle POST /api/hello/items - create a new item
+    fn handle_create_item(&mut self, request: &HttpRequestContext) -> PluginResult<HttpResponse> {
+        log_info!("Handling POST /api/hello/items");
+
+        if !request.is_json() {
+            return Ok(HttpResponse::error(400, "Content-Type must be application/json"));
+        }
+
+        let item_data: JsonValue = request.body_json()?;
+
+        // Validate required fields
+        if !item_data.get("name").and_then(|v| v.as_str()).map_or(false, |s| !s.is_empty()) {
+            return Ok(HttpResponse::error(400, "Name field is required"));
+        }
+
+        // Enhance the item with metadata
+        let mut enhanced_item = item_data;
+        if let Some(obj) = enhanced_item.as_object_mut() {
+            obj.insert("created_by".to_string(), json!("hello-plugin"));
+            obj.insert("created_at".to_string(), json!("2024-01-01T00:00:00Z"));
+            obj.insert("plugin_version".to_string(), json!("1.0.0"));
+        }
+
+        // Create the record in the database
+        match Database::create_typed("items", &enhanced_item) {
+            Ok(record) => {
+                log_info!("Item created with ID: {}", record.id);
+                
+                let response_data = json!({
+                    "success": true,
+                    "message": "Item created successfully",
+                    "data": {
+                        "id": record.id,
+                        "data": record.data,
+                        "created_at": record.created_at
+                    }
+                });
+
+                JsonResponseBuilder::new().status(201).json(&response_data)
+            }
+            Err(e) => {
+                log_error!("Failed to create item: {}", e);
+                Ok(HttpResponse::error(500, "Failed to create item"))
+            }
+        }
+    }
+
+    /// Handle GET /api/hello/items/:id - retrieve a specific item
+    fn handle_get_item(&mut self, request: &HttpRequestContext) -> PluginResult<HttpResponse> {
+        log_info!("Handling GET /api/hello/items/:id");
+
+        let item_id = request.get_path_param("id")
+            .ok_or_else(|| PluginError::InvalidData("Item ID not found in path".to_string()))?;
+
+        // Query for the specific item
+        let filter = json!({"id": item_id});
+        match Database::read_typed_with_filter("items", &filter) {
+            Ok(mut records) if !records.is_empty() => {
+                let record = records.remove(0);
+                let item = json!({
+                    "id": record.id,
+                    "data": record.data,
+                    "created_at": record.created_at,
+                    "updated_at": record.updated_at
+                });
+
+                log_info!("Successfully retrieved item: {}", item_id);
+                JsonResponseBuilder::new().json(&item)
+            }
+            Ok(_) => {
+                log_warn!("Item not found: {}", item_id);
+                Ok(HttpResponse::error(404, "Item not found"))
+            }
+            Err(e) => {
+                log_error!("Failed to read item {}: {}", item_id, e);
+                
+                // Return mock data for demo purposes
+                let mock_item = json!({
+                    "id": item_id,
+                    "name": format!("Hello Item {}", item_id),
+                    "description": "Specific item retrieved by Hello Plugin",
+                    "created_at": "2024-01-01T00:00:00Z",
+                    "created_by": "hello-plugin"
+                });
+                
+                JsonResponseBuilder::new().json(&mock_item)
+            }
+        }
+    }
+
+    /// Handle POST /api/hello/process - custom data processing
+    fn handle_process_data(&mut self, request: &HttpRequestContext) -> PluginResult<HttpResponse> {
+        log_info!("Handling POST /api/hello/process");
+
+        if !request.is_json() {
+            return Ok(HttpResponse::error(400, "Content-Type must be application/json"));
+        }
+
+        let input_data: JsonValue = request.body_json()?;
+
+        // Custom business logic - transform the data
+        let processed_data = match input_data.clone() {
+            JsonValue::Object(mut obj) => {
+                // Add processing metadata
+                obj.insert("processed_by".to_string(), json!("hello-plugin"));
+                obj.insert("processed_at".to_string(), json!("2024-01-01T00:00:00Z"));
+                
+                // Example transformation: uppercase all string values
+                for (_key, value) in obj.iter_mut() {
+                    if let Some(string_val) = value.as_str() {
+                        *value = json!(string_val.to_uppercase());
+                    }
+                }
+                
+                JsonValue::Object(obj)
+            }
+            JsonValue::Array(mut arr) => {
+                // Process each item in the array
+                for item in arr.iter_mut() {
+                    if let Some(obj) = item.as_object_mut() {
+                        obj.insert("processed_by".to_string(), json!("hello-plugin"));
+                    }
+                }
+                JsonValue::Array(arr)
+            }
+            other => {
+                // For primitive values, wrap in an object
+                json!({
+                    "original_value": other,
+                    "processed_by": "hello-plugin",
+                    "processed_at": "2024-01-01T00:00:00Z"
+                })
+            }
+        };
+
+        // Optionally save the processed data
+        if let Some(save_flag) = request.get_query("save") {
+            if save_flag == "true" {
+                if let Err(e) = Database::create("processed_data", &processed_data) {
+                    log_warn!("Failed to save processed data: {}", e);
+                } else {
+                    log_info!("Processed data saved to database");
+                }
+            }
+        }
+
+        // Return the processed data
+        let response = json!({
+            "success": true,
+            "message": "Data processed successfully",
+            "input": input_data,
+            "output": processed_data,
+            "processing_info": {
+                "plugin": "hello-plugin",
+                "version": "1.0.0",
+                "timestamp": "2024-01-01T00:00:00Z"
+            }
+        });
+
+        log_info!("Successfully processed data");
+        JsonResponseBuilder::new().json(&response)
+    }
 }
+
+/// Helper function to capitalize names
+fn capitalize_name(name: &str) -> String {
+    name.split_whitespace()
+        .map(|word| {
+            let mut chars = word.chars();
+            match chars.next() {
+                None => String::new(),
+                Some(first) => first.to_uppercase().collect::<String>() + &chars.as_str().to_lowercase(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+// Export the plugin - this generates all the WASM exports automatically
+#[cfg(feature = "http")]
+export_http_plugin!(HelloPlugin);
+
+#[cfg(not(feature = "http"))]
+export_plugin!(HelloPlugin);
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn test_plugin_response_serialization() {
-        let response = PluginResponse {
-            allow: true,
-            modified_data: None,
-            error_message: None,
-            metadata: serde_json::json!({}),
+    fn test_capitalize_name() {
+        assert_eq!(capitalize_name("hello world"), "Hello World");
+        assert_eq!(capitalize_name("JOHN DOE"), "John Doe");
+        assert_eq!(capitalize_name("mary jane"), "Mary Jane");
+    }
+
+    #[test]
+    fn test_plugin_response_creation() {
+        let response = PluginResponse::allow();
+        assert!(response.allow);
+        assert!(response.error_message.is_none());
+
+        let deny_response = PluginResponse::deny("Test error");
+        assert!(!deny_response.allow);
+        assert_eq!(deny_response.error_message, Some("Test error".to_string()));
+    }
+
+    #[test]
+    fn test_event_payload_parsing() {
+        let payload = EventPayload {
+            event_type: "BeforeCreate".to_string(),
+            collection: "users".to_string(),
+            data: r#"{"name": "John Doe"}"#.to_string(),
+            metadata: json!({}),
         };
 
-        let serialized = serde_json::to_string(&response).unwrap();
-        assert!(serialized.contains("\"allow\":true"));
+        let data: JsonValue = serde_json::from_str(&payload.data).unwrap();
+        assert_eq!(data["name"], "John Doe");
     }
 }

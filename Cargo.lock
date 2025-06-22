@@ -1089,6 +1089,7 @@ name = "hello-plugin"
 version = "0.1.0"
 dependencies = [
  "getrandom 0.2.16",
+ "oxide-plugin-sdk",
  "serde",
  "serde_json",
 ]
@@ -1793,6 +1794,7 @@ dependencies = [
  "oxide-core",
  "oxide-db",
  "oxide-logging",
+ "oxide-plugin-runtime",
  "serde",
  "serde_json",
  "thiserror 1.0.69",
@@ -1865,6 +1867,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "oxide-plugin-runtime"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "oxide-core",
+ "oxide-db",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
+ "wasmtime",
+ "wasmtime-wasi",
+]
+
+[[package]]
+name = "oxide-plugin-sdk"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "oxide-typegen"
 version = "0.1.0"
 dependencies = [
@@ -1883,13 +1910,12 @@ dependencies = [
  "oxide-core",
  "oxide-db",
  "oxide-logging",
+ "oxide-plugin-runtime",
  "serde",
  "serde_json",
  "tokio",
  "tracing",
  "tracing-subscriber",
- "wasmtime",
- "wasmtime-wasi",
 ]
 
 [[package]]

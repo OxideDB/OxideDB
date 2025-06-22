@@ -4,25 +4,47 @@
 [plugin]
 name = "hello-plugin"
 version = "1.0.0"
-description = "A simple demonstration plugin for OxideDB that shows basic event processing and security integration"
+description = "A comprehensive demonstration plugin for OxideDB that shows event processing, HTTP route exposure, CRUD operations, and custom business logic"
 author = "OxideDB Team"
 
 # Security capabilities required by this plugin
 # These must be granted by the host for the plugin to function properly
 [security]
 capabilities = [
-    "ReadEventData",    # Required for get_event_payload() function
-    "LogInfo",          # Required for log_info() function
-    "LogError",         # Required for log_error() function
-    "BlockOperations",  # Required for set_error() function
+    "ReadEventData",                # Required for get_event_payload() function
+    "LogInfo",                      # Required for log_info() function
+    "LogError",                     # Required for log_error() function
+    "BlockOperations",              # Required for set_error() function
+    "RegisterHttpRoutes",           # Required for register_http_route() function
+    "HandleHttpRequests",           # Required for HTTP request/response handling
+    "CreateRecords",                # Required for create_record() function
+    "ReadRecords",                  # Required for read_records() function
+    "UpdateRecords",                # Required for update_records() function (future use)
+    "DeleteRecords",                # Required for delete_records() function (future use)
 ]
+
+# Specific collections this plugin can access
+[security.collections]
+items = ["create", "read", "update", "delete"]
+processed_data = ["create", "read"]
+
+# HTTP routes this plugin will expose
+[security.http_routes]
+allowed_paths = [
+    "/api/hello/*",                 # Allow all routes under /api/hello/
+]
+allowed_methods = ["GET", "POST", "PUT", "DELETE"]
 
 # Plugin lifecycle hooks that this plugin implements
 [hooks]
 exports = [
-    "on_before_create",  # Main plugin function
-    "plugin_init",      # Initialization function
-    "plugin_cleanup",   # Cleanup function
+    "on_before_create",             # Main plugin function for event processing
+    "plugin_init",                  # Initialization function (registers routes)
+    "plugin_cleanup",               # Cleanup function
+    "handle_get_items",             # HTTP handler for GET /api/hello/items
+    "handle_create_item",           # HTTP handler for POST /api/hello/items
+    "handle_get_item",              # HTTP handler for GET /api/hello/items/:id
+    "handle_process_data",          # HTTP handler for POST /api/hello/process
 ]
 
 # Plugin behavior configuration
@@ -31,5 +53,20 @@ exports = [
 can_modify_data = true
 # Whether this plugin can block operations
 can_block_operations = true
+# Whether this plugin exposes HTTP routes
+exposes_http_routes = true
+# Whether this plugin performs database operations
+performs_crud_operations = true
 # Maximum execution time in milliseconds
 max_execution_time_ms = 5000
+# Maximum memory usage in MB
+max_memory_mb = 16
+
+# Custom business logic configuration
+[business_logic]
+# Enable custom data processing
+enable_data_processing = true
+# Enable item management
+enable_item_management = true
+# Enable security validation
+enable_security_validation = true

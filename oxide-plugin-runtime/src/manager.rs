@@ -1,15 +1,16 @@
-//! Plugin Integration and Management
+//! Plugin Management and Event System Integration
 //!
 //! This module provides high-level plugin management functionality including
 //! plugin loading, event system integration, and lifecycle management.
 
-use crate::{WasmtimePluginRuntime, Result};
+use crate::WasmtimePluginRuntime;
 use oxide_core::{
     AppError, BeforeEventContext, BeforeEventType, EventBus,
     plugin_api::{EventPayload, plugin_exports, PluginRuntime},
     plugin_security::{PluginCapability, PluginTrustLevel, ResourceLimits, SecurityPolicies},
     auth::CrudOperation,
 };
+use oxide_db::Db;
 use std::{
     future::Future,
     path::PathBuf,
@@ -28,9 +29,9 @@ pub struct PluginManager {
 }
 
 impl PluginManager {
-    /// Create a new plugin manager with the specified security policies
-    pub fn new(security_policies: SecurityPolicies) -> Result<Self> {
-        let runtime = WasmtimePluginRuntime::new_with_security_policies(security_policies)
+    /// Create a new plugin manager with the specified security policies and database
+    pub fn new(database: Arc<dyn Db>, security_policies: SecurityPolicies) -> Result<Self, AppError> {
+        let runtime = WasmtimePluginRuntime::new_with_security_policies(database, security_policies)
             .map_err(|e| AppError::internal(format!("Failed to create plugin runtime: {}", e)))?;
         
         let runtime = Arc::new(Mutex::new(runtime));
@@ -44,7 +45,7 @@ impl PluginManager {
         &mut self,
         plugin_folder: &PathBuf,
         _event_bus: &Arc<dyn EventBus>,
-    ) -> Result<()> {
+    ) -> Result<(), AppError> {
         info!("Loading plugins from folder: {:?}", plugin_folder);
         
         let entries = std::fs::read_dir(plugin_folder)
@@ -71,7 +72,7 @@ impl PluginManager {
     }
 
     /// Register all loaded plugins with the event system
-    pub async fn register_with_event_system(&self, event_bus: &Arc<dyn EventBus>) -> Result<()> {
+    pub async fn register_with_event_system(&self, event_bus: &Arc<dyn EventBus>) -> Result<(), AppError> {
         let loaded_plugins = {
             let runtime_guard = self.runtime.lock().map_err(|_| {
                 AppError::internal("Failed to acquire plugin runtime lock")
@@ -121,7 +122,7 @@ impl PluginManager {
     }
 
     /// Get the number of loaded plugins
-    pub fn get_loaded_plugin_count(&self) -> Result<usize> {
+    pub fn get_loaded_plugin_count(&self) -> Result<usize, AppError> {
         let runtime_guard = self.runtime.lock().map_err(|_| {
             AppError::internal("Failed to acquire plugin runtime lock")
         })?;
@@ -129,7 +130,7 @@ impl PluginManager {
     }
 
     /// Get statistics for all loaded plugins
-    pub fn get_plugin_statistics(&self) -> Result<Vec<PluginStatistics>> {
+    pub fn get_plugin_statistics(&self) -> Result<Vec<PluginStatistics>, AppError> {
         let runtime_guard = self.runtime.lock().map_err(|_| {
             AppError::internal("Failed to acquire plugin runtime lock")
         })?;
@@ -147,8 +148,80 @@ impl PluginManager {
         Ok(stats)
     }
 
+    /// Get all registered HTTP routes from all loaded plugins
+    pub fn get_registered_routes(&self) -> Result<Vec<oxide_core::plugin_api::RouteRegistration>, AppError> {
+        let runtime_guard = self.runtime.lock()
+            .map_err(|_| AppError::internal("Failed to acquire plugin runtime lock".to_string()))?;
+        Ok(runtime_guard.get_registered_routes())
+    }
+
+    /// Handle HTTP request to a plugin route
+    pub async fn handle_http_request(
+        &self,
+        plugin_name: &str,
+        handler_function: &str,
+        request: &oxide_core::plugin_api::HttpRequestContext,
+    ) -> Result<oxide_core::plugin_api::HttpResponse, AppError> {
+        let mut runtime_guard = self.runtime.lock()
+            .map_err(|_| AppError::internal("Failed to acquire plugin runtime lock".to_string()))?;
+        
+        runtime_guard.handle_http_request(plugin_name, handler_function, request)
+            .map_err(|e| AppError::internal(format!("Plugin HTTP request failed: {}", e)))
+    }
+
+    /// Find plugin handler for a given route
+    pub fn find_route_handler(&self, method: &str, path: &str) -> Result<Option<(String, String)>, AppError> {
+        let routes = self.get_registered_routes()?;
+        
+        for route in routes {
+            if route.method.to_uppercase() == method.to_uppercase() {
+                if self.path_matches_pattern(&route.path, path) {
+                    return Ok(Some((route.plugin_name, route.handler_function)));
+                }
+            }
+        }
+        
+        Ok(None)
+    }
+
+    /// Check if a path matches a route pattern (supports :param syntax)
+    fn path_matches_pattern(&self, pattern: &str, path: &str) -> bool {
+        let pattern_parts: Vec<&str> = pattern.trim_start_matches('/').split('/').collect();
+        let path_parts: Vec<&str> = path.trim_start_matches('/').split('/').collect();
+
+        if pattern_parts.len() != path_parts.len() {
+            return false;
+        }
+
+        for (pattern_part, path_part) in pattern_parts.iter().zip(path_parts.iter()) {
+            if pattern_part.starts_with(':') {
+                // Parameter match - always matches
+                continue;
+            } else if pattern_part != path_part {
+                return false;
+            }
+        }
+
+        true
+    }
+
+    /// Extract path parameters from a matched route
+    pub fn extract_path_params(&self, pattern: &str, path: &str) -> std::collections::HashMap<String, String> {
+        let mut params = std::collections::HashMap::new();
+        let pattern_parts: Vec<&str> = pattern.trim_start_matches('/').split('/').collect();
+        let path_parts: Vec<&str> = path.trim_start_matches('/').split('/').collect();
+
+        for (pattern_part, path_part) in pattern_parts.iter().zip(path_parts.iter()) {
+            if let Some(param_name) = pattern_part.strip_prefix(':') {
+                params.insert(param_name.to_string(), path_part.to_string());
+            }
+        }
+
+        params
+    }
+
     /// Load a single plugin from the specified path
-    async fn load_single_plugin(&self, plugin_name: &str, path: &PathBuf) -> Result<()> {
+    async fn load_single_plugin(&self, plugin_name: &str, path: &PathBuf) -> Result<(), AppError> {
         info!("Loading plugin: {} from {:?}", plugin_name, path);
         
         let wasm_bytes = std::fs::read(path)
@@ -158,11 +231,11 @@ impl PluginManager {
             AppError::internal("Failed to acquire plugin runtime lock")
         })?;
 
-        // Load plugin with development-friendly settings
+        // Load plugin with development-friendly settings including HTTP capabilities
         runtime_guard.load_plugin_with_trust(
             plugin_name,
             &wasm_bytes,
-            PluginTrustLevel::PartiallyTrusted,
+            PluginTrustLevel::FullyTrusted,
             vec![
                 PluginCapability::ReadEventData,
                 PluginCapability::ModifyEventData,
@@ -173,6 +246,24 @@ impl PluginManager {
                 },
                 PluginCapability::LogInfo,
                 PluginCapability::LogError,
+                // Add HTTP capabilities for plugin routes
+                PluginCapability::RegisterHttpRoutes {
+                    path_patterns: vec!["*".to_string()],
+                    methods: vec!["GET".to_string(), "POST".to_string(), "PUT".to_string(), "DELETE".to_string()],
+                },
+                PluginCapability::HandleHttpRequests,
+                PluginCapability::CreateRecords {
+                    collections: vec!["*".to_string()],
+                },
+                PluginCapability::ReadRecords {
+                    collections: vec!["*".to_string()],
+                },
+                PluginCapability::UpdateRecords {
+                    collections: vec!["*".to_string()],
+                },
+                PluginCapability::DeleteRecords {
+                    collections: vec!["*".to_string()],
+                },
             ],
             ResourceLimits::default(),
         ).map_err(|e| AppError::internal(format!("Failed to load plugin {}: {}", plugin_name, e)))?;
@@ -194,6 +285,24 @@ impl PluginManager {
         ).map_err(|e| AppError::internal(format!("Failed to initialize plugin {}: {}", plugin_name, e)))?;
         
         info!("✅ Plugin '{}' initialized successfully", plugin_name);
+        
+        // Log plugin routes if any were registered (call directly on runtime_guard to avoid deadlock)
+        let all_routes = runtime_guard.get_registered_routes();
+        let plugin_routes: Vec<_> = all_routes.into_iter()
+            .filter(|route| route.plugin_name == plugin_name)
+            .collect();
+        
+        if !plugin_routes.is_empty() {
+            info!("📋 Plugin '{}' registered {} HTTP routes:", plugin_name, plugin_routes.len());
+            for route in plugin_routes {
+                info!("  🔌 {:>6} /plugin{} → {}::{}", 
+                      route.method, 
+                      route.path, 
+                      route.plugin_name, 
+                      route.handler_function);
+            }
+        }
+        
         Ok(())
     }
 }
@@ -291,18 +400,31 @@ pub enum PluginStatus {
 mod tests {
     use super::*;
     use oxide_core::plugin_security::SecurityPolicies;
+    use oxide_core::auth::{AuthService, AuthServiceConfig};
+    use oxide_core::InMemoryEventBus;
+    use oxide_db::SqliteDb;
 
     #[test]
     fn test_plugin_manager_creation() {
         let policies = SecurityPolicies::default();
-        let manager = PluginManager::new(policies);
+        // Create a mock database for testing
+        let auth_config = AuthServiceConfig::new("test_secret".to_string());
+        let auth_service = Arc::new(AuthService::new(auth_config));
+        let event_bus = Arc::new(InMemoryEventBus::new());
+        let db = SqliteDb::new(":memory:", event_bus, auth_service).unwrap();
+        let manager = PluginManager::new(Arc::new(db), policies);
         assert!(manager.is_ok());
     }
 
     #[test]
     fn test_plugin_event_bridge_creation() {
         let policies = SecurityPolicies::default();
-        let runtime = WasmtimePluginRuntime::new_with_security_policies(policies).unwrap();
+        // Create a mock database for testing
+        let auth_config = AuthServiceConfig::new("test_secret".to_string());
+        let auth_service = Arc::new(AuthService::new(auth_config));
+        let event_bus = Arc::new(InMemoryEventBus::new());
+        let db = SqliteDb::new(":memory:", event_bus, auth_service).unwrap();
+        let runtime = WasmtimePluginRuntime::new_with_security_policies(Arc::new(db), policies).unwrap();
         let runtime = Arc::new(Mutex::new(runtime));
         let bridge = PluginEventBridge::new(runtime);
         

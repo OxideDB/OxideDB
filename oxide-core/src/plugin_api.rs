@@ -85,6 +85,94 @@ impl Default for PluginResponse {
     }
 }
 
+/// HTTP request context passed to plugin HTTP handlers
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HttpRequestContext {
+    /// HTTP method (GET, POST, PUT, DELETE, etc.)
+    pub method: String,
+    /// Request path
+    pub path: String,
+    /// Query parameters
+    pub query_params: std::collections::HashMap<String, String>,
+    /// Request headers
+    pub headers: std::collections::HashMap<String, String>,
+    /// Request body
+    pub body: Option<String>,
+    /// Path parameters from route matching
+    pub path_params: std::collections::HashMap<String, String>,
+    /// User context (if authenticated)
+    pub user: Option<serde_json::Value>,
+}
+
+/// HTTP response from plugin
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HttpResponse {
+    /// HTTP status code
+    pub status_code: u16,
+    /// Response headers
+    pub headers: std::collections::HashMap<String, String>,
+    /// Response body
+    pub body: String,
+}
+
+impl Default for HttpResponse {
+    fn default() -> Self {
+        Self {
+            status_code: 200,
+            headers: std::collections::HashMap::new(),
+            body: String::new(),
+        }
+    }
+}
+
+/// HTTP route registration request
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RouteRegistration {
+    /// HTTP method
+    pub method: String,
+    /// Route path (can include parameters like /users/:id)
+    pub path: String,
+    /// Plugin function name to call for this route
+    pub handler_function: String,
+    /// Plugin name that owns this route
+    pub plugin_name: String,
+}
+
+/// CRUD operation request
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CrudRequest {
+    /// Collection name
+    pub collection: String,
+    /// Operation type
+    pub operation: CrudOperationType,
+    /// Data for create/update operations
+    pub data: Option<serde_json::Value>,
+    /// Filter for read/update/delete operations
+    pub filter: Option<serde_json::Value>,
+    /// Options for the operation
+    pub options: Option<serde_json::Value>,
+}
+
+/// CRUD operation result
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CrudResult {
+    /// Whether the operation was successful
+    pub success: bool,
+    /// Result data (records for read, ID for create, count for update/delete)
+    pub data: Option<serde_json::Value>,
+    /// Error message if operation failed
+    pub error: Option<String>,
+}
+
+/// Types of CRUD operations
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum CrudOperationType {
+    Create,
+    Read,
+    Update,
+    Delete,
+}
+
 /// Host functions that plugins can call
 /// These are implemented by the host and made available to the plugin runtime
 pub mod host_functions {
@@ -110,6 +198,48 @@ pub mod host_functions {
     /// Parameters: key (string)
     /// Returns: JSON value as string
     pub const GET_CONFIG: &str = "get_config";
+
+    /// Function signature for registering HTTP routes
+    /// Parameters: method, path, handler_name (strings)
+    pub const REGISTER_HTTP_ROUTE: &str = "register_http_route";
+
+    /// Function signature for creating records
+    /// Parameters: collection, data (strings)
+    /// Returns: created record ID
+    pub const CREATE_RECORD: &str = "create_record";
+
+    /// Function signature for reading records
+    /// Parameters: collection, filter (strings)
+    /// Returns: JSON array of records
+    pub const READ_RECORDS: &str = "read_records";
+
+    /// Function signature for updating a single record
+    /// Parameters: collection, record_id, data (strings)
+    /// Returns: updated record
+    pub const UPDATE_RECORD: &str = "update_record";
+
+    /// Function signature for deleting a single record
+    /// Parameters: collection, record_id (strings)
+    /// Returns: deleted record
+    pub const DELETE_RECORD: &str = "delete_record";
+
+    /// Function signature for updating records
+    /// Parameters: collection, filter, data (strings)
+    /// Returns: number of affected records
+    pub const UPDATE_RECORDS: &str = "update_records";
+
+    /// Function signature for deleting records
+    /// Parameters: collection, filter (strings)
+    /// Returns: number of deleted records
+    pub const DELETE_RECORDS: &str = "delete_records";
+
+    /// Function signature for getting current HTTP request context
+    /// Returns: JSON-serialized HttpRequestContext
+    pub const GET_HTTP_REQUEST: &str = "get_http_request";
+
+    /// Function signature for setting HTTP response
+    /// Parameters: status_code, headers, body (as JSON)
+    pub const SET_HTTP_RESPONSE: &str = "set_http_response";
 }
 
 /// Plugin export functions that must be implemented by plugins
@@ -138,10 +268,21 @@ pub mod plugin_exports {
 
     /// Called when the plugin is being unloaded
     pub const PLUGIN_CLEANUP: &str = "plugin_cleanup";
+
+    /// Called to register HTTP routes during plugin initialization
+    pub const REGISTER_ROUTES: &str = "register_routes";
+
+    /// Called when an HTTP request is received for a plugin route
+    /// Plugin should define custom handler functions for each route
+    pub const HANDLE_HTTP_REQUEST: &str = "handle_http_request";
 }
 
 /// Trait that defines the plugin runtime interface
-pub trait PluginRuntime {
+/// 
+/// This abstraction allows for different plugin runtime implementations
+/// (e.g., Wasmtime, WASI, or other WebAssembly runtimes) to be used
+/// interchangeably within the OxideDB ecosystem.
+pub trait PluginRuntime: Send + Sync {
     /// Load a plugin from bytes
     fn load_plugin(&mut self, name: &str, wasm_bytes: &[u8]) -> PluginResult<()>;
 
@@ -161,4 +302,48 @@ pub trait PluginRuntime {
 
     /// List all loaded plugins
     fn list_plugins(&self) -> Vec<String>;
+
+    /// Get runtime name for identification
+    fn runtime_name(&self) -> &'static str;
+
+    /// Get runtime version for compatibility checking
+    fn runtime_version(&self) -> &'static str;
+}
+
+/// Factory trait for creating plugin runtime instances
+/// 
+/// This allows for runtime-agnostic plugin runtime creation,
+/// enabling different implementations to be selected at runtime
+/// based on configuration or other criteria.
+pub trait PluginRuntimeFactory: Send + Sync {
+    /// The concrete runtime type this factory creates
+    type Runtime: PluginRuntime;
+
+    /// Create a new plugin runtime instance
+    fn create_runtime(&self) -> PluginResult<Self::Runtime>;
+
+    /// Get the name of the runtime this factory creates
+    fn runtime_type(&self) -> &'static str;
+
+    /// Check if this factory supports the given runtime configuration
+    fn supports_config(&self, config: &PluginRuntimeConfig) -> bool;
+}
+
+/// Configuration for plugin runtime creation
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PluginRuntimeConfig {
+    /// The preferred runtime type (e.g., "wasmtime", "wasmtime-wasi")
+    pub runtime_type: String,
+
+    /// Maximum memory limit for plugins (in bytes)
+    pub memory_limit: Option<u64>,
+
+    /// Maximum execution time for plugin functions (in milliseconds)
+    pub timeout_ms: Option<u64>,
+
+    /// Security policies to apply
+    pub security_policies: Option<serde_json::Value>,
+
+    /// Additional runtime-specific configuration
+    pub runtime_specific: serde_json::Value,
 }

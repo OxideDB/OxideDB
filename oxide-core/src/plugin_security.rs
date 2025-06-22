@@ -65,6 +65,35 @@ pub enum PluginCapability {
         /// Allowed event types
         event_types: Vec<String>,
     },
+    /// Allow plugin to register HTTP routes
+    RegisterHttpRoutes {
+        /// Allowed path patterns (regex)
+        path_patterns: Vec<String>,
+        /// Allowed HTTP methods
+        methods: Vec<String>,
+    },
+    /// Allow plugin to create records in collections
+    CreateRecords {
+        /// Collections the plugin can create records in
+        collections: Vec<String>,
+    },
+    /// Allow plugin to read records from collections
+    ReadRecords {
+        /// Collections the plugin can read from
+        collections: Vec<String>,
+    },
+    /// Allow plugin to update records in collections
+    UpdateRecords {
+        /// Collections the plugin can update
+        collections: Vec<String>,
+    },
+    /// Allow plugin to delete records from collections
+    DeleteRecords {
+        /// Collections the plugin can delete from
+        collections: Vec<String>,
+    },
+    /// Allow plugin to handle HTTP requests
+    HandleHttpRequests,
 }
 
 /// Security context for a plugin execution
@@ -589,6 +618,8 @@ impl PluginSecurityManager {
                     capability,
                     PluginCapability::HttpRequest { .. }
                         | PluginCapability::ScheduleTasks
+                        | PluginCapability::RegisterHttpRoutes { .. }
+                        | PluginCapability::DeleteRecords { .. }
                 )
             }
             PluginTrustLevel::FullyTrusted | PluginTrustLevel::System => true,
@@ -608,6 +639,24 @@ impl PluginSecurityManager {
             "get_config" => Ok(PluginCapability::ReadConfig {
                 keys: vec!["*".to_string()], // Will be refined based on actual key
             }),
+            "register_http_route" => Ok(PluginCapability::RegisterHttpRoutes {
+                path_patterns: vec!["*".to_string()],
+                methods: vec!["*".to_string()],
+            }),
+            "create_record" => Ok(PluginCapability::CreateRecords {
+                collections: vec!["*".to_string()],
+            }),
+            "read_records" => Ok(PluginCapability::ReadRecords {
+                collections: vec!["*".to_string()],
+            }),
+            "update_records" => Ok(PluginCapability::UpdateRecords {
+                collections: vec!["*".to_string()],
+            }),
+            "delete_records" => Ok(PluginCapability::DeleteRecords {
+                collections: vec!["*".to_string()],
+            }),
+            "get_http_request" => Ok(PluginCapability::HandleHttpRequests),
+            "set_http_response" => Ok(PluginCapability::HandleHttpRequests),
             _ => Err(AppError::Security {
                 message: format!("Unknown host function: {}", function_name),
             }),
