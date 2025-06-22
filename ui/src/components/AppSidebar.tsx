@@ -1,4 +1,4 @@
-import { Database, Shield, Settings, BarChart3, FileText, Key, Eye, EyeOff, Activity, User, LogOut, FileSearch } from "lucide-react"
+import { Database, Shield, Settings, BarChart3, FileText, Key, Eye, EyeOff, Activity, User, LogOut, FileSearch, Puzzle } from "lucide-react"
 import { useState } from "react"
 import { Link, useLocation } from "react-router-dom"
 
@@ -71,6 +71,11 @@ const staticNavigationItems = [
   {
     title: "System",
     items: [
+      {
+        title: "Plugins",
+        url: "/plugins",
+        icon: Puzzle,
+      },
       {
         title: "Settings",
         url: "/settings",

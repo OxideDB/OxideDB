@@ -24,6 +24,18 @@ impl SqliteDb {
         } else {
             debug!("_collections system collection already exists");
         }
+
+        // Create _plugins collection to store plugin configurations
+        use oxide_core::plugin_config::create_plugins_collection_schema;
+        let plugins_schema = create_plugins_collection_schema();
+        
+        if !self.collection_exists("_plugins").await? {
+            self.create_collection_with_schema(plugins_schema).await?;
+            info!("✅ Created _plugins system collection");
+        } else {
+            debug!("_plugins system collection already exists");
+        }
+
         Ok(())
     }
 

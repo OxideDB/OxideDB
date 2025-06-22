@@ -17,7 +17,7 @@ impl PluginEventHandler for HelloPlugin {
     fn on_init(&mut self) -> PluginResult<()> {
         log_info!("Hello Plugin initializing...");
         
-        // Register HTTP routes for custom business logic
+        // Register HTTP routes with their specific handler function names
         Http::register_route("GET", "/api/hello/items", "handle_get_items")?;
         Http::register_route("POST", "/api/hello/items", "handle_create_item")?;
         Http::register_route("GET", "/api/hello/items/:id", "handle_get_item")?;
@@ -64,18 +64,12 @@ impl PluginEventHandler for HelloPlugin {
     fn on_after_create(&mut self, event: &EventPayload) -> PluginResult<PluginResponse> {
         log_info!("Record created successfully in collection: {}", event.collection);
 
-        // Create an audit log entry
-        let audit_entry = json!({
-            "action": "record_created",
-            "collection": event.collection,
-            "timestamp": "2024-01-01T00:00:00Z",
-            "plugin": "hello-plugin"
-        });
-
-        // Try to create audit log (don't fail if collection doesn't exist)
-        if let Err(e) = Database::create("_audit_log", &audit_entry) {
-            log_warn!("Failed to create audit log: {}", e);
-        }
+        // NOTE: We don't create audit logs from the event handler because it can cause
+        // circular dependencies (the audit log creation would trigger another event).
+        // In a production system, you might use a separate audit logging service
+        // or queue the audit log for later processing.
+        
+        log_info!("Audit log would be created: action=record_created, collection={}", event.collection);
 
         Ok(PluginResponse::allow())
     }
@@ -98,9 +92,9 @@ impl PluginEventHandler for HelloPlugin {
                 
                 obj.insert("name".to_string(), json!(capitalize_name(name)));
             }
-                 }
+        }
 
-         Ok(PluginResponse::allow_with_data(&data)?)
+        Ok(PluginResponse::allow_with_data(&data)?)
     }
 
     fn on_before_delete(&mut self, event: &EventPayload) -> PluginResult<PluginResponse> {
@@ -125,16 +119,20 @@ impl PluginEventHandler for HelloPlugin {
     }
 }
 
-/// HTTP handler implementation for our custom routes
-#[cfg(feature = "http")]
+/// HTTP handler implementation using the proper SDK architecture
 impl PluginHttpHandler for HelloPlugin {
     fn handle_request(&mut self, request: &HttpRequestContext) -> PluginResult<HttpResponse> {
+        log_info!("Handling HTTP request: {} {}", request.method, request.path);
+        
         match (request.method.as_str(), request.path.as_str()) {
             ("GET", "/api/hello/items") => self.handle_get_items(request),
             ("POST", "/api/hello/items") => self.handle_create_item(request),
             ("GET", path) if path.starts_with("/api/hello/items/") => self.handle_get_item(request),
             ("POST", "/api/hello/process") => self.handle_process_data(request),
-            _ => Ok(HttpResponse::error(404, "Route not found")),
+            _ => {
+                log_warn!("Route not found: {} {}", request.method, request.path);
+                Ok(HttpResponse::error(404, "Route not found"))
+            }
         }
     }
 }
@@ -362,12 +360,8 @@ fn capitalize_name(name: &str) -> String {
         .join(" ")
 }
 
-// Export the plugin - this generates all the WASM exports automatically
-#[cfg(feature = "http")]
+// Export the plugin with HTTP capabilities using the updated SDK architecture
 export_http_plugin!(HelloPlugin);
-
-#[cfg(not(feature = "http"))]
-export_plugin!(HelloPlugin);
 
 #[cfg(test)]
 mod tests {

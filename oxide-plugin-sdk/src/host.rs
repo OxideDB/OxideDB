@@ -273,13 +273,21 @@ impl Host {
 
     /// Helper to get database operation result
     fn get_database_result() -> PluginResult<DatabaseResult> {
-        // For now, return a success result
-        // In a real implementation, this would parse the result from the host
-        Ok(DatabaseResult {
-            success: true,
-            data: None,
-            error: None,
-        })
+        unsafe {
+            let ptr = get_result_ptr();
+            let len = get_result_len();
+
+            if ptr == 0 || len == 0 {
+                return Err(PluginError::HostCallFailed("Invalid result pointer or length".to_string()));
+            }
+
+            let slice = std::slice::from_raw_parts(ptr as *const u8, len as usize);
+            let json_str = std::str::from_utf8(slice)
+                .map_err(|e| PluginError::InvalidData(format!("Invalid UTF-8: {}", e)))?;
+
+            serde_json::from_str(json_str)
+                .map_err(|e| PluginError::JsonError(e))
+        }
     }
 }
 

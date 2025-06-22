@@ -33,7 +33,11 @@ use crate::{
             get_collection_permissions, update_collection_permissions, list_all_permissions,
             reset_collection_permissions, create_permissions_from_preset,
         },
-        plugins::{handle_plugin_route, get_plugin_permissions, update_plugin_permissions, list_plugin_routes},
+        plugins::{
+            handle_plugin_route, get_plugin_permissions, update_plugin_permissions, list_plugin_routes,
+            list_plugins, get_plugin_details, register_plugin, enable_plugin, disable_plugin,
+            unregister_plugin, grant_plugin_capability, revoke_plugin_capability, update_plugin_trust_level,
+        },
         records::{create_record, delete_record, get_record, list_records, update_record},
     },
 
@@ -341,6 +345,15 @@ fn get_static_endpoints(config: &RouteConfig) -> Vec<RegisteredEndpoint> {
     
     // Plugin endpoints
     let plugin_endpoints = vec![
+        ("GET", "/plugins", "plugins::list_plugins", true, "List all plugins"),
+        ("POST", "/plugins", "plugins::register_plugin", true, "Register/install new plugin"),
+        ("GET", "/plugins/:plugin_name", "plugins::get_plugin_details", true, "Get plugin details"),
+        ("DELETE", "/plugins/:plugin_name", "plugins::unregister_plugin", true, "Unregister/uninstall plugin"),
+        ("POST", "/plugins/:plugin_name/enable", "plugins::enable_plugin", true, "Enable plugin"),
+        ("POST", "/plugins/:plugin_name/disable", "plugins::disable_plugin", true, "Disable plugin"),
+        ("POST", "/plugins/:plugin_name/capabilities/:capability_name", "plugins::grant_plugin_capability", true, "Grant capability to plugin"),
+        ("DELETE", "/plugins/:plugin_name/capabilities/:capability_name", "plugins::revoke_plugin_capability", true, "Revoke capability from plugin"),
+        ("PUT", "/plugins/:plugin_name/trust-level", "plugins::update_plugin_trust_level", true, "Update plugin trust level"),
         ("GET", "/plugins/routes", "plugins::list_plugin_routes", true, "List plugin routes"),
         ("GET", "/plugins/:plugin_name/permissions", "plugins::get_plugin_permissions", true, "Get plugin permissions"),
         ("PUT", "/plugins/:plugin_name/permissions", "plugins::update_plugin_permissions", true, "Update plugin permissions"),
@@ -519,12 +532,31 @@ fn permission_routes() -> Router<AppState> {
 
 /// Plugin management routes
 fn plugin_routes() -> Router<AppState> {
+    use axum::extract::DefaultBodyLimit;
+    
     Router::new()
+        // Plugin management
+        .route("/plugins", 
+               get(list_plugins)
+               .post(register_plugin)
+               .layer(DefaultBodyLimit::max(64 * 1024 * 1024)) // 64MB limit for plugin uploads
+        )
+        .route("/plugins/:plugin_name", get(get_plugin_details).delete(unregister_plugin))
+        .route("/plugins/:plugin_name/enable", axum::routing::post(enable_plugin))
+        .route("/plugins/:plugin_name/disable", axum::routing::post(disable_plugin))
+        
+        // Plugin capability management
+        .route("/plugins/:plugin_name/capabilities/:capability_name", 
+               axum::routing::post(grant_plugin_capability).delete(revoke_plugin_capability))
+        .route("/plugins/:plugin_name/trust-level", axum::routing::put(update_plugin_trust_level))
+        
         // Plugin route management
         .route("/plugins/routes", get(list_plugin_routes))
+        
         // Plugin permission management
         .route("/plugins/:plugin_name/permissions", 
                get(get_plugin_permissions).put(update_plugin_permissions))
+        
         // Catch-all for plugin-registered routes
         .route("/plugin/*path", 
                axum::routing::any(handle_plugin_route))

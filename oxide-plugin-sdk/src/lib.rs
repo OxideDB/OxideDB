@@ -137,7 +137,29 @@ pub fn init_plugin<T: PluginEventHandler + Send + 'static>(plugin: T) {
 /// Initialize the HTTP handler
 #[cfg(feature = "http")]
 pub fn init_http_handler<T: PluginHttpHandler + Send + 'static>(handler: T) {
-    let _ = HTTP_HANDLER.set(Mutex::new(Some(Box::new(handler))));
+    let boxed_handler = Box::new(handler);
+    
+    // Check if HTTP_HANDLER is already initialized
+    if let Some(existing) = HTTP_HANDLER.get() {
+        // Handler already exists, update it
+        if let Ok(mut guard) = existing.lock() {
+            *guard = Some(boxed_handler);
+            crate::host::Host::log_info("HTTP handler re-initialized");
+        } else {
+            crate::host::Host::log_error("Failed to lock existing HTTP handler for re-initialization");
+        }
+    } else {
+        // Handler doesn't exist, initialize it
+        match HTTP_HANDLER.set(Mutex::new(Some(boxed_handler))) {
+            Ok(()) => {
+                crate::host::Host::log_info("HTTP handler successfully initialized");
+            }
+            Err(_) => {
+                // This should not happen since we checked above, but handle it gracefully
+                crate::host::Host::log_error("Failed to initialize HTTP handler - already set by another thread");
+            }
+        }
+    }
 }
 
 /// Get the plugin instance for event handling
@@ -164,13 +186,22 @@ where
     F: FnOnce(&mut dyn PluginHttpHandler) -> PluginResult<R>,
 {
     let instance = HTTP_HANDLER.get()
-        .ok_or_else(|| PluginError::ExecutionError("HTTP handler not initialized".to_string()))?;
+        .ok_or_else(|| {
+            crate::host::Host::log_error("HTTP_HANDLER.get() returned None - handler never initialized");
+            PluginError::ExecutionError("HTTP handler not initialized".to_string())
+        })?;
     
     let mut guard = instance.lock()
-        .map_err(|_| PluginError::ExecutionError("Failed to lock HTTP handler".to_string()))?;
+        .map_err(|_| {
+            crate::host::Host::log_error("Failed to acquire lock on HTTP handler mutex");
+            PluginError::ExecutionError("Failed to lock HTTP handler".to_string())
+        })?;
     
     let handler = guard.as_mut()
-        .ok_or_else(|| PluginError::ExecutionError("HTTP handler not found".to_string()))?;
+        .ok_or_else(|| {
+            crate::host::Host::log_error("HTTP handler mutex contains None - handler was initialized but then cleared");
+            PluginError::ExecutionError("HTTP handler not found".to_string())
+        })?;
     
     f(handler.as_mut())
 }
@@ -206,19 +237,57 @@ where
 /// This is used by the HTTP export macros
 #[cfg(feature = "http")]
 pub fn handle_http_request_impl() -> i32 {
+    crate::host::Host::log_info("handle_http_request_impl called");
+    
+    // First check if HTTP handler is initialized
+    if HTTP_HANDLER.get().is_none() {
+        crate::host::Host::log_error("HTTP handler not initialized - HTTP_HANDLER is None");
+        let error_response = crate::types::HttpResponse::error(500, "HTTP handler not initialized");
+        let _ = crate::host::Host::set_http_response(&error_response);
+        return 1;
+    }
+    
+    crate::host::Host::log_info("HTTP_HANDLER.get() is Some, checking contents...");
+    
+    // Additional debug: check if the mutex contains an actual handler
+    if let Some(handler_mutex) = HTTP_HANDLER.get() {
+        if let Ok(guard) = handler_mutex.lock() {
+            if guard.is_none() {
+                crate::host::Host::log_error("HTTP_HANDLER mutex contains None - handler was not properly initialized");
+                let error_response = crate::types::HttpResponse::error(500, "HTTP handler not initialized");
+                let _ = crate::host::Host::set_http_response(&error_response);
+                return 1;
+            } else {
+                crate::host::Host::log_info("HTTP handler mutex contains a valid handler, proceeding...");
+            }
+        } else {
+            crate::host::Host::log_error("Failed to lock HTTP handler mutex");
+            let error_response = crate::types::HttpResponse::error(500, "HTTP handler lock failed");
+            let _ = crate::host::Host::set_http_response(&error_response);
+            return 1;
+        }
+    }
+    
     match with_http_handler(|handler| {
+        crate::host::Host::log_info("HTTP handler found, processing request");
+        
         // Get the HTTP request from the host
         let request = crate::host::Host::get_http_request()?;
+        crate::host::Host::log_info(&format!("HTTP request: {} {}", request.method, request.path));
         
         // Call the handler
         let response = handler.handle_request(&request)?;
+        crate::host::Host::log_info(&format!("HTTP response status: {}", response.status_code));
         
         // Set the response
         crate::host::Host::set_http_response(&response)?;
         
         Ok(())
     }) {
-        Ok(()) => 0, // Success
+        Ok(()) => {
+            crate::host::Host::log_info("HTTP request handled successfully");
+            0 // Success
+        }
         Err(e) => {
             crate::host::Host::log_error(&format!("HTTP handler failed: {}", e));
             // Try to send an error response

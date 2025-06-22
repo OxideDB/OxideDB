@@ -122,7 +122,96 @@ macro_rules! export_plugin {
 #[macro_export]
 macro_rules! export_http_plugin {
     ($plugin_type:ty) => {
-        $crate::export_plugin!($plugin_type);
+        // Initialize memory manager
+        #[no_mangle]
+        pub extern "C" fn plugin_init() -> i32 {
+            use $crate::memory::MemoryManager;
+            use $crate::{init_plugin, init_http_handler, PluginEventHandler, PluginHttpHandler};
+            
+            $crate::log_info!("Starting plugin initialization...");
+            MemoryManager::init();
+            
+            // Create a single plugin instance and clone it for both handlers
+            $crate::log_info!("Creating plugin instances...");
+            let mut event_plugin = <$plugin_type>::default();
+            
+            // Call the plugin's on_init method to register routes FIRST
+            match event_plugin.on_init() {
+                Ok(()) => {
+                    $crate::log_info!("Plugin on_init completed successfully");
+                }
+                Err(e) => {
+                    $crate::log_error!("Plugin on_init failed: {}", e);
+                    return 1;
+                }
+            }
+            
+            // Initialize event handler
+            $crate::log_info!("Initializing event handler...");
+            init_plugin(event_plugin);
+            $crate::log_info!("Event handler initialized successfully");
+            
+            // Create HTTP handler instance
+            #[cfg(feature = "http")]
+            {
+                $crate::log_info!("Initializing HTTP handler...");
+                let http_plugin = <$plugin_type>::default();
+                init_http_handler(http_plugin);
+                $crate::log_info!("HTTP handler initialized successfully");
+            }
+            #[cfg(not(feature = "http"))]
+            {
+                $crate::log_error!("HTTP feature not enabled - HTTP handler not initialized");
+                return 1;
+            }
+            
+            $crate::log_info!("Plugin initialization completed successfully with HTTP support");
+            0
+        }
+
+        #[no_mangle]
+        pub extern "C" fn plugin_cleanup() -> i32 {
+            match $crate::with_plugin(|p| p.on_cleanup()) {
+                Ok(()) => {
+                    $crate::log_info!("Plugin cleanup completed");
+                    0
+                }
+                Err(e) => {
+                    $crate::log_error!("Plugin cleanup failed: {}", e);
+                    1
+                }
+            }
+        }
+
+        #[no_mangle]
+        pub extern "C" fn on_before_create() -> i32 {
+            $crate::handle_event_with_response(|plugin, event| plugin.on_before_create(event))
+        }
+
+        #[no_mangle]
+        pub extern "C" fn on_after_create() -> i32 {
+            $crate::handle_event_with_response(|plugin, event| plugin.on_after_create(event))
+        }
+
+        #[no_mangle]
+        pub extern "C" fn on_before_update() -> i32 {
+            $crate::handle_event_with_response(|plugin, event| plugin.on_before_update(event))
+        }
+
+        #[no_mangle]
+        pub extern "C" fn on_after_update() -> i32 {
+            $crate::handle_event_with_response(|plugin, event| plugin.on_after_update(event))
+        }
+
+        #[no_mangle]
+        pub extern "C" fn on_before_delete() -> i32 {
+            $crate::handle_event_with_response(|plugin, event| plugin.on_before_delete(event))
+        }
+
+        #[no_mangle]
+        pub extern "C" fn on_after_delete() -> i32 {
+            $crate::handle_event_with_response(|plugin, event| plugin.on_after_delete(event))
+        }
 
         // HTTP handler registration
         #[no_mangle]
@@ -132,7 +221,7 @@ macro_rules! export_http_plugin {
             0
         }
 
-        // Generic HTTP request handler
+        // Generic HTTP request handler - this is what actually gets called by the runtime
         #[no_mangle]
         pub extern "C" fn handle_http_request() -> i32 {
             $crate::handle_http_request_impl()

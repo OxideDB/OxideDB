@@ -324,7 +324,7 @@ pub struct StartArgs {
     pub security_policy: SecurityPolicy,
 
     /// Plugin folder path
-    #[arg(long, default_value = "oxidedb-plugins")]
+    #[arg(long, default_value = "oxide-plugins")]
     pub plugin_folder: PathBuf,
 
     /// API server port

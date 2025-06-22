@@ -20,6 +20,7 @@ import EditCollection from "./pages/EditCollection";
 import Health from "./pages/Health";
 import Settings from "./pages/Settings";
 import Permissions from "./pages/Permissions";
+import Plugins from "./pages/Plugins";
 import Logs from "./pages/Logs";
 
 function App() {
@@ -73,6 +74,14 @@ function App() {
                           }
                         />
                         <Route path="settings" element={<Settings />} />
+                        <Route
+                          path="plugins"
+                          element={
+                            <ProtectedRoute requireSuperuser={true}>
+                              <Plugins />
+                            </ProtectedRoute>
+                          }
+                        />
                         <Route path="logs" element={<Logs />} />
                       </Routes>
                     </main>

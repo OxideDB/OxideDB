@@ -18,9 +18,11 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::{debug, warn, error};
+use ts_rs::TS;
 
 /// Capability types that can be granted to plugins
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
+#[ts(export)]
 pub enum PluginCapability {
     /// Allow plugin to log messages (info level)
     LogInfo,
@@ -116,7 +118,8 @@ pub struct PluginSecurityContext {
 }
 
 /// Trust level assigned to plugins
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
 pub enum PluginTrustLevel {
     /// Untrusted plugin (default for external plugins)
     Untrusted,
@@ -129,7 +132,8 @@ pub enum PluginTrustLevel {
 }
 
 /// Resource usage limits for plugins
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
 pub struct ResourceLimits {
     /// Maximum memory usage in bytes
     pub max_memory: u64,

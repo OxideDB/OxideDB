@@ -6,7 +6,7 @@
 use oxide_core::{event::EventBus, AppError, AuthService};
 use oxide_db::Db;
 use oxide_logging::LogServiceBridge;
-use crate::services::{LoggingApiService, DatabasePermissionService};
+use crate::services::{LoggingApiService, DatabasePermissionService, plugin_config_service::PluginConfigService};
 use std::sync::Arc;
 use tokio::net::TcpListener;
 use tracing::{info, debug};
@@ -23,6 +23,7 @@ pub struct AppState {
     pub logging_api_service: Option<Arc<LoggingApiService>>,
     pub plugin_manager: Option<Arc<oxide_plugin_runtime::PluginManager>>,
     pub database_permission_service: Arc<DatabasePermissionService>,
+    pub plugin_config_service: Arc<PluginConfigService>,
 }
 
 /// The API server that handles HTTP requests
@@ -148,6 +149,11 @@ impl ApiServer {
         }
 
         let database_permission_service = Arc::new(DatabasePermissionService::new(Arc::clone(&self.db)));
+        // Default plugins directory
+        let plugins_dir = std::env::current_dir()
+            .unwrap_or_else(|_| std::path::PathBuf::from("."))
+            .join("oxide-plugins");
+        let plugin_config_service = Arc::new(PluginConfigService::new(Arc::clone(&self.db), plugins_dir));
         
         let state = AppState {
             db: Arc::clone(&self.db),
@@ -157,6 +163,7 @@ impl ApiServer {
             logging_api_service: self.logging_api_service.clone(),
             plugin_manager: None, // Will be set during startup if plugins are enabled
             database_permission_service,
+            plugin_config_service,
         };
 
         let app = build_router_with_config_and_middleware(config.clone(), state.clone());
@@ -221,6 +228,11 @@ impl ApiServer {
         }
 
         let database_permission_service = Arc::new(DatabasePermissionService::new(Arc::clone(&self.db)));
+        // Default plugins directory
+        let plugins_dir = std::env::current_dir()
+            .unwrap_or_else(|_| std::path::PathBuf::from("."))
+            .join("oxide-plugins");
+        let plugin_config_service = Arc::new(PluginConfigService::new(Arc::clone(&self.db), plugins_dir));
         
         let state = AppState {
             db: Arc::clone(&self.db),
@@ -230,6 +242,7 @@ impl ApiServer {
             logging_api_service: self.logging_api_service.clone(),
             plugin_manager: Some(plugin_manager),
             database_permission_service,
+            plugin_config_service,
         };
 
         let app = build_router_with_config_and_middleware(config.clone(), state.clone());

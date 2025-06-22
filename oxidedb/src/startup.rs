@@ -10,7 +10,7 @@ use oxide_core::{AppError, AuthService, EventBus, InMemoryEventBus, register_sys
 use oxide_db::{Db, SqliteDb};
 use oxide_logging::{LogService, LogServiceBuilder, LogServiceBridge};
 use std::sync::Arc;
-use tracing::{info, warn};
+use tracing::{info, warn, debug};
 
 /// Application services container
 #[derive(Clone)]
@@ -241,26 +241,72 @@ impl ApplicationBootstrap {
         event_bus: Arc<dyn EventBus>,
         database: Arc<dyn oxide_db::Db>,
     ) -> Result<Option<Arc<PluginManager>>> {
-        if !self.config.plugins.plugin_folder.exists() {
-            info!("Plugin folder {:?} does not exist, skipping plugin loading", 
-                  self.config.plugins.plugin_folder);
-            return Ok(None);
-        }
-
         let mut plugin_manager = PluginManager::new(
-            database,
+            database.clone(),
             self.config.plugins.security_policy.clone().into(),
         )?;
 
-        plugin_manager.load_plugins_from_folder(
-            &self.config.plugins.plugin_folder,
-            &event_bus,
-        ).await?;
+        // First, load plugins from database (persistent plugins)
+        let plugins_dir = self.config.plugins.plugin_folder.clone();
+        let plugin_config_service = oxide_api::services::PluginConfigService::new(database.clone(), plugins_dir);
+        let enabled_plugins = plugin_config_service.get_enabled_plugins().await?;
+        
+        if !enabled_plugins.is_empty() {
+            info!("🔌 Loading {} enabled plugins from database", enabled_plugins.len());
+            
+            for config in enabled_plugins {
+                info!("📦 Loading plugin from database: {} (v{})", config.name, config.version);
+                
+                // Get WASM data from filesystem
+                match plugin_config_service.load_plugin_wasm(&config.name).await {
+                    Ok(wasm_data) => {
+                        // Load plugin into runtime
+                        let mut runtime_guard = plugin_manager.runtime.lock().map_err(|_| {
+                            AppError::internal("Failed to acquire plugin runtime lock")
+                        })?;
+                        
+                        if let Err(e) = runtime_guard.load_plugin_with_trust(
+                            &config.name,
+                            &wasm_data,
+                            config.trust_level.clone(),
+                            config.capabilities.clone(),
+                            config.resource_limits.clone(),
+                        ) {
+                            warn!("❌ Failed to load plugin '{}' from database: {}", config.name, e);
+                            // Update status to error
+                            let _ = plugin_config_service.update_plugin_status(&config.name, oxide_core::plugin_config::PluginStatus::Error).await;
+                        } else {
+                            info!("✅ Successfully loaded plugin from database: {}", config.name);
+                        }
+                    }
+                    Err(e) => {
+                        warn!("❌ Plugin '{}' WASM loading failed: {}, skipping", config.name, e);
+                        // Update status to error
+                        let _ = plugin_config_service.update_plugin_status(&config.name, oxide_core::plugin_config::PluginStatus::Error).await;
+                    }
+                }
+            }
+        } else {
+            info!("📭 No enabled plugins found in database");
+        }
+
+        // Then, load plugins from folder (legacy support)
+        if self.config.plugins.plugin_folder.exists() {
+            info!("🔌 Also loading plugins from folder: {:?}", self.config.plugins.plugin_folder);
+            
+            plugin_manager.load_plugins_from_folder(
+                &self.config.plugins.plugin_folder,
+                &event_bus,
+            ).await?;
+        } else {
+            debug!("Plugin folder {:?} does not exist, skipping folder loading", 
+                  self.config.plugins.plugin_folder);
+        }
 
         plugin_manager.register_with_event_system(&event_bus).await?;
 
         let plugin_manager = Arc::new(plugin_manager);
-        info!("✅ Plugin system initialized");
+        info!("✅ Plugin system initialized with database persistence");
         Ok(Some(plugin_manager))
     }
 

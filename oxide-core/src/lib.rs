@@ -21,6 +21,7 @@ pub mod field_types;
 pub mod logging;
 pub mod plugin_api;
 pub mod plugin_security;
+pub mod plugin_config;
 pub mod hooks;
 
 // Re-export commonly used types for convenience

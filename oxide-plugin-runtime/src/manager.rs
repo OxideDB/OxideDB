@@ -24,7 +24,7 @@ type BeforeCreateHandler = Arc<dyn Fn(&mut BeforeEventContext) -> Pin<Box<dyn Fu
 
 /// High-level plugin manager that orchestrates plugin operations
 pub struct PluginManager {
-    runtime: Arc<Mutex<WasmtimePluginRuntime>>,
+    pub runtime: Arc<Mutex<WasmtimePluginRuntime>>,
     bridge: PluginEventBridge,
 }
 
@@ -328,6 +328,30 @@ impl PluginEventBridge {
             Box::pin(async move {
                 info!("🔌 Calling plugin '{}' for BeforeRecordCreate event", plugin_name);
                 
+                // Check if we can acquire the runtime lock without blocking
+                // If we can't, it means the same plugin is already executing (likely an HTTP request)
+                // and we should skip this event to avoid deadlock
+                let mut runtime_guard = match runtime.try_lock() {
+                    Ok(guard) => guard,
+                    Err(_) => {
+                        info!("🔌 Plugin '{}' is already executing, skipping BeforeRecordCreate event to avoid deadlock", plugin_name);
+                        return Ok(());
+                    }
+                };
+                
+                // Check if this plugin is currently handling an HTTP request
+                // If so, skip the event handler to prevent recursive calls
+                {
+                    let host_state = runtime_guard.get_host_state();
+                    let state = host_state.lock().unwrap();
+                    if let Some(current_plugin) = &state.current_plugin {
+                        if current_plugin == &plugin_name && state.current_http_request.is_some() {
+                            info!("🔌 Plugin '{}' is handling HTTP request, skipping BeforeRecordCreate event to prevent recursion", plugin_name);
+                            return Ok(());
+                        }
+                    }
+                }
+                
                 // Convert BeforeEventContext to EventPayload
                 let payload = EventPayload {
                     event_type: "BeforeRecordCreate".to_string(),
@@ -337,10 +361,6 @@ impl PluginEventBridge {
                 };
 
                 // Call the plugin
-                let mut runtime_guard = runtime.lock().map_err(|_| {
-                    AppError::internal("Failed to acquire plugin runtime lock")
-                })?;
-
                 match runtime_guard.call_plugin_function(&plugin_name, plugin_exports::ON_BEFORE_CREATE, &payload) {
                     Ok(response) => {
                         info!("🔌 Plugin '{}' response: allow={}, error={:?}", 
