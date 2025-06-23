@@ -477,4 +477,16 @@ impl PluginConfigService {
         debug!("✅ Loaded {} enabled plugins", enabled_configs.len());
         Ok(enabled_configs)
     }
+
+    /// Update plugin metadata with extracted information from the plugin runtime
+    pub async fn update_plugin_metadata(&self, plugin_name: &str, metadata: serde_json::Value) -> Result<(), AppError> {
+        debug!("Updating plugin metadata: {}", plugin_name);
+
+        let mut config = self.get_plugin_config(plugin_name).await?;
+        config.set_metadata(metadata);
+        self.update_plugin_config(&config).await?;
+
+        info!("✅ Updated plugin metadata: {}", plugin_name);
+        Ok(())
+    }
 } 

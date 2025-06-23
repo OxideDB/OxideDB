@@ -51,6 +51,9 @@ pub struct HostState {
 
     /// Whether the plugin is currently in a database operation
     pub in_database_operation: bool,
+    
+    // NOTE: Removed plugin_metadata field - using TOML-only metadata approach
+    // Plugin metadata is now sourced exclusively from plugin.toml during installation
 }
 
 impl Default for HostState {
@@ -103,4 +106,8 @@ impl HostState {
     pub fn exit_database_operation(&mut self) {
         self.in_database_operation = false;
     }
-} 
+    
+    // NOTE: Plugin metadata methods removed - using TOML-only metadata approach
+    // Metadata is now sourced exclusively from plugin.toml during installation
+    // and stored in the PluginConfiguration in the database
+}

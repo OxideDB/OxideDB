@@ -1,48 +1,42 @@
-//! Prelude module for convenient imports
+//! Prelude module for convenient imports in plugin development
 //! 
-//! This module re-exports the most commonly used types and traits
-//! from the OxideDB Plugin SDK, allowing for simple imports:
+//! This module re-exports commonly used types and traits to make
+//! plugin development more ergonomic. Import this module with:
 //! 
 //! ```rust
 //! use oxide_plugin_sdk::prelude::*;
 //! ```
 
-// Core types and traits
+// Re-export main SDK types
 pub use crate::{
-    PluginResult, PluginError, PluginEventHandler,
-    EventPayload, PluginResponse,
-    init_plugin
+    PluginResult, PluginError, PluginEventHandler, PluginResponse, EventPayload,
+    Record, DatabaseResult, LogLevel,
+    // Metadata types
+    PluginMetadata, PluginRuntimeInfo, RuntimeDetails, MemoryInfo, PluginStatus, PluginStats,
 };
 
-// Type shortcuts
-pub use crate::types::{
-    HttpRequestContext, HttpResponse, Record, DatabaseResult, LogLevel,
-};
-
-// High-level APIs
+// Re-export host interface
 pub use crate::host::Host;
+
+// Re-export memory management
 pub use crate::memory::MemoryManager;
-pub use crate::logging::{Logger, LogBuilder};
-pub use crate::database::{Database, QueryBuilder, RecordBuilder};
 
-// HTTP support (feature-gated)
+// Re-export HTTP types if HTTP feature is enabled
 #[cfg(feature = "http")]
-pub use crate::{PluginHttpHandler, init_http_handler, with_http_handler};
+pub use crate::{PluginHttpHandler, HttpRequestContext, HttpResponse};
 
+// Re-export HTTP module functionality
 #[cfg(feature = "http")]
-pub use crate::http::{Http, HttpHandler, FunctionHandler, JsonResponseBuilder};
+pub use crate::http::{Http, JsonResponseBuilder};
 
-// Macros
-pub use crate::{
-    export_plugin,
-    register_routes,
-    log_info, log_error, log_warn, log_debug,
-    json_response, error_response, text_response,
-};
+// Re-export database functionality
+pub use crate::database::Database;
 
-#[cfg(feature = "http")]
-pub use crate::export_http_plugin;
+// Re-export logging macros
+pub use crate::{log_info, log_error, log_warn, log_debug};
 
-// Re-export commonly used external types
-pub use serde::{Serialize, Deserialize};
-pub use serde_json::{json, Value as JsonValue}; 
+// Re-export useful external types
+pub use serde_json::{json, Value as JsonValue};
+
+// Export plugin initialization macros
+pub use crate::macros::*; 

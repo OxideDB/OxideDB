@@ -13,7 +13,6 @@ import { ScrollArea } from '../components/ui/scroll-area';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '../components/ui/dropdown-menu';
 import { toast } from '../components/ui/use-toast';
 import PageLayout from '../components/PageLayout';
-import type { ApiResponse } from '../types/api';
 import { 
   Upload, 
   Play, 
@@ -78,6 +77,30 @@ interface AuditEntry {
   metadata?: unknown;
 }
 
+interface PluginAnalysisResult {
+  is_valid: boolean;
+  plugin_info?: PluginInfo;
+  declared_capabilities: string[];
+  recommended_trust_level?: string;
+  security_info: PluginSecurityInfo;
+  size_bytes: number;
+  warnings: string[];
+  errors: string[];
+}
+
+interface PluginSecurityInfo {
+  binary_hash: string;
+  hash_algorithm: string;
+  signature_valid: boolean;
+  security_advisories: string[];
+  audit_info?: {
+    audit_date: string;
+    auditor: string;
+    report_url?: string;
+    status: string;
+  };
+}
+
 const Plugins: React.FC = () => {
   const [plugins, setPlugins] = useState<PluginInfo[]>([]);
   const [selectedPlugin, setSelectedPlugin] = useState<PluginDetails | null>(null);
@@ -89,11 +112,15 @@ const Plugins: React.FC = () => {
 
   // Installation form state
   const [installForm, setInstallForm] = useState({
-    pluginName: '',
-    wasmFile: null as File | null,
+    zipFile: null as File | null,
     trustLevel: 'Untrusted' as string,
     capabilities: [] as string[]
   });
+
+  // Analysis state
+  const [analysisResult, setAnalysisResult] = useState<PluginAnalysisResult | null>(null);
+  const [analyzeDialogOpen, setAnalyzeDialogOpen] = useState(false);
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
 
   useEffect(() => {
     fetchPlugins();
@@ -103,8 +130,8 @@ const Plugins: React.FC = () => {
     try {
       setLoading(true);
       setError(null);
-      const response = await apiService.get<ApiResponse<PluginInfo[]>>('/plugins');
-      setPlugins(response.data || []);
+      const plugins = await apiService.getPlugins();
+      setPlugins(plugins);
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : 'Failed to fetch plugins';
       setError(errorMessage);
@@ -116,8 +143,8 @@ const Plugins: React.FC = () => {
 
   const fetchPluginDetails = async (pluginName: string) => {
     try {
-      const response = await apiService.get<ApiResponse<PluginDetails>>(`/plugins/${encodeURIComponent(pluginName)}`);
-      setSelectedPlugin(response.data);
+      const pluginDetails = await apiService.getPluginDetails(pluginName);
+      setSelectedPlugin(pluginDetails);
       setDetailsDialogOpen(true);
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : 'Failed to fetch plugin details';
@@ -130,49 +157,58 @@ const Plugins: React.FC = () => {
     }
   };
 
-  const handleInstallPlugin = async () => {
-    if (!installForm.pluginName || !installForm.wasmFile) {
+  const handleAnalyzePlugin = async () => {
+    if (!installForm.zipFile) {
       toast({
         title: "Validation Error",
-        description: "Please provide plugin name and WASM file",
+        description: "Please select a ZIP package to analyze",
         variant: "destructive"
       });
       return;
     }
 
-    const formData = new FormData();
-    formData.append('plugin_name', installForm.pluginName);
-    formData.append('wasm_file', installForm.wasmFile);
-    formData.append('trust_level', installForm.trustLevel);
-    formData.append('capabilities', JSON.stringify(installForm.capabilities));
+    setIsAnalyzing(true);
 
     try {
-      // Use fetch for FormData since apiService expects JSON
-      const response = await fetch('/api/plugins', {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${apiService.isAuthenticated() ? localStorage.getItem('auth_token') : ''}`
-        },
-        body: formData
+      const result = await apiService.analyzePlugin(installForm.zipFile);
+      setAnalysisResult(result);
+      setAnalyzeDialogOpen(true);
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : 'Failed to analyze plugin';
+      toast({
+        title: "Analysis Failed",
+        description: errorMessage,
+        variant: "destructive"
       });
+      console.error('Error analyzing plugin:', err);
+    } finally {
+      setIsAnalyzing(false);
+    }
+  };
 
-      if (response.ok) {
-        toast({
-          title: "Success",
-          description: "Plugin installed successfully"
-        });
-        setInstallDialogOpen(false);
-        setInstallForm({
-          pluginName: '',
-          wasmFile: null,
-          trustLevel: 'Untrusted',
-          capabilities: []
-        });
-        await fetchPlugins();
-      } else {
-        const errorText = await response.text();
-        throw new Error(errorText || `HTTP ${response.status}`);
-      }
+  const handleInstallPlugin = async () => {
+    if (!installForm.zipFile) {
+      toast({
+        title: "Validation Error",
+        description: "Please select a ZIP package to install",
+        variant: "destructive"
+      });
+      return;
+    }
+
+    try {
+      await apiService.installPlugin(installForm.zipFile, installForm.trustLevel, installForm.capabilities);
+      toast({
+        title: "Success",
+        description: "Plugin installed successfully"
+      });
+      setInstallDialogOpen(false);
+      setInstallForm({
+        zipFile: null,
+        trustLevel: 'Untrusted',
+        capabilities: []
+      });
+      await fetchPlugins();
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : 'Failed to install plugin';
       toast({
@@ -188,7 +224,11 @@ const Plugins: React.FC = () => {
     const action = enable ? 'enable' : 'disable';
     
     try {
-      await apiService.post(`/api/plugins/${encodeURIComponent(pluginName)}/${action}`, {});
+      if (enable) {
+        await apiService.enablePlugin(pluginName);
+      } else {
+        await apiService.disablePlugin(pluginName);
+      }
       toast({
         title: "Success",
         description: `Plugin ${enable ? 'enabled' : 'disabled'} successfully`
@@ -207,7 +247,7 @@ const Plugins: React.FC = () => {
 
   const uninstallPlugin = async (pluginName: string) => {
     try {
-      await apiService.delete(`/api/plugins/${encodeURIComponent(pluginName)}`);
+      await apiService.uninstallPlugin(pluginName);
       toast({
         title: "Success",
         description: "Plugin uninstalled successfully"
@@ -302,28 +342,21 @@ const Plugins: React.FC = () => {
         <DialogContent className="max-w-md">
           <DialogHeader>
             <DialogTitle>Install New Plugin</DialogTitle>
-            <DialogDescription>Upload a WASM plugin file to install</DialogDescription>
+            <DialogDescription>Upload a ZIP plugin package containing plugin.toml and WASM file</DialogDescription>
           </DialogHeader>
           
           <div className="space-y-4">
             <div>
-              <Label htmlFor="plugin-name">Plugin Name</Label>
+              <Label htmlFor="zip-file">Plugin ZIP Package</Label>
               <Input
-                id="plugin-name"
-                value={installForm.pluginName}
-                onChange={(e) => setInstallForm({ ...installForm, pluginName: e.target.value })}
-                placeholder="Enter plugin name"
-              />
-            </div>
-            
-            <div>
-              <Label htmlFor="wasm-file">WASM File</Label>
-              <Input
-                id="wasm-file"
+                id="zip-file"
                 type="file"
-                accept=".wasm"
-                onChange={(e) => setInstallForm({ ...installForm, wasmFile: e.target.files?.[0] || null })}
+                accept=".zip"
+                onChange={(e) => setInstallForm({ ...installForm, zipFile: e.target.files?.[0] || null })}
               />
+              <p className="text-sm text-muted-foreground mt-1">
+                Select a ZIP package containing plugin.toml and WASM file
+              </p>
             </div>
             
             <div>
@@ -341,9 +374,25 @@ const Plugins: React.FC = () => {
             </div>
             
             <div className="flex gap-2">
-              <Button onClick={handleInstallPlugin} className="flex-1">Install</Button>
-              <Button variant="outline" onClick={() => setInstallDialogOpen(false)} className="flex-1">Cancel</Button>
+              <Button 
+                onClick={handleAnalyzePlugin} 
+                variant="outline" 
+                disabled={!installForm.zipFile || isAnalyzing}
+                className="flex-1"
+              >
+                {isAnalyzing ? "Analyzing..." : "Analyze Package"}
+              </Button>
+              <Button 
+                onClick={handleInstallPlugin} 
+                disabled={!installForm.zipFile}
+                className="flex-1"
+              >
+                Install
+              </Button>
             </div>
+            <Button variant="ghost" onClick={() => setInstallDialogOpen(false)} className="w-full">
+              Cancel
+            </Button>
           </div>
         </DialogContent>
       </Dialog>
@@ -548,6 +597,30 @@ const Plugins: React.FC = () => {
                       <Label>Errors</Label>
                       <div className="font-mono text-red-500">{selectedPlugin.errors}</div>
                     </div>
+                    <div>
+                      <Label>Trust Level</Label>
+                      <div>{getTrustLevelBadge(selectedPlugin.trust_level)}</div>
+                    </div>
+                    <div>
+                      <Label>Status</Label>
+                      <div>{getStatusBadge(selectedPlugin.status)}</div>
+                    </div>
+                  </div>
+                  
+                  <div className="space-y-3">
+                    <div>
+                      <Label>Description</Label>
+                      <div className="text-sm">{selectedPlugin.description}</div>
+                    </div>
+                    
+                    {selectedPlugin.routes.length > 0 && (
+                      <div>
+                        <Label>HTTP Routes</Label>
+                        <div className="text-sm text-muted-foreground">
+                          {selectedPlugin.routes.length} route{selectedPlugin.routes.length !== 1 ? 's' : ''} registered
+                        </div>
+                      </div>
+                    )}
                   </div>
                 </TabsContent>
                 
@@ -654,6 +727,172 @@ const Plugins: React.FC = () => {
                   </div>
                 </TabsContent>
               </Tabs>
+            </>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Plugin Analysis Result Dialog */}
+      <Dialog open={analyzeDialogOpen} onOpenChange={setAnalyzeDialogOpen}>
+        <DialogContent className="max-w-2xl max-h-[80vh]">
+          {analysisResult && (
+            <>
+              <DialogHeader>
+                <DialogTitle className="flex items-center gap-2">
+                  Plugin Analysis Results
+                  {analysisResult.is_valid ? (
+                    <CheckCircle className="w-5 h-5 text-green-500" />
+                  ) : (
+                    <XCircle className="w-5 h-5 text-red-500" />
+                  )}
+                </DialogTitle>
+                <DialogDescription>
+                  Security and compatibility analysis for the plugin package
+                </DialogDescription>
+              </DialogHeader>
+              
+              <ScrollArea className="max-h-96">
+                <div className="space-y-4">
+                  {/* Plugin Info */}
+                  {analysisResult.plugin_info && (
+                    <Card>
+                      <CardHeader className="pb-2">
+                        <CardTitle className="text-sm">Plugin Information</CardTitle>
+                      </CardHeader>
+                      <CardContent className="space-y-2">
+                        <div className="grid grid-cols-2 gap-2 text-sm">
+                          <div><strong>Name:</strong> {analysisResult.plugin_info.name}</div>
+                          <div><strong>Version:</strong> {analysisResult.plugin_info.version}</div>
+                          <div><strong>Author:</strong> {analysisResult.plugin_info.author}</div>
+                          <div><strong>Size:</strong> {formatBytes(analysisResult.size_bytes)}</div>
+                        </div>
+                        <div className="text-sm">
+                          <strong>Description:</strong> {analysisResult.plugin_info.description}
+                        </div>
+                      </CardContent>
+                    </Card>
+                  )}
+
+                  {/* Security Information */}
+                  <Card>
+                    <CardHeader className="pb-2">
+                      <CardTitle className="text-sm flex items-center">
+                        <Shield className="w-4 h-4 mr-2" />
+                        Security Information
+                      </CardTitle>
+                    </CardHeader>
+                    <CardContent className="space-y-2">
+                      <div className="grid grid-cols-2 gap-2 text-sm">
+                        <div className="flex items-center">
+                          <strong>Signature:</strong>
+                          <span className={`ml-2 ${analysisResult.security_info.signature_valid ? 'text-green-600' : 'text-yellow-600'}`}>
+                            {analysisResult.security_info.signature_valid ? 'Valid' : 'Not verified'}
+                          </span>
+                        </div>
+                        <div>
+                          <strong>Hash:</strong> 
+                          <code className="ml-2 text-xs">{analysisResult.security_info.binary_hash.slice(0, 16)}...</code>
+                        </div>
+                      </div>
+                      
+                      {analysisResult.security_info.security_advisories.length > 0 && (
+                        <div>
+                          <strong>Security Advisories:</strong>
+                          <ul className="list-disc list-inside text-sm text-yellow-600">
+                            {analysisResult.security_info.security_advisories.map((advisory, idx) => (
+                              <li key={idx}>{advisory}</li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+                    </CardContent>
+                  </Card>
+
+                  {/* Capabilities */}
+                  <Card>
+                    <CardHeader className="pb-2">
+                      <CardTitle className="text-sm">Declared Capabilities</CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                      <div className="flex flex-wrap gap-1">
+                        {analysisResult.declared_capabilities.map((cap, idx) => (
+                          <Badge key={idx} variant="outline" className="text-xs">
+                            {cap}
+                          </Badge>
+                        ))}
+                      </div>
+                      {analysisResult.recommended_trust_level && (
+                        <div className="mt-2 text-sm">
+                          <strong>Recommended Trust Level:</strong> 
+                          <Badge className="ml-2" variant="secondary">
+                            {analysisResult.recommended_trust_level}
+                          </Badge>
+                        </div>
+                      )}
+                    </CardContent>
+                  </Card>
+
+                  {/* Warnings and Errors */}
+                  {(analysisResult.warnings.length > 0 || analysisResult.errors.length > 0) && (
+                    <Card>
+                      <CardHeader className="pb-2">
+                        <CardTitle className="text-sm flex items-center">
+                          <AlertTriangle className="w-4 h-4 mr-2" />
+                          Issues Found
+                        </CardTitle>
+                      </CardHeader>
+                      <CardContent className="space-y-2">
+                        {analysisResult.errors.length > 0 && (
+                          <div>
+                            <strong className="text-red-600">Errors:</strong>
+                            <ul className="list-disc list-inside text-sm text-red-600">
+                              {analysisResult.errors.map((error, idx) => (
+                                <li key={idx}>{error}</li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+                        {analysisResult.warnings.length > 0 && (
+                          <div>
+                            <strong className="text-yellow-600">Warnings:</strong>
+                            <ul className="list-disc list-inside text-sm text-yellow-600">
+                              {analysisResult.warnings.map((warning, idx) => (
+                                <li key={idx}>{warning}</li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+                      </CardContent>
+                    </Card>
+                  )}
+                </div>
+              </ScrollArea>
+              
+              <div className="flex gap-2 pt-4">
+                <Button
+                  onClick={() => {
+                    setAnalyzeDialogOpen(false);
+                    if (analysisResult.is_valid && analysisResult.plugin_info) {
+                      // Pre-fill installation form with analysis results
+                      if (analysisResult.recommended_trust_level) {
+                        setInstallForm(prev => ({
+                          ...prev,
+                          trustLevel: analysisResult.recommended_trust_level!,
+                          capabilities: analysisResult.declared_capabilities
+                        }));
+                      }
+                      setInstallDialogOpen(true);
+                    }
+                  }}
+                  disabled={!analysisResult.is_valid}
+                  className="flex-1"
+                >
+                  Proceed to Install
+                </Button>
+                <Button variant="outline" onClick={() => setAnalyzeDialogOpen(false)} className="flex-1">
+                  Close
+                </Button>
+              </div>
             </>
           )}
         </DialogContent>

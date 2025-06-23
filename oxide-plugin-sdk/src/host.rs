@@ -4,17 +4,27 @@ use crate::{PluginResult, PluginError, EventPayload, HttpRequestContext, HttpRes
 
 // Raw host function imports
 extern "C" {
+    // Event system functions
     fn get_event_payload() -> i32;
     fn get_result_ptr() -> i32;
     fn get_result_len() -> i32;
+    
+    // Logging functions
     fn log_info(ptr: *const u8, len: usize);
     fn log_error(ptr: *const u8, len: usize);
     fn set_error(ptr: *const u8, len: usize);
+    
+    // HTTP functions
     fn register_http_route(
         method_ptr: *const u8, method_len: usize,
         path_ptr: *const u8, path_len: usize,
         handler_ptr: *const u8, handler_len: usize,
     ) -> i32;
+    
+    // NOTE: Metadata functions removed - using TOML-only approach
+    // Removed: set_plugin_metadata, get_plugin_metadata
+    
+    // Database functions
     fn create_record(
         collection_ptr: *const u8, collection_len: usize,
         data_ptr: *const u8, data_len: usize,
@@ -111,7 +121,7 @@ impl Host {
         }
     }
 
-    /// Register an HTTP route
+    /// Register an HTTP route with the specified method, path, and handler function name
     pub fn register_http_route(method: &str, path: &str, handler_function: &str) -> PluginResult<()> {
         let method_bytes = method.as_bytes();
         let path_bytes = path.as_bytes();
@@ -252,7 +262,8 @@ impl Host {
 
     /// Set the HTTP response
     pub fn set_http_response(response: &HttpResponse) -> PluginResult<()> {
-        let headers_json = serde_json::to_string(&response.headers)?;
+        let headers_json = serde_json::to_string(&response.headers)
+            .map_err(|e| PluginError::JsonError(e))?;
         let headers_bytes = headers_json.as_bytes();
         let body_bytes = response.body.as_bytes();
 
@@ -271,14 +282,18 @@ impl Host {
         }
     }
 
-    /// Helper to get database operation result
+    /// Get database operation result from host
     fn get_database_result() -> PluginResult<DatabaseResult> {
         unsafe {
             let ptr = get_result_ptr();
             let len = get_result_len();
 
             if ptr == 0 || len == 0 {
-                return Err(PluginError::HostCallFailed("Invalid result pointer or length".to_string()));
+                return Ok(DatabaseResult {
+                    success: false,
+                    data: None,
+                    error: Some("No result data".to_string()),
+                });
             }
 
             let slice = std::slice::from_raw_parts(ptr as *const u8, len as usize);

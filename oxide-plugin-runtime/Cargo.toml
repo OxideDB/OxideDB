@@ -9,6 +9,7 @@ description = "Wasmtime-based plugin runtime for OxideDB"
 [dependencies]
 oxide-core = { path = "../oxide-core" }
 oxide-db = { path = "../oxide-db" }
+oxide-plugin-sdk = { path = "../oxide-plugin-sdk" }
 wasmtime = "25.0.0"
 wasmtime-wasi = "25.0"
 serde = { version = "1.0", features = ["derive"] }
@@ -16,4 +17,5 @@ serde_json = "1.0"
 tracing = "0.1"
 thiserror = "1.0"
 anyhow = "1.0"
-tokio = { version = "1.0", features = ["rt", "rt-multi-thread"] } 
+tokio = { version = "1.0", features = ["rt", "rt-multi-thread"] }
+sha2 = "0.10" 

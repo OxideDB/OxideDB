@@ -7,6 +7,74 @@ import type {
   CreateLogResponse, LoggingHealthResponse
 } from '../types/api';
 
+// Plugin-related interfaces
+interface PluginInfo {
+  name: string;
+  status: 'Enabled' | 'Disabled' | 'Error' | 'Loading' | 'Uninstalling';
+  version: string;
+  description: string;
+  author: string;
+  capabilities: string[];
+  trust_level: 'Untrusted' | 'PartiallyTrusted' | 'FullyTrusted' | 'System';
+  routes: PluginRoute[];
+  executions: number;
+  errors: number;
+  last_execution?: string;
+  resource_usage: ResourceUsage;
+}
+
+interface PluginDetails extends PluginInfo {
+  audit_log: AuditEntry[];
+  permissions?: unknown;
+}
+
+interface PluginRoute {
+  plugin_name: string;
+  method: string;
+  path: string;
+  handler_function: string;
+  permissions?: unknown;
+  has_custom_permissions: boolean;
+}
+
+interface ResourceUsage {
+  memory_bytes: number;
+  cpu_time_ms: number;
+  api_calls: number;
+  storage_bytes: number;
+}
+
+interface AuditEntry {
+  timestamp: string;
+  event_type: string;
+  description: string;
+  metadata?: unknown;
+}
+
+interface PluginAnalysisResult {
+  is_valid: boolean;
+  plugin_info?: PluginInfo;
+  declared_capabilities: string[];
+  recommended_trust_level?: string;
+  security_info: PluginSecurityInfo;
+  size_bytes: number;
+  warnings: string[];
+  errors: string[];
+}
+
+interface PluginSecurityInfo {
+  binary_hash: string;
+  hash_algorithm: string;
+  signature_valid: boolean;
+  security_advisories: string[];
+  audit_info?: {
+    audit_date: string;
+    auditor: string;
+    report_url?: string;
+    status: string;
+  };
+}
+
 // Import PaginatedResponse from generated bindings
 interface PaginatedResponse<T> {
   data: T[];
@@ -18,7 +86,7 @@ interface PaginatedResponse<T> {
     has_next: boolean;
     has_prev: boolean;
   };
-  meta?: any;
+  meta?: unknown;
   success: boolean;
 }
 
@@ -59,7 +127,7 @@ class ApiService {
     options: RequestInit = {}
   ): Promise<T> {
     const url = `${this.baseUrl}${endpoint}`;
-    let headers: Record<string, string> = {
+    const headers: Record<string, string> = {
       'Content-Type': 'application/json',
       ...(options.headers as Record<string, string>),
     };
@@ -266,8 +334,22 @@ class ApiService {
   }
 
   async getCurrentUser(): Promise<User> {
-    const response = await this.get<ApiResponse<User>>('/auth/me');
-    return response.data;
+    const response = await this.get<ApiResponse<{
+      user_id: string;
+      email: string;
+      role: string;
+      auth_collection: string;
+      expires_at: number;
+      custom_claims?: unknown;
+    }>>('/auth/me');
+    
+    // Map the backend response to frontend User interface
+    return {
+      id: response.data.user_id,
+      email: response.data.email,
+      is_superuser: response.data.role === 'superuser',
+      created_at: new Date().toISOString(), // We don't get this from backend, use current time
+    };
   }
 
   // Manual token refresh (can be called by components)
@@ -517,6 +599,70 @@ class ApiService {
   async getLoggingHealth(): Promise<LoggingHealthResponse> {
     const response = await this.get<ApiResponse<LoggingHealthResponse>>('/logs/health');
     return response.data;
+  }
+
+  // Plugin methods
+  async getPlugins(): Promise<PluginInfo[]> {
+    const response = await this.get<ApiResponse<PluginInfo[]>>('/plugins');
+    return response.data || [];
+  }
+
+  async getPluginDetails(pluginName: string): Promise<PluginDetails> {
+    const response = await this.get<ApiResponse<PluginDetails>>(`/plugins/${encodeURIComponent(pluginName)}`);
+    return response.data;
+  }
+
+  async analyzePlugin(pluginFile: File): Promise<PluginAnalysisResult> {
+    const formData = new FormData();
+    formData.append('plugin_package', pluginFile);
+
+    const response = await fetch(`${this.baseUrl}/plugins/analyze`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${this.token}`
+      },
+      body: formData
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(errorText || `HTTP ${response.status}`);
+    }
+
+    const result = await response.json();
+    return result.data;
+  }
+
+  async installPlugin(pluginFile: File, trustLevel: string, capabilities: string[]): Promise<void> {
+    const formData = new FormData();
+    formData.append('plugin_package', pluginFile);
+    formData.append('trust_level', trustLevel);
+    formData.append('capabilities', JSON.stringify(capabilities));
+
+    const response = await fetch(`${this.baseUrl}/plugins`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${this.token}`
+      },
+      body: formData
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(errorText || `HTTP ${response.status}`);
+    }
+  }
+
+  async enablePlugin(pluginName: string): Promise<void> {
+    await this.post(`/plugins/${encodeURIComponent(pluginName)}/enable`, {});
+  }
+
+  async disablePlugin(pluginName: string): Promise<void> {
+    await this.post(`/plugins/${encodeURIComponent(pluginName)}/disable`, {});
+  }
+
+  async uninstallPlugin(pluginName: string): Promise<void> {
+    await this.delete(`/plugins/${encodeURIComponent(pluginName)}`);
   }
 }
 

@@ -226,16 +226,25 @@ impl PluginManager {
         
         let wasm_bytes = std::fs::read(path)
             .map_err(|e| AppError::internal(format!("Failed to read WASM file {:?}: {}", path, e)))?;
+
+        // Verify WASM file hash if available
+        if let Err(e) = self.verify_plugin_hash(plugin_name, &wasm_bytes).await {
+            warn!("Plugin hash verification failed for '{}': {}", plugin_name, e);
+            // For now, continue loading but log the warning
+            // In production, this should be configurable based on security policies
+        }
         
         let mut runtime_guard = self.runtime.lock().map_err(|_| {
             AppError::internal("Failed to acquire plugin runtime lock")
         })?;
 
-        // Load plugin with development-friendly settings including HTTP capabilities
-        runtime_guard.load_plugin_with_trust(
-            plugin_name,
-            &wasm_bytes,
-            PluginTrustLevel::FullyTrusted,
+        // Extract metadata first to get declared capabilities
+        let declared_capabilities = self.extract_declared_capabilities(&mut runtime_guard, plugin_name, &wasm_bytes)?;
+        
+        // For development, load with all declared capabilities
+        // In production, this should use user-granted capabilities from database
+        let granted_capabilities = if declared_capabilities.is_empty() {
+            // Fallback to development-friendly settings including HTTP capabilities
             vec![
                 PluginCapability::ReadEventData,
                 PluginCapability::ModifyEventData,
@@ -264,7 +273,18 @@ impl PluginManager {
                 PluginCapability::DeleteRecords {
                     collections: vec!["*".to_string()],
                 },
-            ],
+            ]
+        } else {
+            // Convert string capability names to PluginCapability enum values
+            self.parse_capability_strings(declared_capabilities)?
+        };
+
+        // Load plugin with development-friendly settings including HTTP capabilities
+        runtime_guard.load_plugin_with_trust(
+            plugin_name,
+            &wasm_bytes,
+            PluginTrustLevel::FullyTrusted,
+            granted_capabilities,
             ResourceLimits::default(),
         ).map_err(|e| AppError::internal(format!("Failed to load plugin {}: {}", plugin_name, e)))?;
         
@@ -304,6 +324,98 @@ impl PluginManager {
         }
         
         Ok(())
+    }
+
+    /// Verify plugin hash for integrity checking
+    async fn verify_plugin_hash(&self, plugin_name: &str, wasm_bytes: &[u8]) -> Result<(), AppError> {
+        use sha2::{Sha256, Digest};
+        
+        // Calculate SHA-256 hash of the WASM file
+        let mut hasher = Sha256::new();
+        hasher.update(wasm_bytes);
+        let calculated_hash = format!("{:x}", hasher.finalize());
+        
+        // For now, just log the calculated hash
+        info!("🔒 Plugin '{}' hash: {}", plugin_name, calculated_hash);
+        
+        // TODO: In production, compare against stored/expected hash from database
+        // TODO: Implement signature verification for code signing
+        
+        Ok(())
+    }
+
+    /// Extract declared capabilities from plugin metadata
+    fn extract_declared_capabilities(
+        &self,
+        runtime_guard: &mut crate::WasmtimePluginRuntime,
+        plugin_name: &str,
+        wasm_bytes: &[u8],
+    ) -> Result<Vec<String>, AppError> {
+        // First, temporarily load the plugin to extract metadata
+        runtime_guard.load_plugin_with_trust(
+            &format!("{}_metadata_extract", plugin_name),
+            wasm_bytes,
+            PluginTrustLevel::Untrusted, // Use minimal trust for metadata extraction
+            vec![PluginCapability::LogInfo], // Minimal capabilities for metadata extraction
+            ResourceLimits::default(),
+        ).map_err(|e| AppError::internal(format!("Failed to load plugin for metadata extraction: {}", e)))?;
+
+        // Extract metadata
+        let metadata = runtime_guard.extract_plugin_metadata(&format!("{}_metadata_extract", plugin_name))
+            .map_err(|e| AppError::internal(format!("Failed to extract plugin metadata: {}", e)))?;
+
+        // Unload the temporary instance
+        let _ = runtime_guard.unload_plugin(&format!("{}_metadata_extract", plugin_name));
+
+        // Return declared capabilities
+        if let Some(metadata) = metadata {
+            Ok(metadata.required_capabilities)
+        } else {
+            Ok(Vec::new())
+        }
+    }
+
+    /// Parse capability strings into PluginCapability enum values
+    fn parse_capability_strings(&self, capability_strings: Vec<String>) -> Result<Vec<PluginCapability>, AppError> {
+        let mut capabilities = Vec::new();
+        
+        for cap_str in capability_strings {
+            let capability = match cap_str.as_str() {
+                "LogInfo" => PluginCapability::LogInfo,
+                "LogError" => PluginCapability::LogError,
+                "ReadEventData" => PluginCapability::ReadEventData,
+                "ModifyEventData" => PluginCapability::ModifyEventData,
+                "BlockOperations" => PluginCapability::BlockOperations,
+                "AccessCollection" => PluginCapability::AccessCollection {
+                    collection: "*".to_string(),
+                    operations: vec![CrudOperation::Read],
+                },
+                "RegisterHttpRoutes" => PluginCapability::RegisterHttpRoutes {
+                    path_patterns: vec!["*".to_string()],
+                    methods: vec!["GET".to_string(), "POST".to_string()],
+                },
+                "HandleHttpRequests" => PluginCapability::HandleHttpRequests,
+                "CreateRecords" => PluginCapability::CreateRecords {
+                    collections: vec!["*".to_string()],
+                },
+                "ReadRecords" => PluginCapability::ReadRecords {
+                    collections: vec!["*".to_string()],
+                },
+                "UpdateRecords" => PluginCapability::UpdateRecords {
+                    collections: vec!["*".to_string()],
+                },
+                "DeleteRecords" => PluginCapability::DeleteRecords {
+                    collections: vec!["*".to_string()],
+                },
+                _ => {
+                    warn!("Unknown capability requested by plugin: {}", cap_str);
+                    continue;
+                }
+            };
+            capabilities.push(capability);
+        }
+        
+        Ok(capabilities)
     }
 }
 

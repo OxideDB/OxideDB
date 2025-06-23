@@ -33,10 +33,11 @@ use crate::{
             get_collection_permissions, update_collection_permissions, list_all_permissions,
             reset_collection_permissions, create_permissions_from_preset,
         },
-        plugins::{
+        plugins_old::{
             handle_plugin_route, get_plugin_permissions, update_plugin_permissions, list_plugin_routes,
             list_plugins, get_plugin_details, register_plugin, enable_plugin, disable_plugin,
             unregister_plugin, grant_plugin_capability, revoke_plugin_capability, update_plugin_trust_level,
+            analyze_plugin,
         },
         records::{create_record, delete_record, get_record, list_records, update_record},
     },
@@ -347,6 +348,7 @@ fn get_static_endpoints(config: &RouteConfig) -> Vec<RegisteredEndpoint> {
     let plugin_endpoints = vec![
         ("GET", "/plugins", "plugins::list_plugins", true, "List all plugins"),
         ("POST", "/plugins", "plugins::register_plugin", true, "Register/install new plugin"),
+        ("GET", "/plugins/analyze", "plugins::analyze_plugin", true, "Analyze plugin"),
         ("GET", "/plugins/:plugin_name", "plugins::get_plugin_details", true, "Get plugin details"),
         ("DELETE", "/plugins/:plugin_name", "plugins::unregister_plugin", true, "Unregister/uninstall plugin"),
         ("POST", "/plugins/:plugin_name/enable", "plugins::enable_plugin", true, "Enable plugin"),
@@ -540,6 +542,10 @@ fn plugin_routes() -> Router<AppState> {
                get(list_plugins)
                .post(register_plugin)
                .layer(DefaultBodyLimit::max(64 * 1024 * 1024)) // 64MB limit for plugin uploads
+        )
+        .route("/plugins/analyze", 
+               axum::routing::post(analyze_plugin)
+               .layer(DefaultBodyLimit::max(64 * 1024 * 1024)) // 64MB limit for plugin analysis
         )
         .route("/plugins/:plugin_name", get(get_plugin_details).delete(unregister_plugin))
         .route("/plugins/:plugin_name/enable", axum::routing::post(enable_plugin))
