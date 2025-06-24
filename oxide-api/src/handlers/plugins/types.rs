@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use oxide_core::{
-    plugin_security::{PluginCapability, PluginTrustLevel, ResourceLimits},
+    plugin_security::{PluginCapability, PluginTrustLevel},
     auth::CollectionPermissions,
 };
 

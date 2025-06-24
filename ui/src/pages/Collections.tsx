@@ -84,20 +84,20 @@ const Collections: React.FC = () => {
 
   const headerActions = (
     <>
-      <div className="relative flex-1 max-w-full sm:max-w-sm">
+      <div className="relative flex-1 max-w-full sm:max-w-sm transition-all duration-300 focus-within:max-w-full focus-within:flex-[2]">
         <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
         <Input
           placeholder="Search collections..."
           value={searchTerm}
           onChange={(e) => setSearchTerm(e.target.value)}
-          className="pl-10"
+          className="pl-10 transition-all duration-300"
         />
       </div>
 
-      <Button asChild className="w-full sm:w-auto">
+      <Button asChild className="shrink-0 sm:w-auto">
         <Link to="/collections/new">
-          <Plus className="h-4 w-4 mr-2" />
-          Create Collection
+          <Plus className="h-4 w-4 sm:mr-2" />
+          <span className="hidden sm:inline">Create Collection</span>
         </Link>
       </Button>
     </>

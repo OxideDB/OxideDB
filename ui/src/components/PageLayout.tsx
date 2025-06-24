@@ -23,7 +23,7 @@ const PageLayout: React.FC<PageLayoutProps> = ({
         {headerActions}
       </PageHeader>
       
-      <div className="flex-1 space-y-4 md:space-y-6 p-4 md:p-6">
+      <div className="flex-1 space-y-3 p-3 sm:space-y-4 sm:p-4 lg:space-y-6 lg:p-6 max-w-full overflow-x-hidden">
         {children}
       </div>
     </SidebarInset>

@@ -13,7 +13,7 @@ use tracing::{error, info};
 /// Trait for command handlers to enable modular command processing
 pub trait CommandHandler {
     type Args;
-    async fn execute(args: Self::Args) -> Result<()>;
+    fn execute(args: Self::Args) -> impl std::future::Future<Output = Result<()>> + Send;
 }
 
 /// Handler for the start server command

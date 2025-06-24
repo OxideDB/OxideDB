@@ -89,9 +89,9 @@ pub async fn revoke_plugin_capability(
 pub async fn update_plugin_trust_level(
     State(state): State<AppState>,
     Path(plugin_name): Path<String>,
-    Json(request): Json<UpdateTrustLevelRequest>,
+    Json(_request): Json<UpdateTrustLevelRequest>,
 ) -> Result<Json<ApiResponse<PluginTrustLevel>>, ApiError> {
-    let plugin_manager = state.plugin_manager.as_ref()
+    let _plugin_manager = state.plugin_manager.as_ref()
         .ok_or_else(|| ApiError::internal("Plugin system not available".to_string()))?;
 
     // Note: Currently the plugin runtime doesn't support changing trust levels after loading

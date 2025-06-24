@@ -12,7 +12,7 @@ use crate::{
 };
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use tracing::{debug, info, warn};
 
@@ -165,7 +165,7 @@ impl RetentionService {
     }
 
     /// Archive old logs to compressed files
-    async fn archive_old_logs(&self, result: &mut CleanupResult) -> LoggingResult<()> {
+    async fn archive_old_logs(&self, _result: &mut CleanupResult) -> LoggingResult<()> {
         let archive_dir = self.policy.archive_directory.as_ref()
             .ok_or_else(|| LoggingError::configuration("Archive directory not configured"))?;
 

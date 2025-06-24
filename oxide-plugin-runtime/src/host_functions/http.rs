@@ -8,7 +8,7 @@ use crate::utils::read_string_from_plugin_memory;
 use oxide_core::plugin_api::{host_functions, PluginError, RouteRegistration, HttpResponse};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use tracing::{info, warn};
+use tracing::info;
 use wasmtime::{Caller, Linker};
 
 /// Define HTTP-related host functions in the linker.

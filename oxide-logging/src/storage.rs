@@ -12,14 +12,14 @@ use crate::{
     models::{LogEntry, SecurityAuditEvent, LogQuery, LogMetrics, LogLevel, AuditEventType, CorrelationId},
 };
 use chrono::{DateTime, Utc};
-use rusqlite::{params, Connection, OptionalExtension, Row};
+use rusqlite::{params, OptionalExtension, Row};
 use serde_json;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio_rusqlite::Connection as AsyncConnection;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info};
 use uuid::Uuid;
 
 /// Current schema version for migrations

@@ -7,7 +7,7 @@
 //! - Security event correlation
 
 use crate::{
-    error::{LoggingError, LoggingResult},
+    error::LoggingResult,
     models::{SecurityAuditEvent, AuditEventType, LogLevel, LogContext, CorrelationId},
     storage::SqliteLogStorage,
 };
@@ -15,11 +15,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use tracing::{debug, warn};
+use tracing::debug;
 use uuid::Uuid;
 
-/// Cryptographic hash algorithm for integrity verification
-const HASH_ALGORITHM: &str = "SHA-256";
 
 /// Security audit service for tamper-evident logging
 pub struct SecurityAuditService {

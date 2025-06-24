@@ -7,8 +7,10 @@ import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { SchemaForm } from '@/components/SchemaForm';
 import PageLayout from '@/components/PageLayout';
+import ActionDropdown from '@/components/ActionDropdown';
 import { apiService } from '../services/api';
 import type { DbRecord, CollectionSchema } from '../types/api';
+import { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from '@/components/ui/tooltip';
 
 const EditRecord: React.FC = () => {
   const { collection, recordId } = useParams<{ collection: string; recordId: string }>();
@@ -109,7 +111,7 @@ const EditRecord: React.FC = () => {
     return (
       <PageLayout title="Error" description="Collection parameter is required">
         <Card className="border-destructive">
-          <CardContent className="p-6">
+          <CardContent className="p-4 sm:p-6">
             <div className="text-destructive">Collection parameter is required</div>
           </CardContent>
         </Card>
@@ -120,8 +122,8 @@ const EditRecord: React.FC = () => {
   if (loading) {
     return (
       <PageLayout title="Loading..." description={`Loading ${isCreateMode ? 'schema' : 'record'}...`}>
-        <div className="flex items-center justify-center h-64">
-          <div className="text-muted-foreground">Loading {isCreateMode ? 'schema' : 'record'}...</div>
+        <div className="flex items-center justify-center h-32 sm:h-64">
+          <div className="text-muted-foreground text-sm sm:text-base">Loading {isCreateMode ? 'schema' : 'record'}...</div>
         </div>
       </PageLayout>
     );
@@ -131,7 +133,7 @@ const EditRecord: React.FC = () => {
     return (
       <PageLayout title="Error" description="Record not found">
         <Card className="border-destructive">
-          <CardContent className="p-6">
+          <CardContent className="p-4 sm:p-6">
             <div className="text-destructive">Record not found</div>
           </CardContent>
         </Card>
@@ -144,33 +146,36 @@ const EditRecord: React.FC = () => {
       asChild
       variant="ghost"
       size="sm"
+      className="h-9 px-2.5 sm:h-8 sm:px-3"
     >
       <Link to={`/collections/${encodeURIComponent(collection)}`}>
-        <ChevronLeft className="h-4 w-4 mr-2" />
-        Back to Collection
+        <ChevronLeft className="h-4 w-4 mr-1.5 sm:mr-2" />
+        <span className="hidden xs:inline">Back to Collection</span>
+        <span className="xs:hidden">Back</span>
       </Link>
     </Button>
   );
 
   const headerActions = schema && Object.keys(schema.fields).length > 0 ? (
-    <div className="flex space-x-2">
-      <Button
-        variant={useSchemaForm ? "default" : "outline"}
-        size="sm"
-        onClick={() => setUseSchemaForm(true)}
-      >
-        <FileText className="h-4 w-4 mr-2" />
-        Form View
-      </Button>
-      <Button
-        variant={!useSchemaForm ? "default" : "outline"}
-        size="sm"
-        onClick={() => setUseSchemaForm(false)}
-      >
-        <Code className="h-4 w-4 mr-2" />
-        JSON Editor
-      </Button>
-    </div>
+    <ActionDropdown
+      actions={[
+        {
+          id: "form-view",
+          label: "Form View",
+          icon: <FileText className="h-4 w-4" />,
+          onClick: () => setUseSchemaForm(true),
+          active: useSchemaForm,
+        },
+        {
+          id: "json-editor",
+          label: "JSON Editor", 
+          icon: <Code className="h-4 w-4" />,
+          onClick: () => setUseSchemaForm(false),
+          active: !useSchemaForm,
+        }
+      ]}
+      showDropdownOn="mobile"
+    />
   ) : undefined;
 
   return (
@@ -184,13 +189,13 @@ const EditRecord: React.FC = () => {
       {/* Error Display */}
       {error && (
         <Card className="border-destructive">
-          <CardContent className="p-4">
-            <div className="text-destructive">{error}</div>
+          <CardContent className="p-3 sm:p-4">
+            <div className="text-destructive text-sm sm:text-base">{error}</div>
             <Button
               onClick={() => setError(null)}
               variant="ghost"
               size="sm"
-              className="text-destructive text-sm mt-2 hover:text-destructive/80 p-0 h-auto"
+              className="text-destructive text-xs sm:text-sm mt-2 hover:text-destructive/80 p-0 h-auto"
             >
               Dismiss
             </Button>
@@ -201,40 +206,59 @@ const EditRecord: React.FC = () => {
       {/* Record Metadata - Only show in edit mode */}
       {!isCreateMode && record && (
         <Card>
-          <CardHeader>
-            <CardTitle className="text-lg">Record Information</CardTitle>
+          <CardHeader className="pb-3 sm:pb-6">
+            <CardTitle className="text-base sm:text-lg">Record Information</CardTitle>
           </CardHeader>
-          <CardContent>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-sm">
-              <div>
-                <Label className="font-medium">Record ID</Label>
-                <p className="text-muted-foreground">{record.id}</p>
+          <CardContent className="pt-0">
+            <TooltipProvider>
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 sm:gap-4 text-sm">
+                <div className="space-y-1.5">
+                  <Label className="font-medium text-xs sm:text-sm">Record ID</Label>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <p className="text-muted-foreground text-xs sm:text-sm break-all cursor-pointer leading-relaxed" tabIndex={0}>
+                        {record.id}
+                      </p>
+                    </TooltipTrigger>
+                    <TooltipContent className="max-w-xs break-all">{record.id}</TooltipContent>
+                  </Tooltip>
+                </div>
+                <div className="space-y-1.5">
+                  <Label className="font-medium text-xs sm:text-sm">Created</Label>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <p className="text-muted-foreground text-xs sm:text-sm cursor-pointer leading-relaxed" tabIndex={0}>
+                        {new Date(record.created_at).toLocaleString()}
+                      </p>
+                    </TooltipTrigger>
+                    <TooltipContent>{new Date(record.created_at).toLocaleString()}</TooltipContent>
+                  </Tooltip>
+                </div>
+                <div className="space-y-1.5 sm:col-span-2 lg:col-span-1">
+                  <Label className="font-medium text-xs sm:text-sm">Last Updated</Label>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <p className="text-muted-foreground text-xs sm:text-sm cursor-pointer leading-relaxed" tabIndex={0}>
+                        {new Date(record.updated_at).toLocaleString()}
+                      </p>
+                    </TooltipTrigger>
+                    <TooltipContent>{new Date(record.updated_at).toLocaleString()}</TooltipContent>
+                  </Tooltip>
+                </div>
               </div>
-              <div>
-                <Label className="font-medium">Created</Label>
-                <p className="text-muted-foreground">
-                  {new Date(record.created_at).toLocaleString()}
-                </p>
-              </div>
-              <div>
-                <Label className="font-medium">Last Updated</Label>
-                <p className="text-muted-foreground">
-                  {new Date(record.updated_at).toLocaleString()}
-                </p>
-              </div>
-            </div>
+            </TooltipProvider>
           </CardContent>
         </Card>
       )}
 
       {/* Form */}
       <Card>
-        <CardHeader>
-          <CardTitle className="text-lg">
+        <CardHeader className="pb-3 sm:pb-6">
+          <CardTitle className="text-base sm:text-lg">
             {isCreateMode ? 'Record Data' : 'Edit Record Data'}
           </CardTitle>
         </CardHeader>
-        <CardContent>
+        <CardContent className="pt-0">
           {useSchemaForm && schema && Object.keys(schema.fields).length > 0 ? (
             <SchemaForm
               schema={schema}
@@ -245,29 +269,33 @@ const EditRecord: React.FC = () => {
               isSubmitting={saving}
             />
           ) : (
-            <form onSubmit={handleJsonSave} className="space-y-4">
-              <div className="space-y-2">
-                <Label htmlFor="recordData">Record Data (JSON)</Label>
+            <form onSubmit={handleJsonSave} className="space-y-4 sm:space-y-6">
+              <div className="space-y-2 sm:space-y-3">
+                <Label htmlFor="recordData" className="text-sm sm:text-base font-medium">
+                  Record Data (JSON)
+                </Label>
                 <Textarea
                   id="recordData"
                   value={jsonData}
                   onChange={(e) => setJsonData(e.target.value)}
-                  className="min-h-[400px] font-mono text-sm"
+                  className="min-h-[300px] sm:min-h-[400px] font-mono text-xs sm:text-sm leading-relaxed"
                   required
                 />
               </div>
-              <div className="flex justify-end space-x-2">
+              <div className="flex flex-col sm:flex-row justify-end gap-2 sm:gap-3 pt-2">
                 <Button
                   type="button"
                   variant="outline"
                   onClick={handleCancel}
                   disabled={saving}
+                  className="h-10 px-4 sm:h-9 sm:px-3 order-2 sm:order-1"
                 >
                   Cancel
                 </Button>
                 <Button
                   type="submit"
                   disabled={saving || !jsonData.trim()}
+                  className="h-10 px-4 sm:h-9 sm:px-3 order-1 sm:order-2"
                 >
                   {isCreateMode ? <Plus className="h-4 w-4 mr-2" /> : <Save className="h-4 w-4 mr-2" />}
                   {saving ? (isCreateMode ? 'Creating...' : 'Saving...') : (isCreateMode ? 'Create Record' : 'Save Changes')}

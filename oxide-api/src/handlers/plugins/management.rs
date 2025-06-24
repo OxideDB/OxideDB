@@ -18,7 +18,7 @@ use super::{
 };
 use oxide_core::{
     auth::PermissionService,
-    plugin_security::PluginCapability,
+    // plugin_security::PluginCapability,
 };
 
 /// List all installed plugins with their status and details

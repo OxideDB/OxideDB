@@ -1,5 +1,5 @@
-import { Database, Shield, Settings, BarChart3, FileText, Key, Eye, EyeOff, Activity, User, LogOut, FileSearch, Puzzle } from "lucide-react"
-import { useState } from "react"
+import { Database, Shield, Settings, BarChart3, FileText, Key, Eye, EyeOff, Activity, User, LogOut, FileSearch, Puzzle, RefreshCw } from "lucide-react"
+import { useState, useEffect } from "react"
 import { Link, useLocation } from "react-router-dom"
 
 import {
@@ -21,6 +21,8 @@ import { Button } from "@/components/ui/button"
 import { Separator } from "@/components/ui/separator"
 import { ThemeToggle } from "@/components/theme-toggle"
 import { useAuth } from "@/contexts/AuthContext"
+import { apiService } from "@/services/api"
+import type { CollectionSchema, CollectionStats } from "@/types/api"
 
 const staticNavigationItems = [
   {
@@ -85,27 +87,59 @@ const staticNavigationItems = [
   },
 ]
 
-const userCollections = [
-  { name: "users", recordCount: 1247 },
-  { name: "products", recordCount: 856 },
-  { name: "orders", recordCount: 2341 },
-  { name: "analytics", recordCount: 15623 },
-]
-
-const systemCollections = [
-  { name: "_users", recordCount: 23 },
-  { name: "_superusers", recordCount: 5 },
-  { name: "_permissions", recordCount: 45 },
-  { name: "_api_keys", recordCount: 12 },
-  { name: "_audit_logs", recordCount: 8934 },
-]
+interface CollectionWithStats {
+  schema: CollectionSchema;
+  stats?: CollectionStats;
+}
 
 export function AppSidebar() {
   const [showSystemCollections, setShowSystemCollections] = useState(false)
+  const [collections, setCollections] = useState<CollectionWithStats[]>([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
   const { user, logout } = useAuth()
   const location = useLocation()
 
+  // Load collections data
+  useEffect(() => {
+    fetchCollections()
+  }, [])
+
+  const fetchCollections = async () => {
+    try {
+      setLoading(true)
+      setError(null)
+      const collectionsData = await apiService.getCollections()
+      
+      // Fetch stats for each collection in parallel
+      const collectionsWithStats = await Promise.all(
+        collectionsData.map(async (schema): Promise<CollectionWithStats> => {
+          try {
+            const stats = await apiService.getCollectionStats(schema.name)
+            return { schema, stats }
+          } catch (err) {
+            console.warn(`Failed to fetch stats for collection ${schema.name}:`, err)
+            return { schema }
+          }
+        })
+      )
+      
+      setCollections(collectionsWithStats)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to fetch collections')
+      console.error('Error fetching collections:', err)
+    } finally {
+      setLoading(false)
+    }
+  }
+
   // Filter collections based on whether we want to show system collections
+  const userCollections = collections.filter(({ schema }) => 
+    !apiService.isSystemCollection(schema)
+  )
+  const systemCollections = collections.filter(({ schema }) => 
+    apiService.isSystemCollection(schema)
+  )
   const collectionsToShow = showSystemCollections ? [...userCollections, ...systemCollections] : userCollections
 
   const handleLogout = async () => {
@@ -157,7 +191,17 @@ export function AppSidebar() {
         <SidebarGroup>
           <SidebarGroupLabel className="flex items-center justify-between">
             <span>Collections</span>
-            <div className="flex items-center space-x-2">
+            <div className="flex items-center space-x-1">
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={fetchCollections}
+                disabled={loading}
+                className="h-6 w-6 p-0"
+                title="Refresh collections"
+              >
+                <RefreshCw className={`h-3 w-3 ${loading ? 'animate-spin' : ''}`} />
+              </Button>
               <Switch
                 id="show-system"
                 checked={showSystemCollections}
@@ -170,21 +214,47 @@ export function AppSidebar() {
             </div>
           </SidebarGroupLabel>
           <SidebarGroupContent>
-            <SidebarMenu>
-              {collectionsToShow.map((collection) => (
-                <SidebarMenuItem key={collection.name}>
-                  <SidebarMenuButton asChild>
-                    <Link to={`/collections/${collection.name}`}>
-                      <FileText className="h-4 w-4" />
-                      <span className={collection.name.startsWith("_") ? "text-muted-foreground" : ""}>
-                        {collection.name}
-                      </span>
-                      <span className="ml-auto text-xs text-muted-foreground">{collection.recordCount}</span>
-                    </Link>
-                  </SidebarMenuButton>
-                </SidebarMenuItem>
-              ))}
-            </SidebarMenu>
+            {error && (
+              <div className="px-2 py-1 text-xs text-red-500 bg-red-50 dark:bg-red-950 rounded mb-2">
+                {error}
+              </div>
+            )}
+            {loading && collections.length === 0 ? (
+              <div className="px-2 py-1 text-xs text-muted-foreground">
+                Loading collections...
+              </div>
+            ) : (
+              <SidebarMenu>
+                {collectionsToShow.length === 0 ? (
+                  <div className="px-2 py-1 text-xs text-muted-foreground">
+                    {showSystemCollections ? 'No collections found' : 'No user collections'}
+                  </div>
+                ) : (
+                  collectionsToShow.map((collection) => {
+                    const isSystemCollection = apiService.isSystemCollection(collection.schema)
+                    return (
+                      <SidebarMenuItem key={collection.schema.id}>
+                        <SidebarMenuButton asChild>
+                          <Link to={`/collections/${encodeURIComponent(collection.schema.name)}`}>
+                            {isSystemCollection ? (
+                              <Shield className="h-4 w-4 text-orange-500" />
+                            ) : (
+                              <FileText className="h-4 w-4" />
+                            )}
+                            <span className={isSystemCollection ? "text-muted-foreground" : ""}>
+                              {collection.schema.name}
+                            </span>
+                            <span className="ml-auto text-xs text-muted-foreground">
+                              {collection.stats?.record_count.toLocaleString() || '?'}
+                            </span>
+                          </Link>
+                        </SidebarMenuButton>
+                      </SidebarMenuItem>
+                    )
+                  })
+                )}
+              </SidebarMenu>
+            )}
           </SidebarGroupContent>
         </SidebarGroup>
       </SidebarContent>

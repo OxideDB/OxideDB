@@ -5,9 +5,7 @@
 
 use crate::{
     service::LogService,
-    models::{LogEntry, SecurityAuditEvent, CorrelationId},
-    audit::SecurityAuditService,
-    error::{LoggingError, LoggingResult},
+    models::{LogEntry, CorrelationId},
 };
 use std::collections::HashMap;
 use std::future::Future;
@@ -57,20 +55,6 @@ impl LogServiceBridge {
             client_ip: context.client_ip,
             user_agent: context.user_agent,
             metadata: context.metadata,
-        }
-    }
-
-    /// Convert oxide-core AuditEventType to oxide-logging AuditEventType
-    fn convert_audit_event_type(event_type: oxide_core::AuditEventType) -> crate::models::AuditEventType {
-        match event_type {
-            oxide_core::AuditEventType::Authentication => crate::models::AuditEventType::Authentication,
-            oxide_core::AuditEventType::Authorization => crate::models::AuditEventType::Authorization,
-            oxide_core::AuditEventType::DataAccess => crate::models::AuditEventType::DataAccess,
-            oxide_core::AuditEventType::DataModification => crate::models::AuditEventType::DataModification,
-            oxide_core::AuditEventType::ConfigurationChange => crate::models::AuditEventType::ConfigurationChange,
-            oxide_core::AuditEventType::SecurityViolation => crate::models::AuditEventType::SecurityViolation,
-            oxide_core::AuditEventType::PluginEvent => crate::models::AuditEventType::PluginEvent,
-            oxide_core::AuditEventType::SystemEvent => crate::models::AuditEventType::SystemEvent,
         }
     }
 
@@ -380,8 +364,7 @@ impl oxide_core::LoggingService for LogServiceBridge {
         let log_service = Arc::clone(&self.log_service);
         
         Box::pin(async move {
-            // Clone the log service to move it into the shutdown method
-            let service_clone = Arc::clone(&log_service);
+            // Reference to the log service for shutdown
             drop(log_service); // Drop our reference
             
             // Note: This assumes LogService has a method to extract itself from the Arc

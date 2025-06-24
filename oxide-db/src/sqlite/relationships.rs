@@ -353,7 +353,7 @@ impl SqliteDb {
 
             for row_result in rows {
                 match row_result {
-                    Ok((id, mut record_data)) => {
+                    Ok((id, record_data)) => {
                         // If a display field is specified, create a simplified representation
                         if let Some(ref display_field_name) = display_field {
                             if let JsonValue::Object(ref obj) = record_data {

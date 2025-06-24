@@ -58,7 +58,7 @@ pub async fn analyze_plugin(
     let recommended_trust_level = package.manifest.security.recommended_trust_level.clone();
 
     let mut warnings = Vec::new();
-    let mut errors = Vec::new();
+    let errors = Vec::new();
 
     // Validate capabilities format
     for cap_str in &declared_capabilities {

@@ -3,7 +3,7 @@
 //! These functions provide database access capabilities for plugins to perform
 //! CRUD operations on collections within the OxideDB system.
 
-use crate::host_state::{HostState, ExecutionContext};
+use crate::host_state::HostState;
 use crate::utils::{read_string_from_plugin_memory, allocate_plugin_memory_and_copy, create_error_response, create_success_response};
 use oxide_core::plugin_api::{host_functions, PluginError};
 use oxide_core::event::types::{RecordData, RecordId};

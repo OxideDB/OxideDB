@@ -51,29 +51,6 @@ impl TimeoutMiddleware {
         Self::new(Duration::from_secs(5))
     }
 
-    async fn execute_with_timeout<F, R>(
-        &self,
-        future: F,
-        timeout_duration: Duration,
-        handler_id: &str,
-    ) -> Result<R, AppError>
-    where
-        F: Future<Output = Result<R, AppError>>,
-    {
-        match timeout(timeout_duration, future).await {
-            Ok(result) => result,
-            Err(_) => {
-                warn!(
-                    "Handler {} timed out after {:?}",
-                    handler_id, timeout_duration
-                );
-                Err(AppError::internal(format!(
-                    "Handler {} timed out after {:?}",
-                    handler_id, timeout_duration
-                )))
-            }
-        }
-    }
 }
 
 impl BeforeHandlerMiddleware for TimeoutMiddleware {
@@ -164,10 +141,6 @@ impl RetryMiddleware {
         Self::new(max_retries, delay, delay, 1.0)
     }
 
-    fn calculate_delay(&self, attempt: u32) -> Duration {
-        Self::calculate_delay_static(attempt, self.initial_delay, self.max_delay, self.backoff_multiplier)
-    }
-
     fn calculate_delay_static(attempt: u32, initial_delay: Duration, max_delay: Duration, backoff_multiplier: f64) -> Duration {
         if attempt == 0 {
             return initial_delay;
@@ -180,46 +153,6 @@ impl RetryMiddleware {
         std::cmp::min(delay, max_delay)
     }
 
-    async fn retry_operation<F, Fut, R>(
-        &self,
-        mut operation: F,
-        handler_id: &str,
-    ) -> Result<R, AppError>
-    where
-        F: FnMut() -> Fut,
-        Fut: Future<Output = Result<R, AppError>>,
-    {
-        let mut last_error = None;
-
-        for attempt in 0..=self.max_retries {
-            match operation().await {
-                Ok(result) => {
-                    if attempt > 0 {
-                        debug!("Handler {} succeeded after {} retries", handler_id, attempt);
-                    }
-                    return Ok(result);
-                }
-                Err(err) => {
-                    last_error = Some(err);
-                    
-                    if attempt < self.max_retries {
-                        let delay = self.calculate_delay(attempt);
-                        debug!(
-                            "Handler {} failed on attempt {}, retrying after {:?}",
-                            handler_id, attempt + 1, delay
-                        );
-                        tokio::time::sleep(delay).await;
-                    }
-                }
-            }
-        }
-
-        warn!(
-            "Handler {} failed after {} retries",
-            handler_id, self.max_retries + 1
-        );
-        Err(last_error.unwrap_or_else(|| AppError::internal("Unknown retry error")))
-    }
 }
 
 impl BeforeHandlerMiddleware for RetryMiddleware {

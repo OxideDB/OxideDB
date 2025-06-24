@@ -148,10 +148,10 @@ export const RecordTable: React.FC<RecordTableProps> = ({
               </TableCell>
             )}
             <TableCell className="text-muted-foreground text-xs">
-              {new Date(record.created_at).toLocaleDateString()}
+              {new Date(record.created_at * 1000).toLocaleString()}
             </TableCell>
             <TableCell className="text-muted-foreground text-xs">
-              {new Date(record.updated_at).toLocaleDateString()}
+              {new Date(record.updated_at * 1000).toLocaleString()}
             </TableCell>
             <TableCell className="text-right">
               <div className="flex justify-end space-x-1">

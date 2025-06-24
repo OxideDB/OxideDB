@@ -19,7 +19,7 @@ use oxide_core::{
 use oxide_db::Db;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info};
 use wasmtime::{Engine, Instance, Linker, Module, Store};
 
 /// Wasmtime-based implementation of the PluginRuntime trait

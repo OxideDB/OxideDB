@@ -320,37 +320,42 @@ impl EventBusConfig {
 /// Utility trait for event bus implementations to provide common functionality
 pub trait EventBusExt: EventBus {
     /// Subscribe to Before events with default metadata
-    async fn subscribe_before_simple(
+    fn subscribe_before_simple(
         &self,
         event_name: &str,
         handler: BeforeEventHandler,
-    ) -> Result<String, AppError> {
+    ) -> impl std::future::Future<Output = Result<String, AppError>> + Send {
+        async move {
         let metadata = HandlerMetadata::new(
             uuid::Uuid::new_v4().to_string(),
             format!("Handler for {}", event_name),
         );
-        self.subscribe_before(event_name, handler, metadata).await
+            self.subscribe_before(event_name, handler, metadata).await
+        }
     }
 
     /// Subscribe to After events with default metadata
-    async fn subscribe_after_simple(
+    fn subscribe_after_simple(
         &self,
         event_name: &str,
         handler: AfterEventHandler,
-    ) -> Result<String, AppError> {
+    ) -> impl std::future::Future<Output = Result<String, AppError>> + Send {
+        async move {
         let metadata = HandlerMetadata::new(
             uuid::Uuid::new_v4().to_string(),
             format!("Handler for {}", event_name),
         );
-        self.subscribe_after(event_name, handler, metadata).await
+            self.subscribe_after(event_name, handler, metadata).await
+        }
     }
 
     /// Dispatch a Before event and return only success/failure
-    async fn dispatch_before_simple(
+    fn dispatch_before_simple(
         &self,
         event_type: BeforeEventType,
         context: &mut BeforeEventContext,
-    ) -> Result<(), AppError> {
+    ) -> impl std::future::Future<Output = Result<(), AppError>> + Send {
+        async move {
         let results = self.dispatch_before(event_type, context).await?;
         
         // Check if any critical handlers failed
@@ -364,15 +369,17 @@ pub trait EventBusExt: EventBus {
             }
         }
         
-        Ok(())
+            Ok(())
+        }
     }
 
     /// Dispatch an After event and return only success/failure
-    async fn dispatch_after_simple(
+    fn dispatch_after_simple(
         &self,
         event_type: AfterEventType,
         context: &AfterEventContext,
-    ) -> Result<(), AppError> {
+    ) -> impl std::future::Future<Output = Result<(), AppError>> + Send {
+        async move {
         let results = self.dispatch_after(event_type, context).await?;
         
         // Check if any critical handlers failed
@@ -386,7 +393,8 @@ pub trait EventBusExt: EventBus {
             }
         }
         
-        Ok(())
+            Ok(())
+        }
     }
 }
 
