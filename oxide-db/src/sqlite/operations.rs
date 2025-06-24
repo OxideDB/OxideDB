@@ -604,6 +604,10 @@ impl Db for SqliteDb {
         SqliteDb::count_records(self, collection).await
     }
 
+    async fn get_collection_size_kb(&self, collection: &str) -> Result<f64, AppError> {
+        SqliteDb::get_collection_size_kb(self, collection).await
+    }
+
     async fn close(&self) -> Result<(), AppError> {
         SqliteDb::close(self).await
     }

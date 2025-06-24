@@ -231,6 +231,15 @@ pub trait Db: Send + Sync {
     /// The number of records in the collection
     async fn count_records(&self, collection: &str) -> Result<usize, AppError>;
 
+    /// Get the size of a collection in kilobytes
+    ///
+    /// # Arguments
+    /// * `collection` - The name of the collection
+    ///
+    /// # Returns
+    /// The size of the collection in kilobytes
+    async fn get_collection_size_kb(&self, collection: &str) -> Result<f64, AppError>;
+
     /// Close the database connection and clean up resources
     async fn close(&self) -> Result<(), AppError>;
 

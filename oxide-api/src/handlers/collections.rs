@@ -27,6 +27,8 @@ pub struct CollectionStats {
     pub record_count: usize,
     /// Whether the collection exists
     pub exists: bool,
+    /// Collection size in kilobytes
+    pub size_kb: f64,
     /// Collection schema version
     #[serde(skip_serializing_if = "Option::is_none")]
     pub schema_version: Option<u32>,
@@ -113,11 +115,13 @@ impl CollectionHandlers {
         }
 
         let record_count = db.count_records(&collection).await?;
+        let size_kb = db.get_collection_size_kb(&collection).await?;
 
         let stats = CollectionStats {
             name: collection,
             record_count,
             exists,
+            size_kb,
             schema_version: None, // TODO: Track schema versions
             created_at: None,     // TODO: Track creation time
             updated_at: None,     // TODO: Track modification time

@@ -444,6 +444,72 @@ impl SqliteDb {
         debug!("Counted {} records in collection table {}", count, table_name_for_logging);
         Ok(count)
     }
+
+    /// Get the size of a collection in kilobytes
+    pub async fn get_collection_size_kb(&self, collection: &str) -> Result<f64, AppError> {
+        // Get collection schema to determine table name
+        let schema = self.get_collection_schema(collection).await?;
+        let table_name = self.schema_adapter.get_table_name(&schema.name);
+
+        let connection = self.connection.clone();
+
+        let size_kb = spawn_blocking(move || {
+            let conn = connection
+                .lock()
+                .map_err(|_| AppError::database("Failed to acquire database lock"))?;
+
+            // Primary approach: Use dbstat virtual table for accurate, fast sizing
+            let dbstat_sql = "SELECT SUM(pgsize) FROM dbstat WHERE name = ?1";
+            
+            match conn.prepare(dbstat_sql) {
+                Ok(mut stmt) => {
+                    match stmt.query_row([&table_name], |row| row.get::<_, i64>(0)) {
+                        Ok(size_bytes) => {
+                            let size_kb = size_bytes as f64 / 1024.0;
+                            debug!("Calculated size for collection table {} using dbstat: {:.2} KB", 
+                                table_name, size_kb);
+                            return Ok(size_kb);
+                        }
+                        Err(_) => {
+                            // dbstat found no data for this table (empty table)
+                            debug!("Table {} appears to be empty or doesn't exist", table_name);
+                            return Ok(0.0);
+                        }
+                    }
+                }
+                Err(_) => {
+                    // dbstat not available, fall back to estimation
+                    debug!("dbstat not available, falling back to estimation for table {}", table_name);
+                }
+            }
+
+            // Fallback approach: Quick estimation using record count
+            let count_sql = format!("SELECT COUNT(*) FROM {}", table_name);
+            let mut count_stmt = conn
+                .prepare(&count_sql)
+                .map_err(|e| AppError::database(format!("Failed to prepare count statement: {}", e)))?;
+
+            let record_count: i64 = count_stmt
+                .query_row([], |row| row.get(0))
+                .map_err(|e| AppError::database(format!("Failed to count records: {}", e)))?;
+
+            // Fast estimation: 1KB base + 256 bytes per record
+            let estimated_kb = if record_count == 0 {
+                0.0
+            } else {
+                1.0 + (record_count as f64 * 256.0 / 1024.0)
+            };
+
+            debug!("Estimated size for collection table {}: {:.2} KB ({} records)", 
+                table_name, estimated_kb, record_count);
+            
+            Ok::<f64, AppError>(estimated_kb)
+        })
+        .await
+        .map_err(|e| AppError::internal(format!("Task join error: {}", e)))??;
+
+        Ok(size_kb)
+    }
 }
 
 // Make sure auth and collections modules are included for their impl blocks 
