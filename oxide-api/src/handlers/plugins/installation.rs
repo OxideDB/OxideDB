@@ -82,10 +82,15 @@ pub async fn register_plugin(
                         ApiError::bad_request(format!("Invalid capabilities: {}", e))
                     })?;
                 debug!("🔌 Capabilities string: {}", caps_str);
+                
+                // Parse as full PluginCapability objects
                 user_capabilities = serde_json::from_str(&caps_str)
                     .map_err(|e| {
                         error!("Error parsing capabilities '{}': {}", caps_str, e);
-                        ApiError::bad_request(format!("Invalid capabilities format: {}", e))
+                        ApiError::bad_request(format!(
+                            "Invalid capabilities format: {}. Expected an array of capability objects with proper structure.",
+                            e
+                        ))
                     })?;
                 debug!("🔌 Capabilities: {:?}", user_capabilities);
             }
@@ -121,8 +126,8 @@ pub async fn register_plugin(
         .filter_map(|cap_str| parse_capability_string(cap_str).ok())
         .collect();
 
-    // Parse recommended trust level from manifest
-    let recommended_trust_level = parse_trust_level_string(&package.manifest.security.recommended_trust_level)
+    // Parse recommended trust level from manifest (for future use)
+    let _recommended_trust_level = parse_trust_level_string(&package.manifest.security.recommended_trust_level)
         .unwrap_or(PluginTrustLevel::Untrusted);
 
     // If user didn't specify capabilities, use declared ones (but still require explicit trust)
@@ -159,8 +164,8 @@ pub async fn register_plugin(
         info!("⚠️  Plugin '{}' granted sensitive capabilities: {:?}", plugin_name, granted_sensitive);
     }
 
-    // Install plugin using the new service method
-    let _record_id = state.plugin_config_service.install_plugin(
+    // Install plugin using directory-based approach
+    let _record_id = state.plugin_config_service.install_plugin_from_directory(
         plugin_name.clone(),
         plugin_version.clone(),
         package.manifest.plugin.description.clone(),
@@ -168,13 +173,15 @@ pub async fn register_plugin(
         user_trust_level.clone(),
         final_capabilities.clone(),
         ResourceLimits::default(),
-        package.wasm_data.clone(),
+        package.extraction_path.clone(),
+        package.manifest.plugin.wasm_file.clone(),
         Some(serde_json::json!({
             "package_hash": package.package_hash,
             "package_size": package.package_size,
             "signature_verified": signature_valid,
             "manifest": package.manifest,
-            "source": "zip_package"
+            "source": "zip_package",
+            "extraction_path": package.extraction_path.display().to_string()
         })),
     ).await
         .map_err(|e| ApiError::internal(format!("Failed to install plugin: {}", e)))?;
@@ -226,38 +233,62 @@ pub fn extract_plugin_package(package_data: &[u8]) -> Result<PluginPackage, ApiE
         format!("{:x}", hasher.finalize())
     };
 
+    // Create temporary directory for extraction
+    let temp_dir = std::env::temp_dir().join(format!("oxide_plugin_{}", package_hash));
+    std::fs::create_dir_all(&temp_dir)
+        .map_err(|e| ApiError::internal(format!("Failed to create extraction directory: {}", e)))?;
+
+    debug!("📁 Extracting to temporary directory: {}", temp_dir.display());
+
     // Open ZIP archive
     let cursor = Cursor::new(package_data);
     let mut archive = ZipArchive::new(cursor)
         .map_err(|e| ApiError::bad_request(format!("Invalid ZIP archive: {}", e)))?;
 
-    // Required files
+    // Track extracted files
     let mut manifest_data: Option<Vec<u8>> = None;
     let mut wasm_data: Option<Vec<u8>> = None;
     let mut signature_data: Option<Vec<u8>> = None;
     let mut wasm_filename: Option<String> = None;
 
-    // Extract files from ZIP
+    // Extract all files from ZIP to directory
     for i in 0..archive.len() {
         let mut file = archive.by_index(i)
             .map_err(|e| ApiError::bad_request(format!("Failed to read ZIP entry {}: {}", i, e)))?;
         
         let file_name = file.name().to_string();
-        debug!("📄 Found file in package: {}", file_name);
+        debug!("📄 Extracting file: {}", file_name);
 
+        // Skip directories and hidden files
+        if file_name.ends_with('/') || file_name.starts_with('.') {
+            debug!("📄 Skipping directory or hidden file: {}", file_name);
+            continue;
+        }
+
+        // Create directory structure if needed
+        let file_path = temp_dir.join(&file_name);
+        if let Some(parent) = file_path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| ApiError::internal(format!("Failed to create directory structure: {}", e)))?;
+        }
+
+        // Extract file
+        let mut buffer = Vec::new();
+        file.read_to_end(&mut buffer)
+            .map_err(|e| ApiError::bad_request(format!("Failed to read file '{}': {}", file_name, e)))?;
+
+        // Write file to extraction directory
+        std::fs::write(&file_path, &buffer)
+            .map_err(|e| ApiError::internal(format!("Failed to write file '{}': {}", file_name, e)))?;
+
+        // Process specific files for validation
         match file_name.as_str() {
             "plugin.toml" => {
-                debug!("📋 Reading plugin manifest");
-                let mut buffer = Vec::new();
-                file.read_to_end(&mut buffer)
-                    .map_err(|e| ApiError::bad_request(format!("Failed to read plugin.toml: {}", e)))?;
+                debug!("📋 Found plugin manifest");
                 manifest_data = Some(buffer);
             }
             name if name.ends_with(".wasm") => {
-                debug!("🔧 Reading WASM file: {}", name);
-                let mut buffer = Vec::new();
-                file.read_to_end(&mut buffer)
-                    .map_err(|e| ApiError::bad_request(format!("Failed to read WASM file: {}", e)))?;
+                debug!("🔧 Found WASM file: {}", name);
                 
                 // Basic WASM validation
                 if buffer.len() < 4 || &buffer[0..4] != b"\x00asm" {
@@ -268,14 +299,11 @@ pub fn extract_plugin_package(package_data: &[u8]) -> Result<PluginPackage, ApiE
                 wasm_filename = Some(name.to_string());
             }
             "signature" | "plugin.sig" => {
-                debug!("🔐 Reading signature file");
-                let mut buffer = Vec::new();
-                file.read_to_end(&mut buffer)
-                    .map_err(|e| ApiError::bad_request(format!("Failed to read signature: {}", e)))?;
+                debug!("🔐 Found signature file");
                 signature_data = Some(buffer);
             }
             _ => {
-                debug!("📄 Skipping unknown file: {}", file_name);
+                debug!("📄 Extracted supplemental file: {}", file_name);
             }
         }
     }
@@ -318,8 +346,8 @@ pub fn extract_plugin_package(package_data: &[u8]) -> Result<PluginPackage, ApiE
         )));
     }
 
-    info!("✅ Successfully extracted plugin package: {} v{}", 
-          manifest.plugin.name, manifest.plugin.version);
+    info!("✅ Successfully extracted plugin package: {} v{} to {}", 
+          manifest.plugin.name, manifest.plugin.version, temp_dir.display());
 
     Ok(PluginPackage {
         manifest,
@@ -327,6 +355,7 @@ pub fn extract_plugin_package(package_data: &[u8]) -> Result<PluginPackage, ApiE
         signature_data,
         package_hash,
         package_size: package_data.len() as u64,
+        extraction_path: temp_dir,
     })
 }
 

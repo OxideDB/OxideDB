@@ -33,7 +33,7 @@ use crate::{
             get_collection_permissions, update_collection_permissions, list_all_permissions,
             reset_collection_permissions, create_permissions_from_preset,
         },
-        plugins_old::{
+        plugins::{
             handle_plugin_route, get_plugin_permissions, update_plugin_permissions, list_plugin_routes,
             list_plugins, get_plugin_details, register_plugin, enable_plugin, disable_plugin,
             unregister_plugin, grant_plugin_capability, revoke_plugin_capability, update_plugin_trust_level,

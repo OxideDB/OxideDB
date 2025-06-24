@@ -6,6 +6,7 @@ import type {
   DashboardMetrics, RetentionStats, CreateLogRequest, CreateAuditRequest,
   CreateLogResponse, LoggingHealthResponse
 } from '../types/api';
+import { capabilityNameToObject } from '../types/api';
 
 // Plugin-related interfaces
 interface PluginInfo {
@@ -634,10 +635,20 @@ class ApiService {
   }
 
   async installPlugin(pluginFile: File, trustLevel: string, capabilities: string[]): Promise<void> {
+    // Convert capability names to proper capability objects
+    const capabilityObjects = capabilities.map(capName => {
+      try {
+        return capabilityNameToObject(capName);
+      } catch (error) {
+        console.error(`Failed to convert capability '${capName}':`, error);
+        throw new Error(`Invalid capability: ${capName}`);
+      }
+    });
+
     const formData = new FormData();
     formData.append('plugin_package', pluginFile);
     formData.append('trust_level', trustLevel);
-    formData.append('capabilities', JSON.stringify(capabilities));
+    formData.append('capabilities', JSON.stringify(capabilityObjects));
 
     const response = await fetch(`${this.baseUrl}/plugins`, {
       method: 'POST',

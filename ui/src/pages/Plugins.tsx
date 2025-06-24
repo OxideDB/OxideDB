@@ -373,6 +373,26 @@ const Plugins: React.FC = () => {
               </Select>
             </div>
             
+            <div>
+              <Label>Capabilities</Label>
+              <div className="border rounded-md p-3 max-h-32 overflow-y-auto">
+                {installForm.capabilities.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">No capabilities specified. Use "Analyze Package" to detect required capabilities.</p>
+                ) : (
+                  <div className="flex flex-wrap gap-1">
+                    {installForm.capabilities.map((cap, index) => (
+                      <Badge key={index} variant="outline" className="text-xs">
+                        {cap}
+                      </Badge>
+                    ))}
+                  </div>
+                )}
+              </div>
+              <p className="text-sm text-muted-foreground mt-1">
+                Capabilities will be auto-detected from the plugin manifest or can be customized after analysis.
+              </p>
+            </div>
+            
             <div className="flex gap-2">
               <Button 
                 onClick={handleAnalyzePlugin} 
@@ -878,7 +898,7 @@ const Plugins: React.FC = () => {
                         setInstallForm(prev => ({
                           ...prev,
                           trustLevel: analysisResult.recommended_trust_level!,
-                          capabilities: analysisResult.declared_capabilities
+                          capabilities: analysisResult.declared_capabilities || []
                         }));
                       }
                       setInstallDialogOpen(true);

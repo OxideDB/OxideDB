@@ -47,17 +47,31 @@ cpu_features = []
 system_libs = []
 
 [config]
-schema = { 
-    type = "object",
-    properties = {
-        enable_logging = { type = "boolean", default = true, description = "Enable detailed logging" },
-        max_items = { type = "integer", default = 1000, description = "Maximum number of items to process" },
-        allowed_collections = { 
-            type = "array", 
-            items = { type = "string" }, 
-            default = ["items", "processed_data"], 
-            description = "Collections this plugin can access" 
+schema = '''
+{
+    "type": "object",
+    "properties": {
+        "enable_logging": {
+            "type": "boolean",
+            "default": true,
+            "description": "Enable detailed logging"
+        },
+        "max_items": {
+            "type": "integer",
+            "default": 1000,
+            "description": "Maximum number of items to process"
+        },
+        "allowed_collections": {
+            "type": "array",
+            "items": { "type": "string" },
+            "default": ["items", "processed_data"],
+            "description": "Collections this plugin can access"
         }
     }
 }
-defaults = { enable_logging = true, max_items = 1000, allowed_collections = ["items", "processed_data"] }
+'''
+
+[config.defaults]
+enable_logging = true
+max_items = 1000
+allowed_collections = ["items", "processed_data"]

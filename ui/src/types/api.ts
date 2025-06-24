@@ -302,4 +302,91 @@ export interface LoggingHealthResponse {
   total_entries: number;
   storage_size_mb: number;
   error_rate_24h: number;
+}
+
+// Plugin-specific CRUD operations for capabilities (different from API CrudOperation)
+export type PluginCrudOperation = "Create" | "Read" | "Update" | "Delete";
+
+// PluginCapability types matching Rust enum
+export type PluginCapability = 
+  | "LogInfo"
+  | "LogError"
+  | "ReadEventData"
+  | "ModifyEventData"
+  | "BlockOperations"
+  | "ScheduleTasks"
+  | "HandleHttpRequests"
+  | { ReadConfig: { keys: string[] } }
+  | { AccessCollection: { collection: string; operations: PluginCrudOperation[] } }
+  | { HttpRequest: { allowed_urls: string[]; rate_limit: number } }
+  | { PersistentStorage: { max_size: number; key_prefixes: string[] } }
+  | { EmitEvents: { event_types: string[] } }
+  | { RegisterHttpRoutes: { path_patterns: string[]; methods: string[] } }
+  | { CreateRecords: { collections: string[] } }
+  | { ReadRecords: { collections: string[] } }
+  | { UpdateRecords: { collections: string[] } }
+  | { DeleteRecords: { collections: string[] } };
+
+// Utility functions to create capability objects
+export const createCapability = {
+  LogInfo: (): PluginCapability => "LogInfo",
+  LogError: (): PluginCapability => "LogError",
+  ReadEventData: (): PluginCapability => "ReadEventData",
+  ModifyEventData: (): PluginCapability => "ModifyEventData",
+  BlockOperations: (): PluginCapability => "BlockOperations",
+  ScheduleTasks: (): PluginCapability => "ScheduleTasks",
+  HandleHttpRequests: (): PluginCapability => "HandleHttpRequests",
+  ReadConfig: (keys: string[] = ["*"]): PluginCapability => ({ ReadConfig: { keys } }),
+  AccessCollection: (collection: string = "*", operations: PluginCrudOperation[] = ["Read"]): PluginCapability => 
+    ({ AccessCollection: { collection, operations } }),
+  HttpRequest: (allowed_urls: string[] = ["*"], rate_limit: number = 60): PluginCapability => 
+    ({ HttpRequest: { allowed_urls, rate_limit } }),
+  PersistentStorage: (max_size: number = 1024 * 1024, key_prefixes: string[] = ["plugin_*"]): PluginCapability => 
+    ({ PersistentStorage: { max_size, key_prefixes } }),
+  EmitEvents: (event_types: string[] = ["custom.*"]): PluginCapability => 
+    ({ EmitEvents: { event_types } }),
+  RegisterHttpRoutes: (path_patterns: string[] = ["*"], methods: string[] = ["GET", "POST"]): PluginCapability => 
+    ({ RegisterHttpRoutes: { path_patterns, methods } }),
+  CreateRecords: (collections: string[] = ["*"]): PluginCapability => 
+    ({ CreateRecords: { collections } }),
+  ReadRecords: (collections: string[] = ["*"]): PluginCapability => 
+    ({ ReadRecords: { collections } }),
+  UpdateRecords: (collections: string[] = ["*"]): PluginCapability => 
+    ({ UpdateRecords: { collections } }),
+  DeleteRecords: (collections: string[] = ["*"]): PluginCapability => 
+    ({ DeleteRecords: { collections } }),
+};
+
+// Function to convert capability names to capability objects
+export function capabilityNameToObject(capabilityName: string): PluginCapability {
+  switch (capabilityName) {
+    case "LogInfo": return createCapability.LogInfo();
+    case "LogError": return createCapability.LogError();
+    case "ReadEventData": return createCapability.ReadEventData();
+    case "ModifyEventData": return createCapability.ModifyEventData();
+    case "BlockOperations": return createCapability.BlockOperations();
+    case "ScheduleTasks": return createCapability.ScheduleTasks();
+    case "HandleHttpRequests": return createCapability.HandleHttpRequests();
+    case "ReadConfig": return createCapability.ReadConfig();
+    case "AccessCollection": return createCapability.AccessCollection();
+    case "HttpRequest": return createCapability.HttpRequest();
+    case "PersistentStorage": return createCapability.PersistentStorage();
+    case "EmitEvents": return createCapability.EmitEvents();
+    case "RegisterHttpRoutes": return createCapability.RegisterHttpRoutes();
+    case "CreateRecords": return createCapability.CreateRecords();
+    case "ReadRecords": return createCapability.ReadRecords();
+    case "UpdateRecords": return createCapability.UpdateRecords();
+    case "DeleteRecords": return createCapability.DeleteRecords();
+    default:
+      throw new Error(`Unknown capability: ${capabilityName}`);
+  }
+}
+
+// Function to extract capability name from capability object for display
+export function getCapabilityName(capability: PluginCapability): string {
+  if (typeof capability === "string") {
+    return capability;
+  } else {
+    return Object.keys(capability)[0];
+  }
 } 

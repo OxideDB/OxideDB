@@ -248,7 +248,7 @@ impl ApplicationBootstrap {
 
         // First, load plugins from database (persistent plugins)
         let plugins_dir = self.config.plugins.plugin_folder.clone();
-        let plugin_config_service = oxide_api::services::PluginConfigService::new(database.clone(), plugins_dir);
+        let plugin_config_service = oxide_api::services::PluginConfigService::new(database.clone(), plugins_dir.clone());
         let enabled_plugins = plugin_config_service.get_enabled_plugins().await?;
         
         if !enabled_plugins.is_empty() {
@@ -256,34 +256,24 @@ impl ApplicationBootstrap {
             
             for config in enabled_plugins {
                 info!("📦 Loading plugin from database: {} (v{})", config.name, config.version);
+                info!("🔍 Plugin capabilities from database: {} capabilities", config.capabilities.len());
                 
-                // Get WASM data from filesystem
-                match plugin_config_service.load_plugin_wasm(&config.name).await {
-                    Ok(wasm_data) => {
-                        // Load plugin into runtime
-                        let mut runtime_guard = plugin_manager.runtime.lock().map_err(|_| {
-                            AppError::internal("Failed to acquire plugin runtime lock")
-                        })?;
-                        
-                        if let Err(e) = runtime_guard.load_plugin_with_trust(
-                            &config.name,
-                            &wasm_data,
-                            config.trust_level.clone(),
-                            config.capabilities.clone(),
-                            config.resource_limits.clone(),
-                        ) {
-                            warn!("❌ Failed to load plugin '{}' from database: {}", config.name, e);
-                            // Update status to error
-                            let _ = plugin_config_service.update_plugin_status(&config.name, oxide_core::plugin_config::PluginStatus::Error).await;
-                        } else {
-                            info!("✅ Successfully loaded plugin from database: {}", config.name);
-                        }
-                    }
-                    Err(e) => {
-                        warn!("❌ Plugin '{}' WASM loading failed: {}, skipping", config.name, e);
-                        // Update status to error
-                        let _ = plugin_config_service.update_plugin_status(&config.name, oxide_core::plugin_config::PluginStatus::Error).await;
-                    }
+                // Get WASM file path from configuration
+                let wasm_path = if let Some(ref path) = config.wasm_path {
+                    plugins_dir.join(path)
+                } else {
+                    warn!("❌ Plugin '{}' has no WASM path in configuration, skipping", config.name);
+                    let _ = plugin_config_service.update_plugin_status(&config.name, oxide_core::plugin_config::PluginStatus::Error).await;
+                    continue;
+                };
+                
+                // Use the new load_plugin_with_config method that automatically uses database capabilities
+                if let Err(e) = plugin_manager.load_plugin_with_config(&config.name, &wasm_path, &config).await {
+                    warn!("❌ Failed to load plugin '{}' from database: {}", config.name, e);
+                    // Update status to error
+                    let _ = plugin_config_service.update_plugin_status(&config.name, oxide_core::plugin_config::PluginStatus::Error).await;
+                } else {
+                    info!("✅ Successfully loaded plugin from database with database capabilities: {}", config.name);
                 }
             }
         } else {

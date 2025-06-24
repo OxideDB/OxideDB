@@ -8,7 +8,6 @@ use oxide_core::{
     AppError, BeforeEventContext, BeforeEventType, EventBus,
     plugin_api::{EventPayload, plugin_exports, PluginRuntime},
     plugin_security::{PluginCapability, PluginTrustLevel, ResourceLimits, SecurityPolicies},
-    auth::CrudOperation,
 };
 use oxide_db::Db;
 use std::{
@@ -62,7 +61,7 @@ impl PluginManager {
                     .and_then(|s| s.to_str())
                     .unwrap_or("unknown");
                 
-                self.load_single_plugin(plugin_name, &path).await?;
+                self.load_single_plugin(plugin_name, &path, None).await?;
                 loaded_plugins.push(plugin_name.to_string());
             }
         }
@@ -220,8 +219,8 @@ impl PluginManager {
         params
     }
 
-    /// Load a single plugin from the specified path
-    async fn load_single_plugin(&self, plugin_name: &str, path: &PathBuf) -> Result<(), AppError> {
+    /// Load a single plugin from the specified path with optional configuration
+    async fn load_single_plugin(&self, plugin_name: &str, path: &PathBuf, config: Option<&oxide_core::plugin_config::PluginConfiguration>) -> Result<(), AppError> {
         info!("Loading plugin: {} from {:?}", plugin_name, path);
         
         let wasm_bytes = std::fs::read(path)
@@ -238,92 +237,55 @@ impl PluginManager {
             AppError::internal("Failed to acquire plugin runtime lock")
         })?;
 
-        // Extract metadata first to get declared capabilities
-        let declared_capabilities = self.extract_declared_capabilities(&mut runtime_guard, plugin_name, &wasm_bytes)?;
-        
-        // For development, load with all declared capabilities
-        // In production, this should use user-granted capabilities from database
-        let granted_capabilities = if declared_capabilities.is_empty() {
-            // Fallback to development-friendly settings including HTTP capabilities
-            vec![
-                PluginCapability::ReadEventData,
-                PluginCapability::ModifyEventData,
-                PluginCapability::BlockOperations,
-                PluginCapability::AccessCollection {
-                    collection: "*".to_string(),
-                    operations: vec![CrudOperation::Create, CrudOperation::Read, CrudOperation::Update, CrudOperation::Delete],
-                },
-                PluginCapability::LogInfo,
-                PluginCapability::LogError,
-                // Add HTTP capabilities for plugin routes
-                PluginCapability::RegisterHttpRoutes {
-                    path_patterns: vec!["*".to_string()],
-                    methods: vec!["GET".to_string(), "POST".to_string(), "PUT".to_string(), "DELETE".to_string()],
-                },
-                PluginCapability::HandleHttpRequests,
-                PluginCapability::CreateRecords {
-                    collections: vec!["*".to_string()],
-                },
-                PluginCapability::ReadRecords {
-                    collections: vec!["*".to_string()],
-                },
-                PluginCapability::UpdateRecords {
-                    collections: vec!["*".to_string()],
-                },
-                PluginCapability::DeleteRecords {
-                    collections: vec!["*".to_string()],
-                },
-            ]
+        // Use plugin configuration if provided, otherwise use defaults
+        let (capabilities, trust_level, resource_limits) = if let Some(plugin_config) = config {
+            info!("🔍 Using provided configuration for plugin '{}': {} capabilities", 
+                  plugin_name, plugin_config.capabilities.len());
+            (plugin_config.capabilities.clone(), plugin_config.trust_level.clone(), plugin_config.resource_limits.clone())
         } else {
-            // Convert string capability names to PluginCapability enum values
-            self.parse_capability_strings(declared_capabilities)?
+            info!("🔄 No configuration provided, using default capabilities for plugin '{}'", plugin_name);
+            (Self::get_default_capabilities(), PluginTrustLevel::FullyTrusted, ResourceLimits::default())
         };
-
-        // Load plugin with development-friendly settings including HTTP capabilities
+        
         runtime_guard.load_plugin_with_trust(
             plugin_name,
             &wasm_bytes,
-            PluginTrustLevel::FullyTrusted,
-            granted_capabilities,
-            ResourceLimits::default(),
-        ).map_err(|e| AppError::internal(format!("Failed to load plugin {}: {}", plugin_name, e)))?;
+            trust_level,
+            capabilities,
+            resource_limits,
+        ).map_err(|e| AppError::internal(format!("Failed to load plugin: {}", e)))?;
         
         info!("✅ Plugin '{}' loaded successfully", plugin_name);
-        
-        // Test plugin initialization
-        let test_payload = EventPayload {
-            event_type: "plugin_init".to_string(),
-            collection: "test".to_string(),
-            data: "{}".to_string(),
-            metadata: serde_json::json!({}),
-        };
-        
-        let _init_response = runtime_guard.call_plugin_function(
-            plugin_name,
-            plugin_exports::PLUGIN_INIT,
-            &test_payload,
-        ).map_err(|e| AppError::internal(format!("Failed to initialize plugin {}: {}", plugin_name, e)))?;
-        
-        info!("✅ Plugin '{}' initialized successfully", plugin_name);
-        
-        // Log plugin routes if any were registered (call directly on runtime_guard to avoid deadlock)
-        let all_routes = runtime_guard.get_registered_routes();
-        let plugin_routes: Vec<_> = all_routes.into_iter()
-            .filter(|route| route.plugin_name == plugin_name)
-            .collect();
-        
-        if !plugin_routes.is_empty() {
-            info!("📋 Plugin '{}' registered {} HTTP routes:", plugin_name, plugin_routes.len());
-            for route in plugin_routes {
-                info!("  🔌 {:>6} /plugin{} → {}::{}", 
-                      route.method, 
-                      route.path, 
-                      route.plugin_name, 
-                      route.handler_function);
-            }
-        }
-        
         Ok(())
+    }
+
+    /// Load a plugin with explicit configuration
+    pub async fn load_plugin_with_config(&mut self, plugin_name: &str, path: &PathBuf, config: &oxide_core::plugin_config::PluginConfiguration) -> Result<(), AppError> {
+        self.load_single_plugin(plugin_name, path, Some(config)).await
+    }
+
+    /// Get default capabilities for development/fallback scenarios
+    fn get_default_capabilities() -> Vec<PluginCapability> {
+        vec![
+            PluginCapability::LogInfo,
+            PluginCapability::LogError,
+            PluginCapability::ReadEventData,
+            PluginCapability::ModifyEventData,
+            PluginCapability::RegisterHttpRoutes {
+                path_patterns: vec!["/api/plugins/*".to_string()],
+                methods: vec!["GET".to_string(), "POST".to_string()],
+            },
+            PluginCapability::HandleHttpRequests,
+            PluginCapability::CreateRecords {
+                collections: vec!["*".to_string()],
+            },
+            PluginCapability::ReadRecords {
+                collections: vec!["*".to_string()],
+            },
+            PluginCapability::UpdateRecords {
+                collections: vec!["*".to_string()],
+            },
+        ]
     }
 
     /// Verify plugin hash for integrity checking
@@ -344,79 +306,7 @@ impl PluginManager {
         Ok(())
     }
 
-    /// Extract declared capabilities from plugin metadata
-    fn extract_declared_capabilities(
-        &self,
-        runtime_guard: &mut crate::WasmtimePluginRuntime,
-        plugin_name: &str,
-        wasm_bytes: &[u8],
-    ) -> Result<Vec<String>, AppError> {
-        // First, temporarily load the plugin to extract metadata
-        runtime_guard.load_plugin_with_trust(
-            &format!("{}_metadata_extract", plugin_name),
-            wasm_bytes,
-            PluginTrustLevel::Untrusted, // Use minimal trust for metadata extraction
-            vec![PluginCapability::LogInfo], // Minimal capabilities for metadata extraction
-            ResourceLimits::default(),
-        ).map_err(|e| AppError::internal(format!("Failed to load plugin for metadata extraction: {}", e)))?;
 
-        // Extract metadata
-        let metadata = runtime_guard.extract_plugin_metadata(&format!("{}_metadata_extract", plugin_name))
-            .map_err(|e| AppError::internal(format!("Failed to extract plugin metadata: {}", e)))?;
-
-        // Unload the temporary instance
-        let _ = runtime_guard.unload_plugin(&format!("{}_metadata_extract", plugin_name));
-
-        // Return declared capabilities
-        if let Some(metadata) = metadata {
-            Ok(metadata.required_capabilities)
-        } else {
-            Ok(Vec::new())
-        }
-    }
-
-    /// Parse capability strings into PluginCapability enum values
-    fn parse_capability_strings(&self, capability_strings: Vec<String>) -> Result<Vec<PluginCapability>, AppError> {
-        let mut capabilities = Vec::new();
-        
-        for cap_str in capability_strings {
-            let capability = match cap_str.as_str() {
-                "LogInfo" => PluginCapability::LogInfo,
-                "LogError" => PluginCapability::LogError,
-                "ReadEventData" => PluginCapability::ReadEventData,
-                "ModifyEventData" => PluginCapability::ModifyEventData,
-                "BlockOperations" => PluginCapability::BlockOperations,
-                "AccessCollection" => PluginCapability::AccessCollection {
-                    collection: "*".to_string(),
-                    operations: vec![CrudOperation::Read],
-                },
-                "RegisterHttpRoutes" => PluginCapability::RegisterHttpRoutes {
-                    path_patterns: vec!["*".to_string()],
-                    methods: vec!["GET".to_string(), "POST".to_string()],
-                },
-                "HandleHttpRequests" => PluginCapability::HandleHttpRequests,
-                "CreateRecords" => PluginCapability::CreateRecords {
-                    collections: vec!["*".to_string()],
-                },
-                "ReadRecords" => PluginCapability::ReadRecords {
-                    collections: vec!["*".to_string()],
-                },
-                "UpdateRecords" => PluginCapability::UpdateRecords {
-                    collections: vec!["*".to_string()],
-                },
-                "DeleteRecords" => PluginCapability::DeleteRecords {
-                    collections: vec!["*".to_string()],
-                },
-                _ => {
-                    warn!("Unknown capability requested by plugin: {}", cap_str);
-                    continue;
-                }
-            };
-            capabilities.push(capability);
-        }
-        
-        Ok(capabilities)
-    }
 }
 
 /// Bridge to connect WASM plugins with the EventBus system

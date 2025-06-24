@@ -16,6 +16,26 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tracing::{debug, info, warn, error};
 
+/// Recursively copy a directory and all its contents
+fn copy_dir_recursive(source: &std::path::Path, dest: &std::path::Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dest)?;
+    
+    for entry in std::fs::read_dir(source)? {
+        let entry = entry?;
+        let source_path = entry.path();
+        let file_name = entry.file_name();
+        let dest_path = dest.join(&file_name);
+        
+        if source_path.is_file() {
+            std::fs::copy(&source_path, &dest_path)?;
+        } else if source_path.is_dir() {
+            copy_dir_recursive(&source_path, &dest_path)?;
+        }
+    }
+    
+    Ok(())
+}
+
 /// Service for managing plugin configurations in the database and filesystem
 pub struct PluginConfigService {
     db: Arc<dyn Db>,
@@ -84,6 +104,115 @@ impl PluginConfigService {
         Ok(record_id)
     }
 
+    /// Install a new plugin from extracted directory
+    pub async fn install_plugin_from_directory(
+        &self,
+        name: String,
+        version: String,
+        description: String,
+        author: String,
+        trust_level: PluginTrustLevel,
+        capabilities: Vec<PluginCapability>,
+        resource_limits: ResourceLimits,
+        temp_extraction_path: std::path::PathBuf,
+        wasm_filename: String,
+        metadata: Option<serde_json::Value>,
+    ) -> Result<String, AppError> {
+        debug!("Installing plugin from directory: {} v{}", name, version);
+
+        // Check if plugin already exists
+        if self.plugin_exists(&name).await? {
+            return Err(AppError::conflict(format!("Plugin '{}' already exists", name)));
+        }
+
+        // Create permanent plugin directory
+        let plugin_dir = tokio::task::spawn_blocking({
+            let plugins_dir = self.plugins_dir.clone();
+            let name = name.clone();
+            let version = version.clone();
+            move || plugin_fs::create_plugin_directory(&plugins_dir, &name, &version)
+        })
+        .await
+        .map_err(|e| AppError::internal(format!("Failed to spawn blocking task: {}", e)))?
+        .map_err(|e| AppError::internal(format!("Failed to create plugin directory: {}", e)))?;
+
+        // Move all files from temp directory to plugin directory
+        let temp_path_clone = temp_extraction_path.clone();
+        let plugin_dir_clone = plugin_dir.clone();
+        tokio::task::spawn_blocking(move || -> Result<(), std::io::Error> {
+            for entry in std::fs::read_dir(&temp_path_clone)? {
+                let entry = entry?;
+                let source_path = entry.path();
+                let file_name = entry.file_name();
+                let dest_path = plugin_dir_clone.join(&file_name);
+                
+                if source_path.is_file() {
+                    std::fs::copy(&source_path, &dest_path)?;
+                } else if source_path.is_dir() {
+                    copy_dir_recursive(&source_path, &dest_path)?;
+                }
+            }
+            
+            // Clean up temporary directory
+            if temp_path_clone.exists() {
+                std::fs::remove_dir_all(&temp_path_clone)?;
+            }
+            
+            Ok(())
+        })
+        .await
+        .map_err(|e| AppError::internal(format!("Failed to spawn blocking task: {}", e)))?
+        .map_err(|e| AppError::internal(format!("Failed to move plugin files: {}", e)))?;
+
+        // Read WASM file for size and hash calculation
+        let wasm_path = plugin_dir.join(&wasm_filename);
+        let (wasm_size, wasm_hash) = tokio::task::spawn_blocking(move || -> Result<(u64, String), std::io::Error> {
+            let wasm_data = std::fs::read(&wasm_path)?;
+            let wasm_size = wasm_data.len() as u64;
+            
+            use sha2::{Sha256, Digest};
+            let mut hasher = Sha256::new();
+            hasher.update(&wasm_data);
+            let wasm_hash = format!("{:x}", hasher.finalize());
+            
+            Ok((wasm_size, wasm_hash))
+        })
+        .await
+        .map_err(|e| AppError::internal(format!("Failed to spawn blocking task: {}", e)))?
+        .map_err(|e| AppError::internal(format!("Failed to read WASM file: {}", e)))?;
+
+        // Create relative paths
+        let plugin_dir_name = format!("{}-{}", name, version);
+        let relative_wasm_path = format!("{}/{}", plugin_dir_name, wasm_filename);
+
+        // Create plugin configuration
+        let mut config = PluginConfiguration::new(
+            name,
+            version,
+            description,
+            author,
+            trust_level,
+            capabilities,
+            resource_limits,
+            Some(relative_wasm_path),
+            Some(wasm_size),
+            Some(wasm_hash),
+        );
+
+        // Set plugin directory
+        config.set_plugin_directory(Some(plugin_dir_name));
+
+        if let Some(metadata) = metadata {
+            config.set_metadata(metadata);
+        }
+
+        // Save to database
+        let record_id = self.save_plugin_config(&config).await?;
+
+        info!("✅ Successfully installed plugin from directory: {}", config.name);
+        Ok(record_id)
+    }
+
     /// Update an existing plugin with new WASM data
     pub async fn update_plugin_wasm(
         &self,
@@ -139,26 +268,54 @@ impl PluginConfigService {
             AppError::not_found("wasm_file", plugin_name)
         })?;
 
-        let wasm_data = tokio::task::spawn_blocking({
-            let plugins_dir = self.plugins_dir.clone();
-            let wasm_path = wasm_path.clone();
-            move || plugin_fs::load_wasm_file(&plugins_dir, &wasm_path)
-        })
-        .await
-        .map_err(|e| AppError::internal(format!("Failed to spawn blocking task: {}", e)))?
-        .map_err(|e| AppError::internal(format!("Failed to load WASM file: {}", e)))?;
+        let wasm_data = if let Some(plugin_directory) = &config.plugin_directory {
+            // Load from plugin directory structure
+            debug!("Loading WASM from plugin directory: {}", plugin_directory);
+            tokio::task::spawn_blocking({
+                let plugins_dir = self.plugins_dir.clone();
+                let plugin_directory = plugin_directory.clone();
+                let wasm_filename = std::path::Path::new(&wasm_path)
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or(&wasm_path)
+                    .to_string();
+                
+                move || {
+                    let plugin_dir = plugins_dir.join(&plugin_directory);
+                    plugin_fs::load_wasm_from_plugin_dir(&plugin_dir, &wasm_filename)
+                }
+            })
+            .await
+            .map_err(|e| AppError::internal(format!("Failed to spawn blocking task: {}", e)))?
+            .map_err(|e| AppError::internal(format!("Failed to load WASM from plugin directory: {}", e)))?
+        } else {
+            // Load from legacy flat file structure
+            debug!("Loading WASM from legacy path: {}", wasm_path);
+            tokio::task::spawn_blocking({
+                let plugins_dir = self.plugins_dir.clone();
+                let wasm_path = wasm_path.clone();
+                move || plugin_fs::load_wasm_file(&plugins_dir, &wasm_path)
+            })
+            .await
+            .map_err(|e| AppError::internal(format!("Failed to spawn blocking task: {}", e)))?
+            .map_err(|e| AppError::internal(format!("Failed to load WASM file: {}", e)))?
+        };
 
         // Verify file integrity if hash is available
         if let Some(expected_hash) = &config.wasm_hash {
             let is_valid = tokio::task::spawn_blocking({
-                let plugins_dir = self.plugins_dir.clone();
-                let wasm_path = wasm_path.clone();
+                let wasm_data_copy = wasm_data.clone();
                 let expected_hash = expected_hash.clone();
-                move || plugin_fs::verify_wasm_file(&plugins_dir, &wasm_path, &expected_hash)
+                move || {
+                    use sha2::{Sha256, Digest};
+                    let mut hasher = Sha256::new();
+                    hasher.update(&wasm_data_copy);
+                    let actual_hash = format!("{:x}", hasher.finalize());
+                    actual_hash == expected_hash
+                }
             })
             .await
-            .map_err(|e| AppError::internal(format!("Failed to spawn blocking task: {}", e)))?
-            .map_err(|e| AppError::internal(format!("Failed to verify WASM file: {}", e)))?;
+            .map_err(|e| AppError::internal(format!("Failed to spawn blocking task: {}", e)))?;
 
             if !is_valid {
                 error!("WASM file integrity check failed for plugin: {}", plugin_name);
@@ -174,11 +331,30 @@ impl PluginConfigService {
     pub async fn uninstall_plugin(&self, plugin_name: &str) -> Result<(), AppError> {
         debug!("Uninstalling plugin: {}", plugin_name);
 
-        // Get plugin configuration to find WASM file
+        // Get plugin configuration to find files
         let config = self.get_plugin_config(plugin_name).await?;
 
-        // Remove WASM file from filesystem
-        if let Some(wasm_path) = &config.wasm_path {
+        // Remove files from filesystem
+        if let Some(plugin_directory) = &config.plugin_directory {
+            // Remove entire plugin directory
+            debug!("Removing plugin directory: {}", plugin_directory);
+            if let Err(e) = tokio::task::spawn_blocking({
+                let plugins_dir = self.plugins_dir.clone();
+                let plugin_directory = plugin_directory.clone();
+                move || {
+                    let plugin_dir = plugins_dir.join(&plugin_directory);
+                    if plugin_dir.exists() {
+                        std::fs::remove_dir_all(plugin_dir)
+                    } else {
+                        Ok(())
+                    }
+                }
+            }).await {
+                warn!("Failed to delete plugin directory during uninstall: {}", e);
+            }
+        } else if let Some(wasm_path) = &config.wasm_path {
+            // Legacy: Remove individual WASM file
+            debug!("Removing legacy WASM file: {}", wasm_path);
             if let Err(e) = tokio::task::spawn_blocking({
                 let plugins_dir = self.plugins_dir.clone();
                 let wasm_path = wasm_path.clone();

@@ -141,12 +141,52 @@ fn parse_capability_from_request(capability_name: &str, config: serde_json::Valu
 /// Parse a capability string into a PluginCapability enum
 pub fn parse_capability_string(cap_str: &str) -> Result<PluginCapability, ApiError> {
     match cap_str {
+        // Simple unit variants
         "LogInfo" => Ok(PluginCapability::LogInfo),
         "LogError" => Ok(PluginCapability::LogError),
         "ReadEventData" => Ok(PluginCapability::ReadEventData),
         "ModifyEventData" => Ok(PluginCapability::ModifyEventData),
         "BlockOperations" => Ok(PluginCapability::BlockOperations),
         "HandleHttpRequests" => Ok(PluginCapability::HandleHttpRequests),
+        "ScheduleTasks" => Ok(PluginCapability::ScheduleTasks),
+        
+        // Struct variants with default values
+        "AccessCollection" => Ok(PluginCapability::AccessCollection {
+            collection: "*".to_string(),
+            operations: vec![CrudOperation::Read],
+        }),
+        "RegisterHttpRoutes" => Ok(PluginCapability::RegisterHttpRoutes {
+            path_patterns: vec!["*".to_string()],
+            methods: vec!["GET".to_string(), "POST".to_string()],
+        }),
+        "CreateRecords" => Ok(PluginCapability::CreateRecords {
+            collections: vec!["*".to_string()],
+        }),
+        "ReadRecords" => Ok(PluginCapability::ReadRecords {
+            collections: vec!["*".to_string()],
+        }),
+        "UpdateRecords" => Ok(PluginCapability::UpdateRecords {
+            collections: vec!["*".to_string()],
+        }),
+        "DeleteRecords" => Ok(PluginCapability::DeleteRecords {
+            collections: vec!["*".to_string()],
+        }),
+        "ReadConfig" => Ok(PluginCapability::ReadConfig {
+            keys: vec!["*".to_string()],
+        }),
+        "HttpRequest" => Ok(PluginCapability::HttpRequest {
+            allowed_urls: vec!["*".to_string()],
+            rate_limit: 60,
+        }),
+        "PersistentStorage" => Ok(PluginCapability::PersistentStorage {
+            max_size: 1024 * 1024, // 1MB default
+            key_prefixes: vec!["plugin_*".to_string()],
+        }),
+        "EmitEvents" => Ok(PluginCapability::EmitEvents {
+            event_types: vec!["custom.*".to_string()],
+        }),
+        
+        // Handle detailed capability strings with parameters
         s if s.starts_with("AccessCollection(") => {
             // Parse AccessCollection capability
             // Format: AccessCollection(collection="users", operations=["Read", "Create"])

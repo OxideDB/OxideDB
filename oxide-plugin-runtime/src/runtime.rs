@@ -5,7 +5,7 @@
 
 use crate::host_functions::{
     define_database_functions, define_event_functions, 
-    define_http_functions, define_logging_functions, define_metadata_functions
+    define_http_functions, define_logging_functions
 };
 use crate::host_state::{HostState, ExecutionContext};
 use oxide_core::{
@@ -98,23 +98,7 @@ impl WasmtimePluginRuntime {
         // Define database-related host functions
         define_database_functions(&mut self.linker, self.database.clone())?;
         
-        // Define metadata-related host functions
-        define_metadata_functions(&mut self.linker)
-            .map_err(|e| PluginError::InitializationFailed(format!("Failed to define metadata functions: {}", e)))?;
-        
         Ok(())
-    }
-
-    /// Extract plugin metadata by calling the plugin's initialization
-    /// NOTE: This function is deprecated - metadata is now sourced from TOML files only
-    pub fn extract_plugin_metadata(&mut self, _plugin_name: &str) -> PluginResult<Option<oxide_plugin_sdk::PluginMetadata>> {
-        debug!("Plugin metadata extraction disabled - using TOML-only metadata approach");
-        
-        // NOTE: Metadata extraction removed - using TOML-only metadata approach
-        // Plugin metadata is now sourced exclusively from plugin.toml files
-        // during installation and stored in PluginConfiguration in the database
-        
-        Ok(None)
     }
 
     /// Get the current host state (for testing)

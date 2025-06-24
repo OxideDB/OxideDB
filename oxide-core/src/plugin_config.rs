@@ -38,6 +38,8 @@ pub struct PluginConfiguration {
     pub metadata: serde_json::Value,
     /// Path to the WASM file on the filesystem (relative to plugins directory)
     pub wasm_path: Option<String>,
+    /// Path to the plugin directory (relative to plugins base directory)
+    pub plugin_directory: Option<String>,
     /// File size of the WASM binary in bytes
     pub wasm_size: Option<u64>,
     /// SHA256 hash of the WASM file for integrity verification
@@ -96,6 +98,7 @@ impl PluginConfiguration {
             resource_limits,
             metadata: serde_json::Value::Object(serde_json::Map::new()),
             wasm_path,
+            plugin_directory: None,
             wasm_size,
             wasm_hash,
             enabled: true,
@@ -169,6 +172,12 @@ impl PluginConfiguration {
         self.wasm_path = wasm_path;
         self.wasm_size = wasm_size;
         self.wasm_hash = wasm_hash;
+        self.update();
+    }
+
+    /// Set plugin directory path
+    pub fn set_plugin_directory(&mut self, plugin_directory: Option<String>) {
+        self.plugin_directory = plugin_directory;
         self.update();
     }
 
@@ -271,6 +280,15 @@ pub fn create_plugins_collection_schema() -> CollectionSchema {
 
     // WASM file path (relative to plugins directory)
     fields.insert("wasm_path".to_string(), FieldDefinition {
+        field_type: FieldType::Text,
+        required: false,
+        unique: false,
+        default: None,
+        validation: None,
+    });
+
+    // Plugin directory path (relative to plugins base directory)
+    fields.insert("plugin_directory".to_string(), FieldDefinition {
         field_type: FieldType::Text,
         required: false,
         unique: false,
@@ -450,6 +468,7 @@ pub mod filesystem {
     use super::*;
     use std::fs;
     use std::io::{self, Write};
+    use std::path::Path;
     use sha2::{Sha256, Digest};
 
     /// Save WASM data to filesystem and return the path, size, and hash
@@ -531,6 +550,76 @@ pub mod filesystem {
         }
         
         Ok(files)
+    }
+
+    /// Create a plugin directory for a specific plugin version
+    pub fn create_plugin_directory(
+        plugins_dir: &PathBuf,
+        plugin_name: &str,
+        version: &str,
+    ) -> io::Result<PathBuf> {
+        // Create base plugins directory if it doesn't exist
+        fs::create_dir_all(plugins_dir)?;
+
+        // Create plugin-specific directory: {plugin_name}-{version}
+        let plugin_dir_name = format!("{}-{}", plugin_name, version);
+        let plugin_dir = plugins_dir.join(&plugin_dir_name);
+        
+        // Create the plugin directory
+        fs::create_dir_all(&plugin_dir)?;
+        
+        Ok(plugin_dir)
+    }
+
+    /// Remove a plugin directory and all its contents
+    pub fn remove_plugin_directory(
+        plugins_dir: &PathBuf,
+        plugin_name: &str,
+        version: &str,
+    ) -> io::Result<()> {
+        let plugin_dir_name = format!("{}-{}", plugin_name, version);
+        let plugin_dir = plugins_dir.join(&plugin_dir_name);
+        
+        if plugin_dir.exists() {
+            fs::remove_dir_all(plugin_dir)?;
+        }
+        
+        Ok(())
+    }
+
+    /// Get the path to a plugin directory
+    pub fn get_plugin_directory(
+        plugins_dir: &PathBuf,
+        plugin_name: &str,
+        version: &str,
+    ) -> PathBuf {
+        let plugin_dir_name = format!("{}-{}", plugin_name, version);
+        plugins_dir.join(&plugin_dir_name)
+    }
+
+    /// Load WASM data from a plugin directory
+    pub fn load_wasm_from_plugin_dir(
+        plugin_dir: &Path,
+        wasm_filename: &str,
+    ) -> io::Result<Vec<u8>> {
+        let wasm_path = plugin_dir.join(wasm_filename);
+        fs::read(wasm_path)
+    }
+
+    /// Load manifest (plugin.toml) from a plugin directory
+    pub fn load_manifest_from_plugin_dir(plugin_dir: &Path) -> io::Result<String> {
+        let manifest_path = plugin_dir.join("plugin.toml");
+        fs::read_to_string(manifest_path)
+    }
+
+    /// Check if a plugin directory exists
+    pub fn plugin_directory_exists(
+        plugins_dir: &PathBuf,
+        plugin_name: &str,
+        version: &str,
+    ) -> bool {
+        let plugin_dir = get_plugin_directory(plugins_dir, plugin_name, version);
+        plugin_dir.exists() && plugin_dir.is_dir()
     }
 }
 

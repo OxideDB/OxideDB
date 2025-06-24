@@ -123,6 +123,8 @@ pub struct PluginPackage {
     pub package_hash: String,
     /// Size of the original package
     pub package_size: u64,
+    /// Path where the plugin package was extracted
+    pub extraction_path: std::path::PathBuf,
 }
 
 /// Information about a plugin route including permissions
