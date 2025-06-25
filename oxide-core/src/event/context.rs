@@ -205,6 +205,92 @@ impl BeforeEventContext {
             .as_millis() as u64;
         now.saturating_sub(self.timestamp)
     }
+
+    /// Create a new VFS file write context
+    pub fn new_vfs_write(namespace: String, path: String, content: Vec<u8>, mime_type: Option<String>) -> Self {
+        let file_data = serde_json::json!({
+            "path": path,
+            "size": content.len(),
+            "mime_type": mime_type.unwrap_or_else(|| "application/octet-stream".to_string()),
+            "content_size": content.len()
+        });
+
+        Self {
+            event_id: Uuid::new_v4().to_string(),
+            timestamp: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64,
+            priority: EventPriority::Normal,
+            collection: format!("vfs:{}", namespace),
+            data: file_data,
+            metadata: serde_json::json!({
+                "namespace": namespace,
+                "operation": "write"
+            }),
+            record_id: None,
+            old_data: None,
+            request_context: RequestContext::anonymous(),
+            tags: HashMap::new(),
+            should_persist: false,
+        }
+    }
+
+    /// Create a new VFS file read context
+    pub fn new_vfs_read(namespace: String, file_id: String, path: String) -> Self {
+        let file_data = serde_json::json!({
+            "file_id": file_id,
+            "path": path
+        });
+
+        Self {
+            event_id: Uuid::new_v4().to_string(),
+            timestamp: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64,
+            priority: EventPriority::Normal,
+            collection: format!("vfs:{}", namespace),
+            data: file_data,
+            metadata: serde_json::json!({
+                "namespace": namespace,
+                "operation": "read"
+            }),
+            record_id: Some(file_id),
+            old_data: None,
+            request_context: RequestContext::anonymous(),
+            tags: HashMap::new(),
+            should_persist: false,
+        }
+    }
+
+    /// Create a new VFS file delete context
+    pub fn new_vfs_delete(namespace: String, file_id: String, path: String) -> Self {
+        let file_data = serde_json::json!({
+            "file_id": file_id,
+            "path": path
+        });
+
+        Self {
+            event_id: Uuid::new_v4().to_string(),
+            timestamp: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64,
+            priority: EventPriority::Normal,
+            collection: format!("vfs:{}", namespace),
+            data: file_data,
+            metadata: serde_json::json!({
+                "namespace": namespace,
+                "operation": "delete"
+            }),
+            record_id: Some(file_id),
+            old_data: None,
+            request_context: RequestContext::anonymous(),
+            tags: HashMap::new(),
+            should_persist: false,
+        }
+    }
 }
 
 /// After event context for read-only event notifications
@@ -332,6 +418,35 @@ pub enum AfterEventContext {
         response_time_ms: f64,
         request_context: RequestContext,
     },
+    FileWritten {
+        event_id: String,
+        timestamp: u64,
+        namespace: String,
+        file_id: String,
+        path: String,
+        size: u64,
+        mime_type: String,
+        content_hash: String,
+        request_context: RequestContext,
+    },
+    FileRead {
+        event_id: String,
+        timestamp: u64,
+        namespace: String,
+        file_id: String,
+        path: String,
+        size: u64,
+        include_content: bool,
+        request_context: RequestContext,
+    },
+    FileDeleted {
+        event_id: String,
+        timestamp: u64,
+        namespace: String,
+        file_id: String,
+        path: String,
+        request_context: RequestContext,
+    },
     ErrorOccurred {
         event_id: String,
         timestamp: u64,
@@ -363,6 +478,9 @@ impl AfterEventContext {
             AfterEventContext::PluginUnloaded { event_id, .. } => event_id,
             AfterEventContext::PluginError { event_id, .. } => event_id,
             AfterEventContext::ApiRequestProcessed { event_id, .. } => event_id,
+            AfterEventContext::FileWritten { event_id, .. } => event_id,
+            AfterEventContext::FileRead { event_id, .. } => event_id,
+            AfterEventContext::FileDeleted { event_id, .. } => event_id,
             AfterEventContext::ErrorOccurred { event_id, .. } => event_id,
         }
     }
@@ -387,6 +505,9 @@ impl AfterEventContext {
             AfterEventContext::PluginUnloaded { timestamp, .. } => *timestamp,
             AfterEventContext::PluginError { timestamp, .. } => *timestamp,
             AfterEventContext::ApiRequestProcessed { timestamp, .. } => *timestamp,
+            AfterEventContext::FileWritten { timestamp, .. } => *timestamp,
+            AfterEventContext::FileRead { timestamp, .. } => *timestamp,
+            AfterEventContext::FileDeleted { timestamp, .. } => *timestamp,
             AfterEventContext::ErrorOccurred { timestamp, .. } => *timestamp,
         }
     }
@@ -478,6 +599,76 @@ impl AfterEventContext {
             collection,
             old_schema,
             new_schema,
+            request_context,
+        }
+    }
+
+    /// Create a new FileWritten event
+    pub fn file_written(
+        namespace: String,
+        file_id: String,
+        path: String,
+        size: u64,
+        mime_type: String,
+        content_hash: String,
+        request_context: RequestContext,
+    ) -> Self {
+        AfterEventContext::FileWritten {
+            event_id: Uuid::new_v4().to_string(),
+            timestamp: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64,
+            namespace,
+            file_id,
+            path,
+            size,
+            mime_type,
+            content_hash,
+            request_context,
+        }
+    }
+
+    /// Create a new FileRead event
+    pub fn file_read(
+        namespace: String,
+        file_id: String,
+        path: String,
+        size: u64,
+        include_content: bool,
+        request_context: RequestContext,
+    ) -> Self {
+        AfterEventContext::FileRead {
+            event_id: Uuid::new_v4().to_string(),
+            timestamp: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64,
+            namespace,
+            file_id,
+            path,
+            size,
+            include_content,
+            request_context,
+        }
+    }
+
+    /// Create a new FileDeleted event
+    pub fn file_deleted(
+        namespace: String,
+        file_id: String,
+        path: String,
+        request_context: RequestContext,
+    ) -> Self {
+        AfterEventContext::FileDeleted {
+            event_id: Uuid::new_v4().to_string(),
+            timestamp: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64,
+            namespace,
+            file_id,
+            path,
             request_context,
         }
     }

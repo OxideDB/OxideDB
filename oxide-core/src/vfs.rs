@@ -49,6 +49,9 @@ pub enum VfsError {
 
     #[error("Compression error: {message}")]
     CompressionError { message: String },
+
+    #[error("Event system error: {message}")]
+    EventError { message: String },
 }
 
 impl From<VfsError> for AppError {

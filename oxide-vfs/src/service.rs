@@ -1,196 +1,754 @@
 //! VFS Service Implementation
 //!
 //! This module provides the main VFS service that implements the VirtualFileSystem trait.
+//! It follows the event-driven architecture principle by dispatching Before/After events
+//! for all operations through the central EventBus.
 
 use oxide_core::{
-    VirtualFileSystem, VfsResult, VfsNamespaceConfig, VfsNamespace,
-    FileWriteRequest, FileReadRequest, FileReadResponse, FileListRequest, FileListResponse,
-    FileIdentifier, VfsUsageStats, FileMetadata
+    VirtualFileSystem, VfsResult, VfsError, VfsNamespace, VfsNamespaceConfig,
+    FileMetadata, FileWriteRequest, FileReadRequest, FileReadResponse,
+    FileListRequest, FileListResponse, FileIdentifier, VfsUsageStats,
+    EventBus, BeforeEventType, AfterEventType, BeforeEventContext, AfterEventContext,
 };
-use crate::{storage::FileSystemStorage, backup, utils::*};
+use oxide_core::event::RequestContext;
+use crate::storage::FileSystemStorage;
+use crate::utils::{generate_file_id, detect_mime_type, validate_path};
+use crate::backup;
 use std::path::PathBuf;
-use std::sync::Arc;
-use tokio::sync::RwLock;
 use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
+use tokio::sync::RwLock;
+use tracing::{instrument, error, debug, info, warn};
 
-/// Main VFS service implementation
+
+
+/// VFS performance and operational metrics
+#[derive(Debug, Clone, Default)]
+pub struct VfsMetrics {
+    pub total_reads: u64,
+    pub total_writes: u64,
+    pub total_deletes: u64,
+    pub bytes_written: u64,
+    pub bytes_read: u64,
+    pub cache_hits: u64,
+    pub cache_misses: u64,
+    pub deduplication_saves: u64,
+}
+
+/// Main VFS service implementing the VirtualFileSystem trait
 pub struct VfsService {
     storage: Arc<FileSystemStorage>,
     namespaces: Arc<RwLock<HashMap<VfsNamespace, VfsNamespaceConfig>>>,
+    event_bus: Option<Arc<dyn EventBus>>,
+    /// Performance metrics cache
+    metrics: Arc<RwLock<VfsMetrics>>,
 }
 
 impl VfsService {
-    /// Create a new VFS service
-    pub fn new(base_path: PathBuf) -> Self {
+    /// Create a new VFS service instance
+    pub fn new(base_path: PathBuf, event_bus: Option<Arc<dyn EventBus>>) -> Self {
         Self {
             storage: Arc::new(FileSystemStorage::new(base_path)),
             namespaces: Arc::new(RwLock::new(HashMap::new())),
+            event_bus,
+            metrics: Arc::new(RwLock::new(VfsMetrics::default())),
         }
+    }
+
+    /// Initialize the VFS service
+    #[instrument(skip(self))]
+    pub async fn initialize(&self) -> VfsResult<()> {
+        // Initialize storage
+        self.storage.initialize().await?;
+        
+        // Load existing namespace configurations
+        self.load_namespaces().await?;
+        
+        info!("VFS service initialized successfully");
+        Ok(())
+    }
+
+    /// Get current VFS metrics
+    pub async fn get_metrics(&self) -> VfsMetrics {
+        let metrics = self.metrics.read().await;
+        metrics.clone()
+    }
+
+    /// Load existing namespace configurations from storage
+    async fn load_namespaces(&self) -> VfsResult<()> {
+        // Scan storage for existing namespace configurations
+        let base_path = self.storage.base_path().clone();
+        let namespace_dir = base_path.join("namespaces");
+        
+        if !namespace_dir.exists() {
+            debug!("No existing namespaces directory found");
+            return Ok(());
+        }
+
+        let mut entries = tokio::fs::read_dir(&namespace_dir).await.map_err(|e| VfsError::IoError {
+            message: format!("Failed to read namespaces directory: {}", e),
+        })?;
+
+        let mut loaded_count = 0;
+        let mut namespaces = self.namespaces.write().await;
+
+        while let Ok(Some(entry)) = entries.next_entry().await {
+            if entry.file_type().await.map(|ft| ft.is_dir()).unwrap_or(false) {
+                let namespace = entry.file_name().to_string_lossy().to_string();
+                let config_path = entry.path().join("config.json");
+                
+                if config_path.exists() {
+                    match tokio::fs::read(&config_path).await {
+                        Ok(config_data) => {
+                            match serde_json::from_slice::<VfsNamespaceConfig>(&config_data) {
+                                Ok(config) => {
+                                    namespaces.insert(namespace.clone(), config);
+                                    loaded_count += 1;
+                                    debug!("Loaded namespace configuration: {}", namespace);
+                                }
+                                Err(e) => {
+                                    warn!("Failed to deserialize config for namespace {}: {}", namespace, e);
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            warn!("Failed to read config for namespace {}: {}", namespace, e);
+                        }
+                    }
+                }
+            }
+        }
+
+        info!("Loaded {} existing namespace configurations", loaded_count);
+        Ok(())
+    }
+
+
+
+    /// Update performance metrics
+    async fn update_metrics<F>(&self, update_fn: F)
+    where
+        F: FnOnce(&mut VfsMetrics),
+    {
+        let mut metrics = self.metrics.write().await;
+        update_fn(&mut *metrics);
+    }
+
+    /// Validate path for security
+    fn validate_file_path(&self, path: &str) -> VfsResult<()> {
+        if !validate_path(path) {
+            return Err(VfsError::InvalidPath {
+                path: path.to_string(),
+            });
+        }
+        Ok(())
+    }
+
+    /// Check namespace quota before writing
+    async fn check_quota(&self, namespace: &VfsNamespace, additional_bytes: u64) -> VfsResult<()> {
+        let namespaces = self.namespaces.read().await;
+        if let Some(config) = namespaces.get(namespace) {
+            if let Some(quota) = config.quota_bytes {
+                let stats = self.get_usage_stats(namespace).await?;
+                if stats.storage_used + additional_bytes > quota {
+                    return Err(VfsError::QuotaExceeded {
+                        namespace: namespace.clone(),
+                    });
+                }
+            }
+        }
+        Ok(())
     }
 }
 
 #[async_trait::async_trait]
 impl VirtualFileSystem for VfsService {
+    #[instrument(skip(self))]
     async fn create_namespace(&self, config: VfsNamespaceConfig) -> VfsResult<()> {
-        let mut namespaces = self.namespaces.write().await;
-        namespaces.insert(config.namespace.clone(), config);
+        // Log namespace creation (namespace events are not yet in core EventBus)
+        debug!("VFS before namespace create: namespace={}, quota={:?}", config.namespace, config.quota_bytes);
+
+        // Validate namespace name
+        if config.namespace.is_empty() || !validate_path(&config.namespace) {
+            return Err(VfsError::InvalidPath {
+                path: config.namespace,
+            });
+        }
+
+        // Check if namespace already exists
+        {
+            let namespaces = self.namespaces.read().await;
+            if namespaces.contains_key(&config.namespace) {
+                return Err(VfsError::FileAlreadyExists {
+                    path: config.namespace,
+                });
+            }
+        }
+
+        // Store namespace configuration
+        self.storage.store_namespace_config(&config).await?;
+
+        // Add to in-memory cache
+        {
+            let mut namespaces = self.namespaces.write().await;
+            namespaces.insert(config.namespace.clone(), config.clone());
+        }
+
+        // Log successful namespace creation
+        info!("VFS after namespace create: namespace={}", config.namespace);
+
+        info!("Created VFS namespace: {}", config.namespace);
         Ok(())
     }
 
+    #[instrument(skip(self))]
     async fn delete_namespace(&self, namespace: &VfsNamespace) -> VfsResult<()> {
-        let mut namespaces = self.namespaces.write().await;
-        namespaces.remove(namespace);
+        // Log namespace deletion (namespace events are not yet in core EventBus)
+        debug!("VFS before namespace delete: namespace={}", namespace);
+
+        // Check if namespace exists
+        {
+            let namespaces = self.namespaces.read().await;
+            if !namespaces.contains_key(namespace) {
+                return Err(VfsError::AccessDenied {
+                    path: namespace.clone(),
+                });
+            }
+        }
+
+        // Remove from storage
+        self.storage.remove_namespace(namespace).await?;
+
+        // Remove from in-memory cache
+        {
+            let mut namespaces = self.namespaces.write().await;
+            namespaces.remove(namespace);
+        }
+
+        // Log successful namespace deletion
+        info!("VFS after namespace delete: namespace={}", namespace);
+
+        info!("Deleted VFS namespace: {}", namespace);
         Ok(())
     }
 
+    #[instrument(skip(self, request), fields(path = %request.path, size = request.content.len()))]
     async fn write_file(
         &self,
         namespace: &VfsNamespace,
         request: FileWriteRequest,
     ) -> VfsResult<FileMetadata> {
-        // Validate namespace exists
-        let namespaces = self.namespaces.read().await;
-        let _config = namespaces.get(namespace).ok_or_else(|| {
-            oxide_core::vfs::VfsError::AccessDenied {
-                path: namespace.clone(),
-            }
-        })?;
-
-        // TODO: Implement actual file writing
-        // For now, return a placeholder metadata
-        let file_id = generate_file_id();
-        let content_hash = calculate_content_hash(&request.content);
+        // Validate inputs
+        self.validate_file_path(&request.path)?;
         
-        Ok(FileMetadata {
-            id: file_id,
+        // Check quota before writing
+        self.check_quota(namespace, request.content.len() as u64).await?;
+
+        // Emit before event with real content
+        let mut before_context = BeforeEventContext::new_vfs_write(
+            namespace.clone(),
+            request.path.clone(),
+            request.content.clone(),
+            request.mime_type.clone(),
+        );
+        
+        if let Some(event_bus) = &self.event_bus {
+            match event_bus.dispatch_before(BeforeEventType::FileWrite, &mut before_context).await {
+                Ok(results) => {
+                    // Check if any handler failed critically
+                    for result in results {
+                        if !result.success && !result.skipped {
+                            error!("VFS before file write handler failed: {}", 
+                                result.error.unwrap_or_else(|| "Unknown error".to_string()));
+                            return Err(VfsError::AccessDenied {
+                                path: "Event handler rejected write operation".to_string(),
+                            });
+                        }
+                    }
+                    debug!("VFS before file write event dispatched successfully");
+                }
+                Err(e) => {
+                    error!("Failed to dispatch VFS before file write event: {}", e);
+                    return Err(VfsError::AccessDenied {
+                        path: format!("Event dispatch failed: {}", e),
+                    });
+                }
+            }
+        }
+
+        // Prepare metadata
+        let file_id = generate_file_id();
+        let mime_type = request.mime_type.unwrap_or_else(|| detect_mime_type(&request.path));
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        let metadata = FileMetadata {
+            id: file_id.clone(),
             name: std::path::Path::new(&request.path)
                 .file_name()
                 .unwrap_or_default()
                 .to_string_lossy()
                 .to_string(),
-            path: request.path,
-            mime_type: request.mime_type.unwrap_or_else(|| "application/octet-stream".to_string()),
+            path: request.path.clone(),
+            mime_type: mime_type.clone(),
             size: request.content.len() as u64,
-            content_hash,
-            created_at: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs(),
-            modified_at: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs(),
+            content_hash: String::new(), // Will be set by storage layer
+            created_at: now,
+            modified_at: now,
             custom_metadata: request.custom_metadata.unwrap_or_default(),
-            compressed: false,
+            compressed: false, // Will be set by storage layer
             compression_type: None,
             tags: request.tags.unwrap_or_default(),
-        })
+        };
+
+        // Check if file exists and handle overwrite logic
+        if !request.overwrite {
+            if let Ok(_existing) = self.storage.get_file_metadata(namespace, &FileIdentifier::Path(request.path.clone())).await {
+                return Err(VfsError::FileAlreadyExists {
+                    path: request.path,
+                });
+            }
+        }
+
+        // Store file in storage layer
+        let stored_metadata = self.storage.store_file(namespace, &request.content, metadata).await?;
+
+        // Update metrics
+        self.update_metrics(|metrics| {
+            metrics.total_writes += 1;
+            metrics.bytes_written += request.content.len() as u64;
+        }).await;
+
+        // Emit after event with real metadata
+        let after_context = AfterEventContext::file_written(
+            namespace.clone(),
+            stored_metadata.id.clone(),
+            stored_metadata.path.clone(),
+            stored_metadata.size,
+            stored_metadata.mime_type.clone(),
+            stored_metadata.content_hash.clone(),
+            RequestContext::anonymous(),
+        );
+        
+        if let Some(event_bus) = &self.event_bus {
+            if let Err(e) = event_bus.dispatch_after(AfterEventType::FileWritten, &after_context).await {
+                warn!("Failed to dispatch VFS after file write event (non-critical): {}", e);
+            }
+        }
+
+        debug!("Successfully wrote file: {} ({})", stored_metadata.id, stored_metadata.path);
+        Ok(stored_metadata)
     }
 
+    #[instrument(skip(self), fields(identifier = ?request.identifier))]
     async fn read_file(
         &self,
         namespace: &VfsNamespace,
         request: FileReadRequest,
     ) -> VfsResult<FileReadResponse> {
-        // Validate namespace exists
-        let namespaces = self.namespaces.read().await;
-        let _config = namespaces.get(namespace).ok_or_else(|| {
-            oxide_core::vfs::VfsError::AccessDenied {
-                path: namespace.clone(),
+        // Emit before event
+        // Create proper context for read event
+        let (file_id, path) = match &request.identifier {
+            FileIdentifier::Path(p) => ("unknown".to_string(), p.clone()),
+            FileIdentifier::Id(id) => (id.clone(), "unknown".to_string()),
+        };
+        let mut before_context = BeforeEventContext::new_vfs_read(namespace.clone(), file_id, path);
+        
+        if let Some(event_bus) = &self.event_bus {
+            match event_bus.dispatch_before(BeforeEventType::FileRead, &mut before_context).await {
+                Ok(results) => {
+                    // Check if any handler failed critically
+                    for result in results {
+                        if !result.success && !result.skipped {
+                            error!("VFS before file read handler failed: {}", 
+                                result.error.unwrap_or_else(|| "Unknown error".to_string()));
+                            return Err(VfsError::AccessDenied {
+                                path: "Event handler rejected read operation".to_string(),
+                            });
+                        }
+                    }
+                    debug!("VFS before file read event dispatched successfully");
+                }
+                Err(e) => {
+                    error!("Failed to dispatch VFS before file read event: {}", e);
+                    return Err(VfsError::AccessDenied {
+                        path: format!("Event dispatch failed: {}", e),
+                    });
+                }
             }
-        })?;
+        }
 
-        // TODO: Implement actual file reading
-        // For now, return placeholder response
-        Err(oxide_core::vfs::VfsError::FileNotFound {
-            path: match request.identifier {
-                FileIdentifier::Path(p) => p,
-                FileIdentifier::Id(id) => id,
-            },
-        })
+        let response = if request.include_content {
+            // Read file with content
+            let (metadata, content) = self.storage.retrieve_file(namespace, &request.identifier).await?;
+            
+            // Update metrics
+            self.update_metrics(|metrics| {
+                metrics.total_reads += 1;
+                metrics.bytes_read += content.len() as u64;
+            }).await;
+
+            FileReadResponse {
+                metadata: metadata.clone(),
+                content: Some(content),
+            }
+        } else {
+            // Read metadata only
+            let metadata = self.storage.get_file_metadata(namespace, &request.identifier).await?;
+            
+            self.update_metrics(|metrics| {
+                metrics.total_reads += 1;
+            }).await;
+
+            FileReadResponse {
+                metadata: metadata.clone(),
+                content: None,
+            }
+        };
+
+        // Emit after event with real metadata
+        let after_context = AfterEventContext::file_read(
+            namespace.clone(),
+            response.metadata.id.clone(),
+            response.metadata.path.clone(),
+            response.metadata.size,
+            request.include_content,
+            RequestContext::anonymous(),
+        );
+        
+        if let Some(event_bus) = &self.event_bus {
+            if let Err(e) = event_bus.dispatch_after(AfterEventType::FileRead, &after_context).await {
+                warn!("Failed to dispatch VFS after file read event (non-critical): {}", e);
+            }
+        }
+
+        debug!("Successfully read file: {}", response.metadata.id);
+        Ok(response)
     }
 
+    #[instrument(skip(self), fields(identifier = ?identifier))]
     async fn delete_file(
         &self,
         namespace: &VfsNamespace,
-        _identifier: FileIdentifier,
+        identifier: FileIdentifier,
     ) -> VfsResult<()> {
-        // Validate namespace exists
-        let namespaces = self.namespaces.read().await;
-        let _config = namespaces.get(namespace).ok_or_else(|| {
-            oxide_core::vfs::VfsError::AccessDenied {
-                path: namespace.clone(),
-            }
-        })?;
+        // Get file metadata first for events and validation
+        let metadata = self.storage.get_file_metadata(namespace, &identifier).await?;
 
-        // TODO: Implement actual file deletion
+        // Emit before event
+        // Create proper context for delete event
+        let mut before_context = BeforeEventContext::new_vfs_delete(
+            namespace.clone(), 
+            metadata.id.clone(), 
+            metadata.path.clone()
+        );
+        
+        if let Some(event_bus) = &self.event_bus {
+            match event_bus.dispatch_before(BeforeEventType::FileDelete, &mut before_context).await {
+                Ok(results) => {
+                    // Check if any handler failed critically
+                    for result in results {
+                        if !result.success && !result.skipped {
+                            error!("VFS before file delete handler failed: {}", 
+                                result.error.unwrap_or_else(|| "Unknown error".to_string()));
+                            return Err(VfsError::AccessDenied {
+                                path: "Event handler rejected delete operation".to_string(),
+                            });
+                        }
+                    }
+                    debug!("VFS before file delete event dispatched successfully");
+                }
+                Err(e) => {
+                    error!("Failed to dispatch VFS before file delete event: {}", e);
+                    return Err(VfsError::AccessDenied {
+                        path: format!("Event dispatch failed: {}", e),
+                    });
+                }
+            }
+        }
+
+        // Delete from storage
+        self.storage.delete_file(namespace, &identifier).await?;
+
+        // Update metrics
+        self.update_metrics(|metrics| {
+            metrics.total_deletes += 1;
+        }).await;
+
+        // Emit after event with real metadata
+        let after_context = AfterEventContext::file_deleted(
+            namespace.clone(),
+            metadata.id.clone(),
+            metadata.path.clone(),
+            RequestContext::anonymous(),
+        );
+        
+        if let Some(event_bus) = &self.event_bus {
+            if let Err(e) = event_bus.dispatch_after(AfterEventType::FileDeleted, &after_context).await {
+                warn!("Failed to dispatch VFS after file delete event (non-critical): {}", e);
+            }
+        }
+
+        debug!("Successfully deleted file: {}", metadata.id);
         Ok(())
     }
 
+    #[instrument(skip(self))]
     async fn list_files(
         &self,
         namespace: &VfsNamespace,
-        _request: FileListRequest,
+        request: FileListRequest,
     ) -> VfsResult<FileListResponse> {
         // Validate namespace exists
-        let namespaces = self.namespaces.read().await;
-        let _config = namespaces.get(namespace).ok_or_else(|| {
-            oxide_core::vfs::VfsError::AccessDenied {
-                path: namespace.clone(),
+        {
+            let namespaces = self.namespaces.read().await;
+            if !namespaces.contains_key(namespace) {
+                return Err(VfsError::AccessDenied {
+                    path: namespace.clone(),
+                });
             }
-        })?;
+        }
 
-        // TODO: Implement actual file listing
+        // Get files from storage
+        let (files, total_count) = self.storage.list_files(
+            namespace,
+            &request.directory,
+            request.recursive,
+            request.mime_filter.as_deref(),
+            request.tag_filter.as_deref(),
+            request.offset,
+            request.limit,
+        ).await?;
+
+        let has_more = if let (Some(offset), Some(limit)) = (request.offset, request.limit) {
+            offset + limit < total_count
+        } else {
+            false
+        };
+
         Ok(FileListResponse {
-            files: vec![],
-            total_count: 0,
-            has_more: false,
+            files,
+            total_count,
+            has_more,
         })
     }
 
+    #[instrument(skip(self))]
     async fn get_usage_stats(&self, namespace: &VfsNamespace) -> VfsResult<VfsUsageStats> {
         // Validate namespace exists
-        let namespaces = self.namespaces.read().await;
-        let config = namespaces.get(namespace).ok_or_else(|| {
-            oxide_core::vfs::VfsError::AccessDenied {
+        let config = {
+            let namespaces = self.namespaces.read().await;
+            namespaces.get(namespace).cloned().ok_or_else(|| VfsError::AccessDenied {
                 path: namespace.clone(),
-            }
-        })?;
+            })?
+        };
 
-        // TODO: Implement actual usage stats
+        // Get stats from storage
+        let (file_count, storage_used, directory_count) = self.storage.get_usage_stats(namespace).await?;
+
         Ok(VfsUsageStats {
             namespace: namespace.clone(),
-            file_count: 0,
-            storage_used: 0,
+            file_count,
+            storage_used,
             storage_quota: config.quota_bytes,
-            directory_count: 0,
-            last_updated: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
+            directory_count,
+            last_updated: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_secs(),
         })
     }
 
+    #[instrument(skip(self))]
     async fn create_backup(&self, namespace: &VfsNamespace) -> VfsResult<String> {
-        backup::create_backup(namespace).await
+        // Validate namespace exists
+        {
+            let namespaces = self.namespaces.read().await;
+            if !namespaces.contains_key(namespace) {
+                return Err(VfsError::AccessDenied {
+                    path: namespace.clone(),
+                });
+            }
+        }
+
+        // Create backup using backup module
+        let backup_id = backup::create_backup(namespace).await?;
+        
+        info!("Created backup {} for namespace {}", backup_id, namespace);
+        Ok(backup_id)
     }
 
+    #[instrument(skip(self))]
     async fn restore_backup(&self, namespace: &VfsNamespace, backup_id: &str) -> VfsResult<()> {
-        backup::restore_backup(namespace, backup_id).await
+        // Validate namespace exists
+        {
+            let namespaces = self.namespaces.read().await;
+            if !namespaces.contains_key(namespace) {
+                return Err(VfsError::AccessDenied {
+                    path: namespace.clone(),
+                });
+            }
+        }
+
+        // Restore backup using backup module
+        backup::restore_backup(namespace, backup_id).await?;
+        
+        info!("Restored backup {} for namespace {}", backup_id, namespace);
+        Ok(())
     }
 
+    #[instrument(skip(self))]
     async fn get_namespace_config(&self, namespace: &VfsNamespace) -> VfsResult<VfsNamespaceConfig> {
         let namespaces = self.namespaces.read().await;
-        namespaces.get(namespace).cloned().ok_or_else(|| {
-            oxide_core::vfs::VfsError::AccessDenied {
-                path: namespace.clone(),
-            }
+        namespaces.get(namespace).cloned().ok_or_else(|| VfsError::AccessDenied {
+            path: namespace.clone(),
         })
     }
 
+    #[instrument(skip(self))]
     async fn update_namespace_config(&self, config: VfsNamespaceConfig) -> VfsResult<()> {
-        let mut namespaces = self.namespaces.write().await;
-        namespaces.insert(config.namespace.clone(), config);
+        // Validate configuration
+        if config.namespace.is_empty() {
+            return Err(VfsError::InvalidPath {
+                path: config.namespace,
+            });
+        }
+
+        // Store updated configuration
+        self.storage.store_namespace_config(&config).await?;
+
+        // Update in-memory cache
+        {
+            let mut namespaces = self.namespaces.write().await;
+            namespaces.insert(config.namespace.clone(), config.clone());
+        }
+
+        info!("Updated namespace configuration: {}", config.namespace);
         Ok(())
+    }
+} 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+    use tokio_test;
+
+    async fn create_test_service() -> (VfsService, TempDir) {
+        let temp_dir = TempDir::new().unwrap();
+        let service = VfsService::new(temp_dir.path().to_path_buf(), None);
+        service.initialize().await.unwrap();
+        (service, temp_dir)
+    }
+
+    #[tokio::test]
+    async fn test_namespace_lifecycle() {
+        let (service, _temp_dir) = create_test_service().await;
+
+        let config = VfsNamespaceConfig {
+            namespace: "test".to_string(),
+            quota_bytes: Some(1024 * 1024), // 1MB
+            ..Default::default()
+        };
+
+        // Create namespace
+        service.create_namespace(config.clone()).await.unwrap();
+
+        // Get namespace config
+        let retrieved_config = service.get_namespace_config(&config.namespace).await.unwrap();
+        assert_eq!(retrieved_config.namespace, config.namespace);
+
+        // Delete namespace
+        service.delete_namespace(&config.namespace).await.unwrap();
+
+        // Should fail to get deleted namespace
+        assert!(service.get_namespace_config(&config.namespace).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_file_operations() {
+        let (service, _temp_dir) = create_test_service().await;
+
+        // Create namespace first
+        let config = VfsNamespaceConfig {
+            namespace: "test".to_string(),
+            ..Default::default()
+        };
+        service.create_namespace(config).await.unwrap();
+
+        let content = b"Hello, World!";
+        let write_request = FileWriteRequest {
+            path: "test.txt".to_string(),
+            content: content.to_vec(),
+            mime_type: Some("text/plain".to_string()),
+            custom_metadata: None,
+            tags: Some(vec!["test".to_string()]),
+            overwrite: false,
+        };
+
+        // Write file
+        let metadata = service.write_file(&"test".to_string(), write_request).await.unwrap();
+        assert_eq!(metadata.size, content.len() as u64);
+        assert_eq!(metadata.mime_type, "text/plain");
+
+        // Read file
+        let read_request = FileReadRequest {
+            identifier: FileIdentifier::Id(metadata.id.clone()),
+            include_content: true,
+        };
+        let response = service.read_file(&"test".to_string(), read_request).await.unwrap();
+        assert_eq!(response.content.unwrap(), content);
+
+        // List files
+        let list_request = FileListRequest {
+            directory: "".to_string(),
+            recursive: false,
+            mime_filter: None,
+            tag_filter: Some(vec!["test".to_string()]),
+            offset: None,
+            limit: None,
+        };
+        let list_response = service.list_files(&"test".to_string(), list_request).await.unwrap();
+        assert_eq!(list_response.files.len(), 1);
+
+        // Delete file
+        service.delete_file(&"test".to_string(), FileIdentifier::Id(metadata.id)).await.unwrap();
+
+        // File should no longer exist
+        let read_request = FileReadRequest {
+            identifier: FileIdentifier::Path("test.txt".to_string()),
+            include_content: false,
+        };
+        assert!(service.read_file(&"test".to_string(), read_request).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_quota_enforcement() {
+        let (service, _temp_dir) = create_test_service().await;
+
+        // Create namespace with small quota
+        let config = VfsNamespaceConfig {
+            namespace: "test".to_string(),
+            quota_bytes: Some(10), // Very small quota
+            ..Default::default()
+        };
+        service.create_namespace(config).await.unwrap();
+
+        let large_content = vec![0u8; 100]; // Larger than quota
+        let write_request = FileWriteRequest {
+            path: "large.bin".to_string(),
+            content: large_content,
+            mime_type: None,
+            custom_metadata: None,
+            tags: None,
+            overwrite: false,
+        };
+
+        // Should fail due to quota
+        let result = service.write_file(&"test".to_string(), write_request).await;
+        assert!(matches!(result, Err(VfsError::QuotaExceeded { .. })));
     }
 } 

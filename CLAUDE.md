@@ -26,10 +26,8 @@ cargo clippy
 cargo clippy -- -D warnings  # Fail on warnings (project requirement)
 cargo fmt
 
-# Build hello-plugin (example WASM plugin)
-cd hello-plugin
-cargo build --release --target wasm32-unknown-unknown
-cd ..
+# Build plugins (example WASM plugins)
+cargo build --release --target wasm32-unknown-unknown --bin hello-plugin
 ```
 
 ### Frontend (React UI)
@@ -57,14 +55,17 @@ npm run preview
 OxideDB is a **hook-first database** with a plugin architecture built in Rust. The core architectural principle is that all database operations must dispatch `Before...` and `After...` events through a central `EventBus` for maximum extensibility.
 
 ### Crate Structure
-- **`oxide-core/`**: Core abstractions, event system, auth, plugin API contracts. No knowledge of databases or web servers.
+- **`oxide-core/`**: Core abstractions, event system, auth, plugin API contracts, VFS types. No knowledge of databases or web servers.
 - **`oxide-db/`**: Database implementations (SQLite). Depends on `oxide-core` only.
 - **`oxide-api/`**: HTTP API server using Axum. Depends on both `oxide-db` and `oxide-core`.
 - **`oxide-logging/`**: Centralized logging system with API endpoints and retention.
+- **`oxide-vfs/`**: Virtual File System with namespace isolation, deduplication, and quota management.
+- **`oxide-plugin-runtime/`**: WebAssembly plugin runtime environment with host functions and security.
+- **`oxide-plugin-sdk/`**: High-level SDK for developing WASM plugins with trait-based event handling.
 - **`oxide-typegen/`**: TypeScript binding generation for the frontend.
 - **`oxidedb/`**: Main binary that integrates all components and WASM plugin runtime.
 - **`hello-plugin/`**: Example WASM plugin demonstrating the plugin system.
-- **`ui/`**: React 19 admin interface with TypeScript, Vite, TailwindCSS.
+- **`ui/`**: React 19 admin interface with TypeScript, Vite, TailwindCSS, and comprehensive UI components.
 
 ### Event System
 All core business logic is implemented through the event system:
@@ -75,9 +76,12 @@ All core business logic is implemented through the event system:
 
 ### Plugin System
 - WASM-based plugins can be loaded at runtime
-- Plugins export functions that handle specific events
+- High-level SDK (`oxide-plugin-sdk`) provides trait-based event handling
+- Plugins can handle HTTP requests through dedicated HTTP handler traits
+- Runtime environment (`oxide-plugin-runtime`) provides secure execution with host functions
 - Plugin API contract is versioned and treated as immutable
 - Security sandbox prevents malicious plugin behavior
+- Support for database operations, logging, and VFS access from plugins
 
 ## Key Development Rules
 
@@ -114,15 +118,26 @@ The HTTP API runs on port 8080:
 - `POST /collections/{name}/records` - Create record
 - `GET/PUT/DELETE /collections/{name}/records/{id}` - Individual record operations
 - `GET /logs/*` - Logging API endpoints with pagination and filtering
+- `GET /plugins` - List installed plugins
+- `POST /plugins/install` - Install plugin from ZIP
+- `DELETE /plugins/{name}` - Uninstall plugin
+- `GET /plugins/{name}/config` - Get plugin configuration
+- `PUT /plugins/{name}/config` - Update plugin configuration
+- `POST /plugins/{name}/enable` - Enable plugin
+- `POST /plugins/{name}/disable` - Disable plugin
+- Authentication endpoints for user management and JWT tokens
 
 ## UI Integration
 
 The React frontend connects to the Rust backend API and provides:
 - Collections management (CRUD operations)
 - Records browsing and editing with JSON editor
+- Plugin management interface with installation, configuration, and status monitoring
+- Permissions and authentication management
 - Real-time health monitoring
-- Audit logging interface with search and filtering
-- Responsive design with dark/light theme support
+- Comprehensive audit logging interface with search and filtering
+- Settings management
+- Responsive design with dark/light theme support using shadcn/ui components
 
 ## Environment Setup
 
@@ -139,3 +154,4 @@ Required tools:
 4. For UI changes, run `npm run lint` in the `ui/` directory
 5. Test integration by running both backend (`cargo run --bin oxidedb`) and frontend (`npm run dev`)
 6. Plugin changes require rebuilding with `--target wasm32-unknown-unknown`
+7. Use the VFS system for file operations within collections to maintain security and isolation
