@@ -311,6 +311,8 @@ pub enum Commands {
     Start(StartArgs),
     /// Register a superuser account
     RegisterSuperuser(RegisterSuperuserArgs),
+    /// Manage plugins (list, install, enable, disable, uninstall)
+    ManagePlugins(ManagePluginsArgs),
 }
 
 #[derive(Parser)]
@@ -397,4 +399,106 @@ pub struct RegisterSuperuserArgs {
     /// Log level for the operation
     #[arg(long, value_enum, default_value = "info")]
     pub log_level: LogLevel,
+}
+
+/// Plugin management command arguments
+#[derive(Parser)]
+pub struct ManagePluginsArgs {
+    /// Database file path
+    #[arg(long, default_value = "oxidedb-sqlite")]
+    pub db_path: PathBuf,
+
+    /// Plugin folder path
+    #[arg(long, default_value = "oxide-plugins")]
+    pub plugin_folder: PathBuf,
+
+    /// Security policy for plugin execution
+    #[arg(long, value_enum, default_value = "untrusted")]
+    pub security_policy: SecurityPolicy,
+
+    /// Log level for the operation
+    #[arg(long, value_enum, default_value = "info")]
+    pub log_level: LogLevel,
+
+    #[command(subcommand)]
+    pub command: PluginSubcommands,
+}
+
+/// Plugin management subcommands
+#[derive(Subcommand)]
+pub enum PluginSubcommands {
+    /// List all installed plugins
+    List,
+    /// Install a plugin from a ZIP package
+    Install(InstallPluginArgs),
+    /// Enable a plugin
+    Enable(PluginNameArgs),
+    /// Disable a plugin
+    Disable(PluginNameArgs),
+    /// Uninstall a plugin
+    Uninstall(PluginNameArgs),
+    /// Show detailed information about a plugin
+    Show(PluginNameArgs),
+    /// Analyze a plugin package without installing
+    Analyze(AnalyzePluginArgs),
+}
+
+/// Arguments for plugin installation
+#[derive(Parser)]
+pub struct InstallPluginArgs {
+    /// Path to the plugin ZIP package
+    #[arg(value_name = "PACKAGE_PATH")]
+    pub package_path: PathBuf,
+
+    /// Trust level for the plugin
+    #[arg(long, value_enum, default_value = "untrusted")]
+    pub trust_level: PluginTrustLevel,
+
+    /// Force installation even if the plugin already exists
+    #[arg(long)]
+    pub force: bool,
+
+    /// Automatically grant all required capabilities
+    #[arg(long)]
+    pub auto_grant_capabilities: bool,
+}
+
+/// Arguments for plugin name-based operations
+#[derive(Parser)]
+pub struct PluginNameArgs {
+    /// Name of the plugin
+    #[arg(value_name = "PLUGIN_NAME")]
+    pub plugin_name: String,
+}
+
+/// Arguments for plugin analysis
+#[derive(Parser)]
+pub struct AnalyzePluginArgs {
+    /// Path to the plugin ZIP package
+    #[arg(value_name = "PACKAGE_PATH")]
+    pub package_path: PathBuf,
+}
+
+/// Plugin trust level for CLI
+#[derive(Debug, Clone, ValueEnum)]
+pub enum PluginTrustLevel {
+    /// Untrusted plugins with minimal capabilities
+    Untrusted,
+    /// Partially trusted plugins with limited capabilities
+    PartiallyTrusted,
+    /// Fully trusted plugins with most capabilities
+    FullyTrusted,
+    /// System-level plugins with all capabilities
+    System,
+}
+
+impl From<PluginTrustLevel> for oxide_core::plugin_security::PluginTrustLevel {
+    fn from(trust_level: PluginTrustLevel) -> Self {
+        match trust_level {
+            PluginTrustLevel::Untrusted => oxide_core::plugin_security::PluginTrustLevel::Untrusted,
+            PluginTrustLevel::PartiallyTrusted => oxide_core::plugin_security::PluginTrustLevel::PartiallyTrusted,
+            PluginTrustLevel::FullyTrusted => oxide_core::plugin_security::PluginTrustLevel::FullyTrusted,
+            PluginTrustLevel::System => oxide_core::plugin_security::PluginTrustLevel::System,
+        }
+    }
 } 

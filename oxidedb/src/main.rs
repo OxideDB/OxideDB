@@ -5,7 +5,7 @@
 
 use oxidedb::{
     config::{Cli, Commands},
-    commands::{CommandHandler, StartCommand, RegisterSuperuserCommand},
+    commands::{CommandHandler, StartCommand, RegisterSuperuserCommand, ManagePluginsCommand},
     Result,
 };
 use clap::Parser;
@@ -21,6 +21,7 @@ async fn main() -> Result<()> {
     let log_level = match &cli.command {
         Commands::Start(args) => Level::from(args.log_level.clone()),
         Commands::RegisterSuperuser(args) => Level::from(args.log_level.clone()),
+        Commands::ManagePlugins(args) => Level::from(args.log_level.clone()),
     };
     
     fmt().with_max_level(log_level).init();
@@ -32,6 +33,9 @@ async fn main() -> Result<()> {
         }
         Commands::RegisterSuperuser(args) => {
             RegisterSuperuserCommand::execute(args).await
+        }
+        Commands::ManagePlugins(args) => {
+            ManagePluginsCommand::execute(args).await
         }
     }
 }
