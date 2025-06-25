@@ -26,6 +26,9 @@ pub enum BeforeEventType {
     CollectionDelete,
     UserAuth,
     ApiRequest,
+    FileWrite,
+    FileRead,
+    FileDelete,
 }
 
 impl BeforeEventType {
@@ -41,6 +44,9 @@ impl BeforeEventType {
             BeforeEventType::CollectionDelete => "BeforeCollectionDelete",
             BeforeEventType::UserAuth => "BeforeUserAuth",
             BeforeEventType::ApiRequest => "BeforeApiRequest",
+            BeforeEventType::FileWrite => "BeforeFileWrite",
+            BeforeEventType::FileRead => "BeforeFileRead",
+            BeforeEventType::FileDelete => "BeforeFileDelete",
         }
     }
 
@@ -119,6 +125,30 @@ impl BeforeEventType {
                 is_system_critical: false,
                 recommended_timeout_ms: 1000,
             },
+            BeforeEventType::FileWrite => EventTypeMetadata {
+                name: self.name(),
+                description: "Fired before a file is written to VFS, can modify file data",
+                category: EventCategory::DataOperation,
+                can_modify_data: true,
+                is_system_critical: false,
+                recommended_timeout_ms: 2000,
+            },
+            BeforeEventType::FileRead => EventTypeMetadata {
+                name: self.name(),
+                description: "Fired before a file is read from VFS, can filter access",
+                category: EventCategory::DataOperation,
+                can_modify_data: false,
+                is_system_critical: false,
+                recommended_timeout_ms: 500,
+            },
+            BeforeEventType::FileDelete => EventTypeMetadata {
+                name: self.name(),
+                description: "Fired before a file is deleted from VFS, can prevent deletion",
+                category: EventCategory::DataOperation,
+                can_modify_data: false,
+                is_system_critical: true,
+                recommended_timeout_ms: 1000,
+            },
         }
     }
 
@@ -134,6 +164,9 @@ impl BeforeEventType {
             BeforeEventType::CollectionDelete,
             BeforeEventType::UserAuth,
             BeforeEventType::ApiRequest,
+            BeforeEventType::FileWrite,
+            BeforeEventType::FileRead,
+            BeforeEventType::FileDelete,
         ]
     }
 }
@@ -158,6 +191,9 @@ pub enum AfterEventType {
     PluginUnloaded,
     PluginError,
     ApiRequestProcessed,
+    FileWritten,
+    FileRead,
+    FileDeleted,
     ErrorOccurred,
 }
 
@@ -182,6 +218,9 @@ impl AfterEventType {
             AfterEventType::PluginUnloaded => "OnPluginUnload",
             AfterEventType::PluginError => "OnPluginError",
             AfterEventType::ApiRequestProcessed => "AfterApiRequest",
+            AfterEventType::FileWritten => "AfterFileWrite",
+            AfterEventType::FileRead => "AfterFileRead",
+            AfterEventType::FileDeleted => "AfterFileDelete",
             AfterEventType::ErrorOccurred => "OnError",
         }
     }
@@ -325,6 +364,30 @@ impl AfterEventType {
                 is_system_critical: false,
                 recommended_timeout_ms: 1000,
             },
+            AfterEventType::FileWritten => EventTypeMetadata {
+                name: self.name(),
+                description: "Fired after a file is successfully written to VFS",
+                category: EventCategory::DataOperation,
+                can_modify_data: false,
+                is_system_critical: false,
+                recommended_timeout_ms: 1000,
+            },
+            AfterEventType::FileRead => EventTypeMetadata {
+                name: self.name(),
+                description: "Fired after a file is successfully read from VFS",
+                category: EventCategory::DataOperation,
+                can_modify_data: false,
+                is_system_critical: false,
+                recommended_timeout_ms: 500,
+            },
+            AfterEventType::FileDeleted => EventTypeMetadata {
+                name: self.name(),
+                description: "Fired after a file is successfully deleted from VFS",
+                category: EventCategory::DataOperation,
+                can_modify_data: false,
+                is_system_critical: false,
+                recommended_timeout_ms: 1000,
+            },
             AfterEventType::ErrorOccurred => EventTypeMetadata {
                 name: self.name(),
                 description: "Fired when an error occurs in the system",
@@ -356,6 +419,9 @@ impl AfterEventType {
             AfterEventType::PluginUnloaded,
             AfterEventType::PluginError,
             AfterEventType::ApiRequestProcessed,
+            AfterEventType::FileWritten,
+            AfterEventType::FileRead,
+            AfterEventType::FileDeleted,
             AfterEventType::ErrorOccurred,
         ]
     }

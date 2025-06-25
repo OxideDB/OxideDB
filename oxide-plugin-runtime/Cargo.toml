@@ -10,6 +10,7 @@ description = "Wasmtime-based plugin runtime for OxideDB"
 oxide-core = { path = "../oxide-core" }
 oxide-db = { path = "../oxide-db" }
 oxide-plugin-sdk = { path = "../oxide-plugin-sdk" }
+oxide-logging = { path = "../oxide-logging" }
 wasmtime = "25.0.0"
 wasmtime-wasi = "25.0"
 serde = { version = "1.0", features = ["derive"] }

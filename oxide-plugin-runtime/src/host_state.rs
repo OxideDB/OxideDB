@@ -3,7 +3,15 @@
 //! This module provides shared state between the host and plugins
 //! for communication and data exchange.
 
-use oxide_core::plugin_api::{HttpRequestContext, RouteRegistration};
+use oxide_core::{
+    plugin_api::{HttpRequestContext, RouteRegistration},
+    VfsServiceBridge,
+};
+use oxide_logging::LogServiceBridge;
+use std::sync::{Arc, Mutex};
+
+/// Type alias for shared host state reference
+pub type HostStateRef = Arc<Mutex<HostState>>;
 
 /// Execution context for tracking plugin call stack
 #[derive(Debug, Clone, PartialEq)]
@@ -17,7 +25,7 @@ pub enum ExecutionContext {
 }
 
 /// Shared state between host and plugin for communication
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct HostState {
     /// Current event payload being processed
     pub current_payload: Option<String>,
@@ -51,6 +59,18 @@ pub struct HostState {
 
     /// Whether the plugin is currently in a database operation
     pub in_database_operation: bool,
+
+    /// VFS service bridge for file operations
+    pub vfs_bridge: Option<Arc<dyn VfsServiceBridge>>,
+
+    /// Logging service bridge for audit and general logging
+    pub logging_bridge: Option<Arc<LogServiceBridge>>,
+
+    /// Result storage for host function calls
+    pub function_results: std::collections::HashMap<String, String>,
+
+    /// Error storage for host function calls
+    pub function_errors: std::collections::HashMap<String, String>,
     
     // NOTE: Removed plugin_metadata field - using TOML-only metadata approach
     // Plugin metadata is now sourced exclusively from plugin.toml during installation
@@ -70,6 +90,10 @@ impl Default for HostState {
             db_result_buffer: Vec::new(),
             execution_context: ExecutionContext::Idle,
             in_database_operation: false,
+            vfs_bridge: None,
+            logging_bridge: None,
+            function_results: std::collections::HashMap::new(),
+            function_errors: std::collections::HashMap::new(),
         }
     }
 }
@@ -105,6 +129,32 @@ impl HostState {
     /// Mark that we're exiting a database operation
     pub fn exit_database_operation(&mut self) {
         self.in_database_operation = false;
+    }
+
+    /// Store a result from a host function call
+    pub fn store_result(&mut self, function_name: &str, result: String) {
+        self.function_results.insert(function_name.to_string(), result);
+    }
+
+    /// Store an error from a host function call
+    pub fn store_error(&mut self, function_name: &str, error: &str) {
+        self.function_errors.insert(function_name.to_string(), error.to_string());
+    }
+
+    /// Get a result from a host function call
+    pub fn get_result(&self, function_name: &str) -> Option<&String> {
+        self.function_results.get(function_name)
+    }
+
+    /// Get an error from a host function call
+    pub fn get_error(&self, function_name: &str) -> Option<&String> {
+        self.function_errors.get(function_name)
+    }
+
+    /// Clear function results and errors
+    pub fn clear_function_results(&mut self) {
+        self.function_results.clear();
+        self.function_errors.clear();
     }
     
     // NOTE: Plugin metadata methods removed - using TOML-only metadata approach

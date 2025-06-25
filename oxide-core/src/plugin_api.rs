@@ -199,6 +199,32 @@ pub mod host_functions {
     /// Returns: JSON value as string
     pub const GET_CONFIG: &str = "get_config";
 
+    // Virtual File System host functions
+    /// Function signature for writing a file to VFS
+    /// Parameters: namespace (string), request (JSON)
+    /// Returns: FileMetadata as JSON string
+    pub const VFS_WRITE_FILE: &str = "vfs_write_file";
+
+    /// Function signature for reading a file from VFS
+    /// Parameters: namespace (string), request (JSON)
+    /// Returns: FileReadResponse as JSON string
+    pub const VFS_READ_FILE: &str = "vfs_read_file";
+
+    /// Function signature for deleting a file from VFS
+    /// Parameters: namespace (string), identifier (JSON)
+    /// Returns: success boolean
+    pub const VFS_DELETE_FILE: &str = "vfs_delete_file";
+
+    /// Function signature for listing files in VFS
+    /// Parameters: namespace (string), request (JSON)
+    /// Returns: FileListResponse as JSON string
+    pub const VFS_LIST_FILES: &str = "vfs_list_files";
+
+    /// Function signature for getting VFS usage stats
+    /// Parameters: namespace (string)
+    /// Returns: VfsUsageStats as JSON string
+    pub const VFS_GET_USAGE_STATS: &str = "vfs_get_usage_stats";
+
     /// Function signature for registering HTTP routes
     /// Parameters: method, path, handler_name (strings)
     pub const REGISTER_HTTP_ROUTE: &str = "register_http_route";

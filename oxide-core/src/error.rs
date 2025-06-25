@@ -60,6 +60,10 @@ pub enum AppError {
     /// Security-related errors (violations, unauthorized access)
     #[error("Security error: {message}")]
     Security { message: String },
+
+    /// Virtual File System errors
+    #[error("Virtual File System error: {message}")]
+    VirtualFileSystem { message: String },
 }
 
 impl AppError {
@@ -139,6 +143,13 @@ impl AppError {
     /// Create a new security error
     pub fn security<S: Into<String>>(message: S) -> Self {
         Self::Security {
+            message: message.into(),
+        }
+    }
+
+    /// Create a new virtual file system error
+    pub fn vfs<S: Into<String>>(message: S) -> Self {
+        Self::VirtualFileSystem {
             message: message.into(),
         }
     }

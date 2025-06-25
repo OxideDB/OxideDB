@@ -34,6 +34,7 @@ pub mod url;
 pub mod password;
 pub mod phone;
 pub mod relationship;
+pub mod file;
 pub use text::TextFieldType;
 pub use number::NumberFieldType;
 pub use boolean::BooleanFieldType;
@@ -44,6 +45,7 @@ pub use url::UrlFieldType;
 pub use password::PasswordFieldType;
 pub use phone::PhoneFieldType;
 pub use relationship::{RelationshipFieldType, RelationshipConfig};
+pub use file::{FileFieldType, FileFieldConfig, FileReference};
 
 /// Trait that all field types must implement
 pub trait FieldTypeDefinition {
@@ -93,6 +95,8 @@ pub enum FieldType {
     Phone,
     /// Relationship field (references to other collections)
     Relationship(RelationshipConfig),
+    /// File field (references to files in virtual filesystem)
+    File(FileFieldConfig),
 }
 
 impl FieldType {
@@ -109,6 +113,7 @@ impl FieldType {
             FieldType::Password => Box::new(PasswordFieldType),
             FieldType::Phone => Box::new(PhoneFieldType),
             FieldType::Relationship(config) => Box::new(RelationshipFieldType::new(config.clone())),
+            FieldType::File(config) => Box::new(FileFieldType::new(config.clone())),
         }
     }
     

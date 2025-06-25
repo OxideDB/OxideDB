@@ -5,7 +5,7 @@
 
 use crate::host_functions::{
     define_database_functions, define_event_functions, 
-    define_http_functions, define_logging_functions
+    define_http_functions, define_logging_functions, register_vfs_functions
 };
 use crate::host_state::{HostState, ExecutionContext};
 use oxide_core::{
@@ -97,6 +97,10 @@ impl WasmtimePluginRuntime {
         
         // Define database-related host functions
         define_database_functions(&mut self.linker, self.database.clone())?;
+        
+        // Define VFS-related host functions
+        register_vfs_functions(&mut self.linker)
+            .map_err(|e| PluginError::InitializationFailed(format!("Failed to register VFS functions: {}", e)))?;
         
         Ok(())
     }

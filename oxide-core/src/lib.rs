@@ -19,6 +19,7 @@ pub mod error;
 pub mod event;
 pub mod field_types;
 pub mod logging;
+pub mod vfs;
 pub mod plugin_api;
 pub mod plugin_security;
 pub mod plugin_config;
@@ -46,6 +47,11 @@ pub use event::{
 pub use logging::{
     ApplicationLogger, SecurityAuditor, LoggingService, LogLevel, AuditEventType,
     LogContext, LoggingMetrics, CorrelationIdTrait, NoOpLogger, LoggingResult
+};
+pub use vfs::{
+    VirtualFileSystem, VfsServiceBridge, FileMetadata, VfsNamespaceConfig, VfsBackupConfig,
+    FileWriteRequest, FileReadRequest, FileReadResponse, FileListRequest, FileListResponse,
+    FileIdentifier, VfsUsageStats, VfsResult, VfsError, FileId, VfsPath, VfsNamespace, NoOpVfs
 };
 pub use plugin_api::{PluginError, PluginResult, EventPayload, PluginResponse};
 pub use plugin_security::{

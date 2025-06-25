@@ -7,8 +7,10 @@ pub mod database;
 pub mod event;
 pub mod http;
 pub mod logging;
+pub mod vfs;
 
 pub use database::*;
 pub use event::*;
 pub use http::*;
-pub use logging::*; 
+pub use logging::*;
+pub use vfs::*; 

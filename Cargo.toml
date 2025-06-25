@@ -5,6 +5,7 @@ members = [
     "oxide-db", 
     "oxide-api",
     "oxide-logging",
+    "oxide-vfs",
     "oxide-plugin-runtime",
     "oxide-plugin-sdk",
     "oxide-typegen",
