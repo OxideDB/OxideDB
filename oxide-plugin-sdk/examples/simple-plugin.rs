@@ -46,7 +46,7 @@ impl PluginEventHandler for SimplePlugin {
         }
 
         log_info!("Validation passed, data enhanced");
-        PluginResponse::allow_with_data(&data)
+        Ok(PluginResponse::allow_with_data(&data)?)
     }
 
     fn on_after_create(&mut self, event: &EventPayload) -> PluginResult<PluginResponse> {
@@ -89,7 +89,7 @@ impl PluginEventHandler for SimplePlugin {
             }
         }
 
-        PluginResponse::allow_with_data(&data)
+        Ok(PluginResponse::allow_with_data(&data)?)
     }
 
     fn on_before_delete(&mut self, event: &EventPayload) -> PluginResult<PluginResponse> {
@@ -129,7 +129,12 @@ fn capitalize_name(name: &str) -> String {
 }
 
 // Export the plugin - this generates all the WASM exports automatically
-export_plugin!(SimplePlugin);
+oxide_plugin_sdk::export_plugin!(SimplePlugin);
+
+/// This main function is just for compilation - plugins are normally compiled to WASM
+fn main() {
+    println!("This is a plugin example. Compile to WASM for actual use.");
+}
 
 #[cfg(test)]
 mod tests {
