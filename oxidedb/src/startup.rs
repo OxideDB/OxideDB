@@ -9,6 +9,7 @@ use oxide_api::{server::ApiServer, services::{DatabasePermissionService, Logging
 use oxide_core::{AppError, AuthService, EventBus, InMemoryEventBus, register_system_hooks};
 use oxide_db::{Db, SqliteDb};
 use oxide_logging::{LogService, LogServiceBuilder, LogServiceBridge};
+use oxide_vfs;
 use std::sync::Arc;
 use tracing::{info, warn, debug};
 
@@ -22,6 +23,7 @@ pub struct ApplicationServices {
     pub logging_service: Option<Arc<LogServiceBridge>>,
     pub logging_api_service: Option<Arc<LoggingApiService>>,
     pub plugin_manager: Option<Arc<PluginManager>>,
+    pub vfs_service: Option<Arc<dyn oxide_core::VirtualFileSystem>>,
 }
 
 /// Application bootstrap orchestrator
@@ -74,10 +76,13 @@ impl ApplicationBootstrap {
             Arc::clone(&database) as Arc<dyn oxide_db::Db>
         ).await?;
 
-        // 9. Create logging API service if logging is enabled
+        // 9. Initialize VFS service (optional)
+        let vfs_service = self.initialize_vfs_system(Arc::clone(&event_bus)).await?;
+
+        // 10. Create logging API service if logging is enabled
         let logging_api_service = self.create_logging_api_service(&logging_service);
 
-        // 10. Populate sample data if requested
+        // 11. Populate sample data if requested
         if self.config.database.auto_populate {
             self.populate_sample_data(&database, &auth_service, &logging_service).await?;
         }
@@ -92,6 +97,7 @@ impl ApplicationBootstrap {
             logging_service,
             logging_api_service,
             plugin_manager,
+            vfs_service,
         })
     }
 
@@ -126,11 +132,24 @@ impl ApplicationBootstrap {
         // Print startup information
         self.print_startup_info();
 
-        // Start the server with plugin manager if available
-        if let Some(plugin_manager) = services.plugin_manager {
-            api_server.start_with_config_and_plugin_manager(route_config, plugin_manager).await?;
-        } else {
-            api_server.start_with_config(route_config).await?;
+        // Start the server with services available
+        match (services.plugin_manager, services.vfs_service) {
+            (Some(plugin_manager), Some(vfs_service)) => {
+                // Both plugin manager and VFS service available - need to modify the server method to handle this
+                api_server.start_with_config_plugin_manager_and_optional_vfs(route_config, Some(plugin_manager), Some(vfs_service)).await?;
+            }
+            (Some(plugin_manager), None) => {
+                // Only plugin manager available
+                api_server.start_with_config_plugin_manager_and_optional_vfs(route_config, Some(plugin_manager), None).await?;
+            }
+            (None, Some(vfs_service)) => {
+                // Only VFS service available - need to create a new method for this
+                api_server.start_with_config_plugin_manager_and_optional_vfs(route_config, None, Some(vfs_service)).await?;
+            }
+            (None, None) => {
+                // Neither available
+                api_server.start_with_config_plugin_manager_and_optional_vfs(route_config, None, None).await?;
+            }
         }
 
         Ok(())
@@ -298,6 +317,37 @@ impl ApplicationBootstrap {
         let plugin_manager = Arc::new(plugin_manager);
         info!("✅ Plugin system initialized with database persistence");
         Ok(Some(plugin_manager))
+    }
+
+    /// Initialize VFS service if enabled
+    async fn initialize_vfs_system(
+        &self,
+        event_bus: Arc<dyn EventBus>,
+    ) -> Result<Option<Arc<dyn oxide_core::VirtualFileSystem>>> {
+        // For now, VFS is always enabled but we can add a config option later
+        // if !self.config.vfs.enable_vfs {
+        //     info!("⚠️ VFS system disabled");
+        //     return Ok(None);
+        // }
+
+        // Create VFS and backup directories
+        let vfs_path = std::env::current_dir()
+            .unwrap_or_else(|_| std::path::PathBuf::from("."))
+            .join("vfs");
+        let backup_path = std::env::current_dir()
+            .unwrap_or_else(|_| std::path::PathBuf::from("."))
+            .join("vfs_backups");
+
+        // Initialize VFS system using the oxide-vfs crate
+        let vfs_service = oxide_vfs::initialize_vfs_system(
+            vfs_path,
+            backup_path,
+            Some(event_bus)
+        ).await.map_err(|e| AppError::internal(format!("Failed to initialize VFS system: {}", e)))?;
+
+        let vfs_service: Arc<dyn oxide_core::VirtualFileSystem> = Arc::new(vfs_service);
+        info!("✅ VFS system initialized with file storage and backup support");
+        Ok(Some(vfs_service))
     }
 
     /// Create logging API service if logging is enabled

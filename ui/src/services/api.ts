@@ -4,7 +4,9 @@ import type {
   ApiResponse, AuthResponse, User, TokenValidationResponse,
   LogQueryParams, AuditQueryParams, LogResponse, LogEntry, SecurityAuditEvent,
   DashboardMetrics, RetentionStats, CreateLogRequest, CreateAuditRequest,
-  CreateLogResponse, LoggingHealthResponse
+  CreateLogResponse, LoggingHealthResponse,
+  FileReference, FileMetadata, FileWriteRequest, FileReadResponse, FileListRequest, 
+  FileListResponse, VfsUsageStats, FileUploadProgress
 } from '../types/api';
 import { capabilityNameToObject } from '../types/api';
 
@@ -381,9 +383,14 @@ class ApiService {
   }
 
   async createCollection(schema: CreateCollectionRequest): Promise<void> {
+    // Convert BigInt values to numbers for JSON serialization
+    const serializedSchema = JSON.stringify(schema, (key, value) => {
+      return typeof value === 'bigint' ? Number(value) : value;
+    });
+    
     return this.request<void>('/collections', {
       method: 'POST',
-      body: JSON.stringify(schema),
+      body: serializedSchema,
     });
   }
 
@@ -409,9 +416,14 @@ class ApiService {
   }
 
   async updateCollectionSchema(collection: string, schema: CollectionSchema): Promise<void> {
+    // Convert BigInt values to numbers for JSON serialization
+    const serializedSchema = JSON.stringify(schema, (key, value) => {
+      return typeof value === 'bigint' ? Number(value) : value;
+    });
+    
     return this.request<void>(`/collections/${encodeURIComponent(collection)}/schema`, {
       method: 'PUT',
-      body: JSON.stringify(schema),
+      body: serializedSchema,
     });
   }
 
@@ -674,6 +686,176 @@ class ApiService {
 
   async uninstallPlugin(pluginName: string): Promise<void> {
     await this.delete(`/plugins/${encodeURIComponent(pluginName)}`);
+  }
+
+  // VFS File Operations
+  
+  /**
+   * Upload a file to the VFS for a specific collection
+   */
+  async uploadFile(
+    collection: string, 
+    file: File, 
+    path?: string,
+    onProgress?: (progress: number) => void
+  ): Promise<FileMetadata> {
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('collection', collection);
+    if (path) {
+      formData.append('path', path);
+    }
+
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      
+      // Track upload progress
+      if (onProgress) {
+        xhr.upload.onprogress = (event) => {
+          if (event.lengthComputable) {
+            const progress = Math.round((event.loaded / event.total) * 100);
+            onProgress(progress);
+          }
+        };
+      }
+
+      xhr.onload = async () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          try {
+            const response = JSON.parse(xhr.responseText);
+            resolve(response.data);
+          } catch (error) {
+            reject(new Error('Failed to parse response'));
+          }
+        } else {
+          reject(new Error(`Upload failed: HTTP ${xhr.status}`));
+        }
+      };
+
+      xhr.onerror = () => {
+        reject(new Error('Upload failed'));
+      };
+
+      xhr.open('POST', `${this.baseUrl}/collections/${encodeURIComponent(collection)}/files`);
+      if (this.token) {
+        xhr.setRequestHeader('Authorization', `Bearer ${this.token}`);
+      }
+      xhr.send(formData);
+    });
+  }
+
+  /**
+   * Download a file from the VFS
+   */
+  async downloadFile(collection: string, fileId: string): Promise<Blob> {
+    const response = await fetch(
+      `${this.baseUrl}/collections/${encodeURIComponent(collection)}/files/${encodeURIComponent(fileId)}`,
+      {
+        headers: this.token ? { 'Authorization': `Bearer ${this.token}` } : {},
+      }
+    );
+
+    if (!response.ok) {
+      throw new Error(`Download failed: HTTP ${response.status}`);
+    }
+
+    return response.blob();
+  }
+
+  /**
+   * Get file metadata without downloading content
+   */
+  async getFileMetadata(collection: string, fileId: string): Promise<FileMetadata> {
+    const response = await this.get<ApiResponse<FileMetadata>>(
+      `/collections/${encodeURIComponent(collection)}/files/${encodeURIComponent(fileId)}/metadata`
+    );
+    return response.data;
+  }
+
+  /**
+   * Delete a file from the VFS
+   */
+  async deleteFile(collection: string, fileId: string): Promise<void> {
+    await this.delete(`/collections/${encodeURIComponent(collection)}/files/${encodeURIComponent(fileId)}`);
+  }
+
+  /**
+   * List files in a collection
+   */
+  async listFiles(collection: string, params?: FileListRequest): Promise<FileListResponse> {
+    const searchParams = new URLSearchParams();
+    if (params?.directory) searchParams.set('directory', params.directory);
+    if (params?.recursive !== undefined) searchParams.set('recursive', params.recursive.toString());
+    if (params?.mime_filter) searchParams.set('mime_filter', params.mime_filter);
+    if (params?.tag_filter) searchParams.set('tag_filter', params.tag_filter.join(','));
+    if (params?.offset) searchParams.set('offset', params.offset.toString());
+    if (params?.limit) searchParams.set('limit', params.limit.toString());
+
+    const query = searchParams.toString();
+    const endpoint = `/collections/${encodeURIComponent(collection)}/files${query ? `?${query}` : ''}`;
+    
+    const response = await this.get<ApiResponse<FileListResponse>>(endpoint);
+    return response.data;
+  }
+
+  /**
+   * Get VFS usage statistics for a collection
+   */
+  async getVfsUsage(collection: string): Promise<VfsUsageStats> {
+    const response = await this.get<ApiResponse<VfsUsageStats>>(
+      `/collections/${encodeURIComponent(collection)}/vfs/usage`
+    );
+    return response.data;
+  }
+
+  /**
+   * Upload multiple files to the VFS
+   */
+  async uploadMultipleFiles(
+    collection: string,
+    files: File[],
+    onProgress?: (fileId: string, progress: number) => void,
+    onFileComplete?: (fileId: string, metadata: FileMetadata) => void,
+    onFileError?: (fileId: string, error: string) => void
+  ): Promise<FileMetadata[]> {
+    const results: FileMetadata[] = [];
+    
+    // Upload files in parallel with limited concurrency
+    const concurrency = 3;
+    const chunks: File[][] = [];
+    
+    for (let i = 0; i < files.length; i += concurrency) {
+      chunks.push(files.slice(i, i + concurrency));
+    }
+
+    for (const chunk of chunks) {
+      const promises = chunk.map(async (file) => {
+        const fileId = `${file.name}-${Date.now()}`;
+        try {
+          const metadata = await this.uploadFile(
+            collection,
+            file,
+            undefined,
+            (progress) => onProgress?.(fileId, progress)
+          );
+          onFileComplete?.(fileId, metadata);
+          return metadata;
+        } catch (error) {
+          const errorMessage = error instanceof Error ? error.message : 'Upload failed';
+          onFileError?.(fileId, errorMessage);
+          throw error;
+        }
+      });
+
+      const chunkResults = await Promise.allSettled(promises);
+      chunkResults.forEach((result) => {
+        if (result.status === 'fulfilled') {
+          results.push(result.value);
+        }
+      });
+    }
+
+    return results;
   }
 }
 

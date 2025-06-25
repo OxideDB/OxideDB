@@ -14,6 +14,7 @@ oxide-core = { path = "../oxide-core" }
 oxide-db = { path = "../oxide-db" }
 oxide-api = { path = "../oxide-api" }
 oxide-logging = { path = "../oxide-logging" }
+oxide-vfs = { path = "../oxide-vfs" }
 oxide-plugin-runtime = { path = "../oxide-plugin-runtime" }
 tokio = { version = "1.0", features = ["full"] }
 tracing = "0.1"

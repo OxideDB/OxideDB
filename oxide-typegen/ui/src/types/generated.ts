@@ -49,7 +49,15 @@ email_verification_required: boolean,
 /**
  * Custom fields to include in JWT claims
  */
-custom_claim_fields: Array<string>, };
+custom_claim_fields: Array<string>, 
+/**
+ * Whether refresh tokens are enabled for this collection
+ */
+refresh_tokens_enabled: boolean, 
+/**
+ * Whether refresh tokens are required for this collection (enforced for superusers)
+ */
+refresh_tokens_required: boolean, };
 
 /**
  * Authentication method types
@@ -152,7 +160,106 @@ validation: any, };
 /**
  * Supported field types in collection schemas
  */
-export type FieldType = "text" | "number" | "boolean" | "date" | "json" | "email" | "url" | "password" | "phone" | { "relationship": RelationshipConfig };
+export type FieldType = "text" | "number" | "boolean" | "date" | "json" | "email" | "url" | "password" | "phone" | { "relationship": RelationshipConfig } | { "file": FileFieldConfig };
+
+/**
+ * Configuration for File field type
+ */
+export type FileFieldConfig = { 
+/**
+ * Whether multiple files can be attached
+ */
+multiple: boolean, 
+/**
+ * Allowed MIME types (None = all allowed)
+ */
+allowed_mime_types: Array<string> | null, 
+/**
+ * Maximum file size in bytes
+ */
+max_file_size: bigint | null, 
+/**
+ * Whether file is required
+ */
+required: boolean, };
+
+/**
+ * File metadata in the virtual file system
+ */
+export type FileMetadata = { 
+/**
+ * Unique identifier for the file
+ */
+id: string, 
+/**
+ * File name (without path)
+ */
+name: string, 
+/**
+ * Virtual path within the namespace
+ */
+path: string, 
+/**
+ * MIME type of the file
+ */
+mime_type: string, 
+/**
+ * File size in bytes
+ */
+size: bigint, 
+/**
+ * SHA256 hash of file content
+ */
+content_hash: string, 
+/**
+ * When the file was created (Unix timestamp in seconds)
+ */
+created_at: bigint, 
+/**
+ * When the file was last modified (Unix timestamp in seconds)
+ */
+modified_at: bigint, 
+/**
+ * Custom metadata as key-value pairs
+ */
+custom_metadata: { [key in string]?: string }, 
+/**
+ * Whether the file is compressed
+ */
+compressed: boolean, 
+/**
+ * Compression algorithm used (if any)
+ */
+compression_type: string | null, 
+/**
+ * Tags for organization and search
+ */
+tags: Array<string>, };
+
+/**
+ * File reference stored in the database
+ */
+export type FileReference = { 
+/**
+ * File ID in the VFS
+ */
+file_id: string, 
+/**
+ * Original file name
+ */
+name: string, 
+/**
+ * MIME type
+ */
+mime_type: string, 
+/**
+ * File size in bytes
+ */
+size: bigint, 
+/**
+ * Virtual path in the VFS
+ */
+path: string, };
 
 /**
  * Index definition for database optimization
@@ -194,6 +301,146 @@ filter: string | null, };
 export type PermissionLevel = "none" | "superuseronly" | "authenticatedonly" | "public" | { "rule": string };
 
 /**
+ * Capability types that can be granted to plugins
+ */
+export type PluginCapability = "LogInfo" | "LogError" | "ReadEventData" | "ModifyEventData" | "BlockOperations" | { "ReadConfig": { 
+/**
+ * Specific config keys the plugin can access
+ */
+keys: Array<string>, } } | { "AccessCollection": { 
+/**
+ * Collection name
+ */
+collection: string, 
+/**
+ * Operations allowed on this collection
+ */
+operations: Array<CrudOperation>, } } | { "HttpRequest": { 
+/**
+ * Allowed URL patterns (regex)
+ */
+allowed_urls: Array<string>, 
+/**
+ * Maximum requests per minute
+ */
+rate_limit: number, } } | { "PersistentStorage": { 
+/**
+ * Maximum storage size in bytes
+ */
+max_size: bigint, 
+/**
+ * Allowed key prefixes
+ */
+key_prefixes: Array<string>, } } | "ScheduleTasks" | { "EmitEvents": { 
+/**
+ * Allowed event types
+ */
+event_types: Array<string>, } } | { "RegisterHttpRoutes": { 
+/**
+ * Allowed path patterns (regex)
+ */
+path_patterns: Array<string>, 
+/**
+ * Allowed HTTP methods
+ */
+methods: Array<string>, } } | { "CreateRecords": { 
+/**
+ * Collections the plugin can create records in
+ */
+collections: Array<string>, } } | { "ReadRecords": { 
+/**
+ * Collections the plugin can read from
+ */
+collections: Array<string>, } } | { "UpdateRecords": { 
+/**
+ * Collections the plugin can update
+ */
+collections: Array<string>, } } | { "DeleteRecords": { 
+/**
+ * Collections the plugin can delete from
+ */
+collections: Array<string>, } } | "HandleHttpRequests";
+
+/**
+ * Complete plugin configuration that can be persisted to the database
+ */
+export type PluginConfiguration = { 
+/**
+ * Plugin name (unique identifier)
+ */
+name: string, 
+/**
+ * Plugin version
+ */
+version: string, 
+/**
+ * Plugin description
+ */
+description: string, 
+/**
+ * Plugin author
+ */
+author: string, 
+/**
+ * Current status of the plugin
+ */
+status: PluginStatus, 
+/**
+ * Trust level assigned to the plugin
+ */
+trust_level: PluginTrustLevel, 
+/**
+ * Capabilities granted to the plugin
+ */
+capabilities: Array<PluginCapability>, 
+/**
+ * Resource limits for the plugin
+ */
+resource_limits: ResourceLimits, 
+/**
+ * Plugin metadata (configuration, settings, etc.)
+ */
+metadata: any, 
+/**
+ * Path to the WASM file on the filesystem (relative to plugins directory)
+ */
+wasm_path: string | null, 
+/**
+ * Path to the plugin directory (relative to plugins base directory)
+ */
+plugin_directory: string | null, 
+/**
+ * File size of the WASM binary in bytes
+ */
+wasm_size: bigint | null, 
+/**
+ * SHA256 hash of the WASM file for integrity verification
+ */
+wasm_hash: string | null, 
+/**
+ * Whether the plugin is enabled/disabled
+ */
+enabled: boolean, 
+/**
+ * Timestamp when plugin was installed
+ */
+installed_at: bigint, 
+/**
+ * Timestamp when plugin was last updated
+ */
+updated_at: bigint, };
+
+/**
+ * Plugin status enumeration
+ */
+export type PluginStatus = "Enabled" | "Disabled" | "Error" | "Loading" | "Uninstalling";
+
+/**
+ * Trust level assigned to plugins
+ */
+export type PluginTrustLevel = "Untrusted" | "PartiallyTrusted" | "FullyTrusted" | "System";
+
+/**
  * Configuration for relationship fields
  */
 export type RelationshipConfig = { 
@@ -215,9 +462,113 @@ cascade_delete: boolean,
 display_field: string | null, };
 
 /**
+ * Resource usage limits for plugins
+ */
+export type ResourceLimits = { 
+/**
+ * Maximum memory usage in bytes
+ */
+max_memory: bigint, 
+/**
+ * Maximum execution time per call in milliseconds
+ */
+max_execution_time: bigint, 
+/**
+ * Maximum number of host function calls per execution
+ */
+max_host_calls: number, 
+/**
+ * Maximum number of executions per minute
+ */
+rate_limit: number, };
+
+/**
  * User roles in the system
  */
 export type UserRole = "user" | "superuser" | { "custom": string };
+
+/**
+ * Backup configuration for VFS namespaces
+ */
+export type VfsBackupConfig = { 
+/**
+ * Whether backups are enabled
+ */
+enabled: boolean, 
+/**
+ * Backup retention period in days
+ */
+retention_days: number, 
+/**
+ * Automatic backup interval in hours
+ */
+backup_interval_hours: number, 
+/**
+ * Whether to compress backups
+ */
+compress_backups: boolean, };
+
+/**
+ * Configuration for a VFS namespace
+ */
+export type VfsNamespaceConfig = { 
+/**
+ * Namespace identifier (usually collection name)
+ */
+namespace: string, 
+/**
+ * Maximum storage quota in bytes (None = unlimited)
+ */
+quota_bytes: bigint | null, 
+/**
+ * Whether to enable compression for new files
+ */
+enable_compression: boolean, 
+/**
+ * Allowed MIME types (None = all allowed)
+ */
+allowed_mime_types: Array<string> | null, 
+/**
+ * Maximum file size in bytes
+ */
+max_file_size: bigint | null, 
+/**
+ * Whether to enable content deduplication
+ */
+enable_deduplication: boolean, 
+/**
+ * Backup configuration
+ */
+backup_config: VfsBackupConfig | null, };
+
+/**
+ * Statistics about VFS namespace usage
+ */
+export type VfsUsageStats = { 
+/**
+ * Namespace identifier
+ */
+namespace: string, 
+/**
+ * Total number of files
+ */
+file_count: number, 
+/**
+ * Total storage used in bytes
+ */
+storage_used: bigint, 
+/**
+ * Storage quota in bytes (None = unlimited)
+ */
+storage_quota: bigint | null, 
+/**
+ * Number of directories
+ */
+directory_count: number, 
+/**
+ * Last updated timestamp (Unix timestamp in seconds)
+ */
+last_updated: bigint, };
 
 
 // ===================================================================
@@ -290,6 +641,10 @@ record_count: number,
  * Whether the collection exists
  */
 exists: boolean, 
+/**
+ * Collection size in kilobytes
+ */
+size_kb: number, 
 /**
  * Collection schema version
  */

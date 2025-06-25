@@ -17,6 +17,10 @@ record_count: number,
  */
 exists: boolean, 
 /**
+ * Collection size in kilobytes
+ */
+size_kb: number, 
+/**
  * Collection schema version
  */
 schema_version: number | null, 

@@ -21,7 +21,8 @@ import type {
   CollectionPermissions, 
   CrudOperation, 
   PermissionLevel, 
-  PermissionPresetType 
+  PermissionPresetType,
+  FileReference 
 } from '../types/api';
 
 const Records: React.FC = () => {
@@ -41,7 +42,7 @@ const Records: React.FC = () => {
     description: "User account information and profiles",
     recordCount: records.length,
     size: "2.4 MB", // Placeholder
-    created: schema ? new Date(schema.created_at * 1000).toLocaleDateString() : "2024-01-15",
+    created: schema ? new Date(Number(schema.created_at) * 1000).toLocaleDateString() : "2024-01-15",
     lastModified: "2 hours ago", // Placeholder
     status: "active",
   };
@@ -254,6 +255,9 @@ const Records: React.FC = () => {
     } else if (typeof fieldType === 'object' && fieldType !== null) {
       if ('relationship' in fieldType) {
         return 'relationship';
+      }
+      if ('file' in fieldType) {
+        return 'file';
       }
       // Handle other object field types if needed
       return 'unknown';

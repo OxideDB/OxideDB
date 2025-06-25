@@ -307,7 +307,13 @@ impl SqliteDb {
                     let value = match field_def.field_type.sql_type() {
                         "TEXT" => {
                             if let Ok(Some(text_val)) = row.get::<_, Option<String>>(field_name.as_str()) {
-                                JsonValue::String(text_val)
+                                // For JSON fields and File fields stored as TEXT, try to parse as JSON
+                                if matches!(field_def.field_type, FieldType::Json) ||
+                                   matches!(field_def.field_type, FieldType::File(_)) {
+                                    serde_json::from_str(&text_val).unwrap_or(JsonValue::String(text_val))
+                                } else {
+                                    JsonValue::String(text_val)
+                                }
                             } else {
                                 JsonValue::Null
                             }

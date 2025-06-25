@@ -228,10 +228,10 @@ const EditRecord: React.FC = () => {
                   <Tooltip>
                     <TooltipTrigger asChild>
                       <p className="text-muted-foreground text-xs sm:text-sm cursor-pointer leading-relaxed" tabIndex={0}>
-                        {new Date(record.created_at).toLocaleString()}
+                        {new Date(Number(record.created_at) * 1000).toLocaleString()}
                       </p>
                     </TooltipTrigger>
-                    <TooltipContent>{new Date(record.created_at).toLocaleString()}</TooltipContent>
+                    <TooltipContent>{new Date(Number(record.created_at) * 1000).toLocaleString()}</TooltipContent>
                   </Tooltip>
                 </div>
                 <div className="space-y-1.5 sm:col-span-2 lg:col-span-1">
@@ -239,10 +239,10 @@ const EditRecord: React.FC = () => {
                   <Tooltip>
                     <TooltipTrigger asChild>
                       <p className="text-muted-foreground text-xs sm:text-sm cursor-pointer leading-relaxed" tabIndex={0}>
-                        {new Date(record.updated_at).toLocaleString()}
+                        {new Date(Number(record.updated_at) * 1000).toLocaleString()}
                       </p>
                     </TooltipTrigger>
-                    <TooltipContent>{new Date(record.updated_at).toLocaleString()}</TooltipContent>
+                    <TooltipContent>{new Date(Number(record.updated_at) * 1000).toLocaleString()}</TooltipContent>
                   </Tooltip>
                 </div>
               </div>

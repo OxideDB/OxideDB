@@ -9,8 +9,9 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from '@/components/ui/command';
 import { Check, ChevronsUpDown, X } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { FileUpload } from '@/components/ui/file-upload';
 import { apiService } from '../services/api';
-import type { CollectionSchema, FieldDefinition, DbRecord } from '../types/api';
+import type { CollectionSchema, FieldDefinition, DbRecord, FileReference, FileFieldConfig } from '../types/api';
 
 interface SchemaFormProps {
   schema: CollectionSchema;
@@ -312,18 +313,23 @@ export const SchemaForm: React.FC<SchemaFormProps> = ({
         data[fieldName] = fieldDef.default;
       } else {
         // Set appropriate empty values based on field type
-        switch (fieldDef.field_type) {
-          case 'boolean':
-            data[fieldName] = false;
-            break;
-          case 'number':
-            data[fieldName] = '';
-            break;
-          case 'json':
-            data[fieldName] = '{}';
-            break;
-          default:
-            data[fieldName] = '';
+        if (typeof fieldDef.field_type === 'object' && 'file' in fieldDef.field_type) {
+          // File fields should be null when empty
+          data[fieldName] = null;
+        } else {
+          switch (fieldDef.field_type) {
+            case 'boolean':
+              data[fieldName] = false;
+              break;
+            case 'number':
+              data[fieldName] = '';
+              break;
+            case 'json':
+              data[fieldName] = '{}';
+              break;
+            default:
+              data[fieldName] = '';
+          }
         }
       }
     });
@@ -375,6 +381,27 @@ export const SchemaForm: React.FC<SchemaFormProps> = ({
         break;
     }
 
+    // Handle file field validation
+    if (typeof fieldDef.field_type === 'object' && 'file' in fieldDef.field_type) {
+      if (fieldDef.required && !value) {
+        return `${fieldName} is required`;
+      }
+      
+      // If value exists, validate that it's a proper FileReference
+      if (value && typeof value === 'object') {
+        const missingFields = [];
+        if (!value.file_id) missingFields.push('file_id');
+        if (!value.name) missingFields.push('name');
+        if (!value.mime_type) missingFields.push('mime_type');
+        if (value.size === undefined) missingFields.push('size');
+        if (!value.path) missingFields.push('path');
+        
+        if (missingFields.length > 0) {
+          return `${fieldName} contains invalid file reference: missing ${missingFields.join(', ')}. Please re-upload the file.`;
+        }
+      }
+    }
+
     return null;
   };
 
@@ -421,30 +448,37 @@ export const SchemaForm: React.FC<SchemaFormProps> = ({
         return;
       }
       
-      switch (fieldDef.field_type) {
-        case 'number':
-          processedData[fieldName] = value === '' ? null : Number(value);
-          break;
-        case 'boolean':
-          processedData[fieldName] = Boolean(value);
-          break;
-        case 'json':
-          try {
-            processedData[fieldName] = value ? JSON.parse(value) : null;
-          } catch {
-            processedData[fieldName] = value;
-          }
-          break;
-        default:
+          switch (fieldDef.field_type) {
+      case 'number':
+        processedData[fieldName] = value === '' ? null : Number(value);
+        break;
+      case 'boolean':
+        processedData[fieldName] = Boolean(value);
+        break;
+      case 'json':
+        try {
+          processedData[fieldName] = value ? JSON.parse(value) : null;
+        } catch {
+          processedData[fieldName] = value;
+        }
+        break;
+      default:
+        // Check if this is a file field - preserve the FileReference object as-is
+        if (typeof fieldDef.field_type === 'object' && 'file' in fieldDef.field_type) {
+          processedData[fieldName] = value; // FileReference objects should be preserved
+        } else {
           processedData[fieldName] = value || null;
-      }
+        }
+    }
     });
 
     await onSubmit(processedData);
   };
 
   const renderField = (fieldName: string, fieldDef: FieldDefinition) => {
-    const value = formData[fieldName] ?? '';
+    // Use different default values for different field types
+    const defaultValue = (typeof fieldDef.field_type === 'object' && 'file' in fieldDef.field_type) ? null : '';
+    const value = formData[fieldName] ?? defaultValue;
     const error = errors[fieldName];
     const fieldId = `field-${fieldName}`;
 
@@ -540,7 +574,26 @@ export const SchemaForm: React.FC<SchemaFormProps> = ({
         break;
 
       default:
-        if (typeof fieldDef.field_type === 'object' && 'relationship' in fieldDef.field_type) {
+        if (typeof fieldDef.field_type === 'object' && 'file' in fieldDef.field_type) {
+          // Handle file field type
+          const fileConfig: FileFieldConfig = (fieldDef.field_type as any).file || {
+            multiple: false,
+            allowed_mime_types: undefined,
+            max_file_size: 10 * 1024 * 1024, // 10MB default
+            required: fieldDef.required || false
+          };
+
+          fieldComponent = (
+            <FileUpload
+              value={value}
+              onChange={(newValue) => handleFieldChange(fieldName, newValue)}
+              config={fileConfig}
+              collection={schema.name}
+              error={error}
+              disabled={false}
+            />
+          );
+        } else if (typeof fieldDef.field_type === 'object' && 'relationship' in fieldDef.field_type) {
           // Handle relationship field
           const relationshipConfig = fieldDef.field_type.relationship;
           
@@ -584,12 +637,27 @@ export const SchemaForm: React.FC<SchemaFormProps> = ({
               ? fieldDef.field_type 
               : 'relationship' in fieldDef.field_type 
                 ? 'relationship'
-                : 'unknown'}
+                : 'file' in fieldDef.field_type
+                  ? 'file'
+                  : 'unknown'}
           </Badge>
         </div>
         {fieldComponent}
         {error && (
-          <p className="text-sm text-destructive">{error}</p>
+          <div className="space-y-2">
+            <p className="text-sm text-destructive">{error}</p>
+            {error.includes('contains invalid file reference') && (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => handleFieldChange(fieldName, null)}
+                className="text-xs"
+              >
+                Clear Invalid File
+              </Button>
+            )}
+          </div>
         )}
         {fieldDef.default !== undefined && fieldDef.default !== null && (
           <p className="text-xs text-muted-foreground">

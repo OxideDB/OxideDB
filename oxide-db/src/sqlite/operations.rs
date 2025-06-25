@@ -23,7 +23,14 @@ impl SqliteDb {
         for (field_name, field_def) in &schema.fields {
             if let Some(value) = data.get(field_name) {
                 let sql_value = match field_def.field_type.sql_type() {
-                    "TEXT" => SqlValue::Text(value.as_str().unwrap_or("").to_string()),
+                    "TEXT" => {
+                        // For File fields, serialize the entire JSON object as string
+                        if matches!(field_def.field_type, FieldType::File(_)) {
+                            SqlValue::Text(value.to_string())
+                        } else {
+                            SqlValue::Text(value.as_str().unwrap_or("").to_string())
+                        }
+                    }
                     "REAL" => SqlValue::Real(value.as_f64().unwrap_or(0.0)),
                     "INTEGER" => {
                         // Handle both boolean (stored as integer) and actual integers
@@ -39,7 +46,14 @@ impl SqliteDb {
             } else if let Some(default) = &field_def.default {
                 // Use default value if field is not provided
                 let sql_value = match field_def.field_type.sql_type() {
-                    "TEXT" => SqlValue::Text(default.as_str().unwrap_or("").to_string()),
+                    "TEXT" => {
+                        // For File fields, serialize the entire JSON object as string
+                        if matches!(field_def.field_type, FieldType::File(_)) {
+                            SqlValue::Text(default.to_string())
+                        } else {
+                            SqlValue::Text(default.as_str().unwrap_or("").to_string())
+                        }
+                    }
                     "REAL" => SqlValue::Real(default.as_f64().unwrap_or(0.0)),
                     "INTEGER" => {
                         // Handle both boolean (stored as integer) and actual integers
@@ -72,8 +86,9 @@ impl SqliteDb {
                 "TEXT" => {
                     if let Ok(text) = row.get::<_, Option<String>>(field_name.as_str()) {
                         text.map(|s| {
-                            // For JSON fields stored as TEXT, try to parse as JSON
-                            if matches!(field_def.field_type, FieldType::Json) {
+                            // For JSON fields and File fields stored as TEXT, try to parse as JSON
+                            if matches!(field_def.field_type, FieldType::Json) ||
+                               matches!(field_def.field_type, FieldType::File(_)) {
                                 serde_json::from_str(&s).unwrap_or(JsonValue::String(s))
                             } else {
                                 JsonValue::String(s)

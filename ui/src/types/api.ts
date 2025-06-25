@@ -1,11 +1,19 @@
-import type { CollectionType } from './generated';
+import type { 
+  CollectionType,
+  FieldDefinition,
+  IndexDefinition,
+  DbRecord,
+  CollectionStats,
+  HealthStatus,
+  ApiError,
+  CollectionSchema
+} from './generated';
 
 // Import auto-generated types from the generated types file
 export type {
   DbRecord,
   CollectionStats,
   HealthStatus,
-  CreateCollectionRequest,
   ApiError,
   CollectionType,
   FieldType,
@@ -13,6 +21,14 @@ export type {
   IndexDefinition,
   CollectionSchema
 } from './generated';
+
+// Additional request types that are not auto-generated from Rust
+export interface CreateCollectionRequest {
+  name: string;
+  collection_type: CollectionType;
+  fields: Record<string, FieldDefinition>;
+  indexes?: IndexDefinition[];
+}
 
 // Permission system types (will be auto-generated when types are regenerated)
 export type UserRole = 'user' | 'superuser';
@@ -386,7 +402,82 @@ export function capabilityNameToObject(capabilityName: string): PluginCapability
 export function getCapabilityName(capability: PluginCapability): string {
   if (typeof capability === "string") {
     return capability;
-  } else {
-    return Object.keys(capability)[0];
   }
+  return Object.keys(capability)[0];
+}
+
+// VFS and File Field Types
+export interface FileReference {
+  file_id: string;
+  name: string;
+  mime_type: string;
+  size: number;
+  path: string;
+}
+
+export interface FileFieldConfig {
+  multiple: boolean;
+  allowed_mime_types?: string[];
+  max_file_size?: number;
+  required: boolean;
+}
+
+export interface FileMetadata {
+  file_id: string;
+  name: string;
+  path: string;
+  mime_type: string;
+  size: number;
+  content_hash: string;
+  created_at?: number;
+  modified_at?: number;
+  custom_metadata?: Record<string, string>;
+  compressed?: boolean;
+  compression_type?: string;
+  tags?: string[];
+}
+
+export interface FileWriteRequest {
+  path: string;
+  mime_type?: string;
+  custom_metadata?: Record<string, string>;
+  tags?: string[];
+  overwrite: boolean;
+}
+
+export interface FileReadResponse {
+  metadata: FileMetadata;
+  content?: ArrayBuffer;
+}
+
+export interface FileListRequest {
+  directory: string;
+  recursive: boolean;
+  mime_filter?: string;
+  tag_filter?: string[];
+  offset?: number;
+  limit?: number;
+}
+
+export interface FileListResponse {
+  files: FileMetadata[];
+  total_count: number;
+  has_more: boolean;
+}
+
+export interface VfsUsageStats {
+  namespace: string;
+  file_count: number;
+  storage_used: number;
+  storage_quota?: number;
+  directory_count: number;
+  last_updated: number;
+}
+
+export interface FileUploadProgress {
+  fileId: string;
+  fileName: string;
+  progress: number;
+  status: 'uploading' | 'completed' | 'error';
+  error?: string;
 } 

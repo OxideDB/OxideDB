@@ -2133,6 +2133,7 @@ dependencies = [
  "oxide-db",
  "oxide-logging",
  "oxide-plugin-runtime",
+ "oxide-vfs",
  "serde",
  "serde_json",
  "tokio",

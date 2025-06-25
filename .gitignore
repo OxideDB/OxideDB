@@ -3,3 +3,4 @@ phase*.txt
 prd.txt
 .cursor
 *.sqlite
+vfs

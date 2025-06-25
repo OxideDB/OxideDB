@@ -37,4 +37,12 @@ email_verification_required: boolean,
 /**
  * Custom fields to include in JWT claims
  */
-custom_claim_fields: Array<string>, };
+custom_claim_fields: Array<string>, 
+/**
+ * Whether refresh tokens are enabled for this collection
+ */
+refresh_tokens_enabled: boolean, 
+/**
+ * Whether refresh tokens are required for this collection (enforced for superusers)
+ */
+refresh_tokens_required: boolean, };

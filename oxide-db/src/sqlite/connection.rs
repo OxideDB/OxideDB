@@ -3,7 +3,7 @@
 use crate::db::SchemaAdapter;
 use super::schema_adapter::SqliteSchemaAdapter;
 use oxide_core::{
-    AppError, AuthService, EventBus,
+    AppError, AuthService, EventBus, FieldType,
     event::types::RecordId,
 };
 use rusqlite::Connection;
@@ -287,7 +287,12 @@ impl SqliteDb {
                             
                             match field_def.field_type.sql_type() {
                                 "TEXT" => {
-                                    bind_values.push(Box::new(value.as_str().unwrap_or("").to_string()));
+                                    // For File fields, serialize the entire JSON object as string
+                                    if matches!(field_def.field_type, FieldType::File(_)) {
+                                        bind_values.push(Box::new(value.to_string()));
+                                    } else {
+                                        bind_values.push(Box::new(value.as_str().unwrap_or("").to_string()));
+                                    }
                                 }
                                 "REAL" => {
                                     bind_values.push(Box::new(value.as_f64().unwrap_or(0.0)));

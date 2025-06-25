@@ -23,6 +23,13 @@ interface FieldFormData {
     cascade_delete: boolean;
     display_field?: string;
   };
+  // File configuration
+  fileConfig?: {
+    multiple: boolean;
+    allowed_mime_types: string[] | null;
+    max_file_size: number | null;
+    required: boolean;
+  };
 }
 
 const CreateCollection: React.FC = () => {
@@ -71,6 +78,8 @@ const CreateCollection: React.FC = () => {
       return fieldType;
     } else if (typeof fieldType === 'object' && 'relationship' in fieldType) {
       return 'relationship';
+    } else if (typeof fieldType === 'object' && 'file' in fieldType) {
+      return 'file';
     }
     return 'text';
   };
@@ -94,10 +103,28 @@ const CreateCollection: React.FC = () => {
           display_field: undefined,
         }
       });
+    } else if (newType === 'file') {
+      updateField(index, {
+        field_type: {
+          file: {
+            multiple: false,
+            allowed_mime_types: null,
+            max_file_size: BigInt(10 * 1024 * 1024), // 10MB default
+            required: false,
+          }
+        },
+        fileConfig: {
+          multiple: false,
+          allowed_mime_types: null,
+          max_file_size: 10 * 1024 * 1024, // 10MB default
+          required: false,
+        }
+      });
     } else {
       updateField(index, {
         field_type: newType as FieldType,
-        relationshipConfig: undefined
+        relationshipConfig: undefined,
+        fileConfig: undefined
       });
     }
   };
@@ -113,6 +140,22 @@ const CreateCollection: React.FC = () => {
           multiple: newConfig.multiple || false,
           cascade_delete: newConfig.cascade_delete || false,
           display_field: newConfig.display_field,
+        }
+      }
+    });
+  };
+
+  const updateFileConfig = (index: number, config: Partial<{ multiple: boolean; allowed_mime_types: string[] | null; max_file_size: number | null; required: boolean }>) => {
+    const field = fields[index];
+    const newConfig = { ...field.fileConfig, ...config };
+    updateField(index, {
+      fileConfig: newConfig,
+      field_type: {
+        file: {
+          multiple: newConfig.multiple || false,
+          allowed_mime_types: newConfig.allowed_mime_types,
+          max_file_size: newConfig.max_file_size ? BigInt(newConfig.max_file_size) : null,
+          required: newConfig.required || false,
         }
       }
     });
@@ -147,13 +190,10 @@ const CreateCollection: React.FC = () => {
       });
 
       const schema: CreateCollectionRequest = {
-        id: crypto.randomUUID(),
         name: collectionName.trim(),
         collection_type: collectionType,
         fields: fieldsMap,
         indexes: [], // Start with no custom indexes
-        created_at: now,
-        updated_at: now,
       };
 
       await apiService.createCollection(schema);
@@ -284,6 +324,7 @@ const CreateCollection: React.FC = () => {
                         <option value="url">URL</option>
                         <option value="password">Password</option>
                         <option value="relationship">Relationship</option>
+                        <option value="file">File</option>
                       </select>
                     </div>
 
@@ -351,6 +392,63 @@ const CreateCollection: React.FC = () => {
                                   className="h-4 w-4 rounded border border-input bg-background text-primary focus:ring-2 focus:ring-ring focus:ring-offset-2"
                                 />
                                 <Label htmlFor={`field-cascade-${index}`}>Cascade Delete</Label>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* File Configuration */}
+                    {getFieldTypeString(field.field_type) === 'file' && (
+                      <div className="col-span-full space-y-4 p-4 border rounded-md bg-muted/50">
+                        <h4 className="font-medium text-sm">File Configuration</h4>
+                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                          <div className="space-y-2">
+                            <Label htmlFor={`field-max-size-${index}`}>Max File Size (MB)</Label>
+                            <Input
+                              id={`field-max-size-${index}`}
+                              type="number"
+                              value={field.fileConfig?.max_file_size ? Number(field.fileConfig.max_file_size) / (1024 * 1024) : 10}
+                              onChange={(e) => {
+                                const sizeMB = parseFloat(e.target.value) || 10;
+                                updateFileConfig(index, {
+                                  max_file_size: sizeMB * 1024 * 1024
+                                });
+                              }}
+                              placeholder="10"
+                            />
+                          </div>
+                          
+                          <div className="space-y-2">
+                            <Label htmlFor={`field-mime-types-${index}`}>Allowed MIME Types (optional)</Label>
+                            <Input
+                              id={`field-mime-types-${index}`}
+                              value={field.fileConfig?.allowed_mime_types?.join(', ') || ''}
+                              onChange={(e) => {
+                                const types = e.target.value ? e.target.value.split(',').map(t => t.trim()).filter(t => t) : null;
+                                updateFileConfig(index, {
+                                  allowed_mime_types: types
+                                });
+                              }}
+                              placeholder="image/*, application/pdf"
+                            />
+                          </div>
+
+                          <div className="space-y-2">
+                            <Label>File Options</Label>
+                            <div className="space-y-2">
+                              <div className="flex items-center space-x-2">
+                                <input
+                                  type="checkbox"
+                                  id={`field-multiple-files-${index}`}
+                                  checked={field.fileConfig?.multiple || false}
+                                  onChange={(e) => updateFileConfig(index, {
+                                    multiple: e.target.checked
+                                  })}
+                                  className="h-4 w-4 rounded border border-input bg-background text-primary focus:ring-2 focus:ring-ring focus:ring-offset-2"
+                                />
+                                <Label htmlFor={`field-multiple-files-${index}`}>Multiple Files</Label>
                               </div>
                             </div>
                           </div>

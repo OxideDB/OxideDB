@@ -40,6 +40,7 @@ use crate::{
             analyze_plugin,
         },
         records::{create_record, delete_record, get_record, list_records, update_record},
+        vfs,
     },
 
     server::AppState,
@@ -147,6 +148,7 @@ pub enum EndpointCategory {
     Logging,
     Admin,
     PluginRegistered { plugin_name: String },
+    VFS,
 }
 
 impl std::fmt::Display for EndpointCategory {
@@ -161,6 +163,7 @@ impl std::fmt::Display for EndpointCategory {
             EndpointCategory::Logging => write!(f, "Logging"),
             EndpointCategory::Admin => write!(f, "Admin UI"),
             EndpointCategory::PluginRegistered { plugin_name } => write!(f, "Plugin: {}", plugin_name),
+            EndpointCategory::VFS => write!(f, "VFS"),
         }
     }
 }
@@ -400,6 +403,26 @@ fn get_static_endpoints(config: &RouteConfig) -> Vec<RegisteredEndpoint> {
         });
     }
     
+    // VFS endpoints
+    let vfs_endpoints = vec![
+        ("POST", "/collections/:collection/files", "vfs::upload_file", true, "Upload file to collection"),
+        ("GET", "/collections/:collection/files", "vfs::list_files", true, "List files in collection"),
+        ("GET", "/collections/:collection/files/:file_id", "vfs::download_file", true, "Download file from collection"),
+        ("DELETE", "/collections/:collection/files/:file_id", "vfs::delete_file", true, "Delete file from collection"),
+        ("GET", "/vfs/usage", "vfs::get_usage_stats", true, "Get VFS usage statistics"),
+    ];
+    
+    for (method, path, handler, auth_required, description) in vfs_endpoints {
+        endpoints.push(RegisteredEndpoint {
+            method: method.to_string(),
+            path: path.to_string(),
+            handler: handler.to_string(),
+            category: EndpointCategory::VFS,
+            auth_required,
+            description: Some(description.to_string()),
+        });
+    }
+    
     // Admin endpoints (if enabled)
     if config.enable_admin {
         let admin_wildcard_path = format!("{}/*path", config.admin_path);
@@ -473,6 +496,8 @@ fn api_routes() -> Router<AppState> {
         .merge(plugin_routes())
         // Logging routes
         .merge(logging_routes())
+        // VFS routes
+        .merge(vfs_routes())
 }
 
 /// Protected authentication routes that require authentication
@@ -583,6 +608,16 @@ fn logging_routes() -> Router<AppState> {
         .route("/logs/user/:user_id", get(get_user_logs))
         .route("/logs/collection/:collection", get(get_collection_logs))
         .route("/logs/health", get(logging_health))
+}
+
+/// VFS routes
+fn vfs_routes() -> Router<AppState> {
+    Router::new()
+        .route("/collections/:collection/files", axum::routing::post(vfs::upload_file))
+        .route("/collections/:collection/files", axum::routing::get(vfs::list_files))
+        .route("/collections/:collection/files/:file_id", axum::routing::get(vfs::download_file))
+        .route("/collections/:collection/files/:file_id", axum::routing::delete(vfs::delete_file))
+        .route("/vfs/usage", axum::routing::get(vfs::get_usage_stats))
 }
 
 /// Admin UI routes with configurable mode
