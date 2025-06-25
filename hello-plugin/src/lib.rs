@@ -17,20 +17,8 @@ const PLUGIN_DESCRIPTION: &str = "A simple demonstration plugin for OxideDB that
 const PLUGIN_HOMEPAGE: &str = "https://github.com/oxidedb/hello-plugin";
 
 /// Hello Plugin - demonstrates the Plugin SDK capabilities
-pub struct HelloPlugin {
-    /// Runtime configuration  
-    _config: serde_json::Value,
-    // NOTE: Removed metadata field - now using TOML-only metadata approach
-    // All plugin metadata is sourced from plugin.toml during installation
-}
-
-impl Default for HelloPlugin {
-    fn default() -> Self {
-        Self {
-            _config: serde_json::Value::Null,
-        }
-    }
-}
+#[derive(Default)]
+pub struct HelloPlugin;
 
 impl HelloPlugin {
     // NOTE: Removed metadata() getter and create_metadata() functions
