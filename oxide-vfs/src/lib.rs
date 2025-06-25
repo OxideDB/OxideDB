@@ -10,6 +10,7 @@
 //! - **Comprehensive backup and restore** with incremental support
 //! - **Performance monitoring** and caching
 //! - **Security validation** and access controls
+//! - **High-performance metadata storage** with LMDB and LRU cache
 //!
 //! ## Architecture
 //!
@@ -17,6 +18,7 @@
 //! 
 //! - **Service Layer**: `VfsService` implements the `VirtualFileSystem` trait
 //! - **Storage Layer**: `FileSystemStorage` handles physical file operations
+//! - **Metadata Layer**: `MetadataStore` provides ultra-fast metadata lookups with LMDB + LRU cache
 //! - **Bridge Layer**: `VfsServiceBridge` connects to oxide-core abstractions
 //! - **Backup Layer**: Comprehensive backup and restore functionality
 //! - **Utilities**: Common functions for hashing, compression, validation
@@ -42,6 +44,7 @@
 
 pub mod service;
 pub mod storage;
+pub mod metadata_store;
 pub mod backup;
 pub mod bridge;
 pub mod error;
@@ -50,6 +53,7 @@ pub mod utils;
 // Re-export main types and functions for convenience
 pub use service::{VfsService, VfsMetrics};
 pub use storage::FileSystemStorage;
+pub use metadata_store::MetadataStore;
 pub use bridge::VfsServiceBridge;
 pub use backup::{BackupService, BackupMetadata, BackupType, initialize_backup_service};
 pub use utils::*;
@@ -64,7 +68,7 @@ pub use oxide_core::{
 /// VFS version information
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// Initialize the VFS system with default configuration
+/// Initialize the VFS system with default configuration and high-performance metadata backend
 pub async fn initialize_vfs_system(
     vfs_path: std::path::PathBuf, 
     backup_path: std::path::PathBuf,
@@ -74,8 +78,8 @@ pub async fn initialize_vfs_system(
     // Initialize backup service
     backup::initialize_backup_service(backup_path);
     
-    // Create and initialize VFS service
-    let vfs_service = VfsService::new(vfs_path, event_bus);
+    // Create and initialize VFS service with LMDB metadata backend
+    let vfs_service = VfsService::new(vfs_path, event_bus)?;
     vfs_service.initialize().await?;
     
     Ok(vfs_service)
@@ -103,7 +107,7 @@ mod tests {
     #[tokio::test]
     async fn test_vfs_service_creation() {
         let temp_dir = TempDir::new().unwrap();
-        let vfs_service = VfsService::new(temp_dir.path().to_path_buf(), None);
+        let vfs_service = VfsService::new(temp_dir.path().to_path_buf(), None).unwrap();
         
         vfs_service.initialize().await.unwrap();
         

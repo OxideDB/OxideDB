@@ -46,14 +46,15 @@ pub struct VfsService {
 }
 
 impl VfsService {
-    /// Create a new VFS service instance
-    pub fn new(base_path: PathBuf, event_bus: Option<Arc<dyn EventBus>>) -> Self {
-        Self {
-            storage: Arc::new(FileSystemStorage::new(base_path)),
+    /// Create a new VFS service instance with high-performance metadata backend
+    pub fn new(base_path: PathBuf, event_bus: Option<Arc<dyn EventBus>>) -> VfsResult<Self> {
+        let storage = FileSystemStorage::new(base_path)?;
+        Ok(Self {
+            storage: Arc::new(storage),
             namespaces: Arc::new(RwLock::new(HashMap::new())),
             event_bus,
             metrics: Arc::new(RwLock::new(VfsMetrics::default())),
-        }
+        })
     }
 
     /// Initialize the VFS service
@@ -639,7 +640,7 @@ mod tests {
 
     async fn create_test_service() -> (VfsService, TempDir) {
         let temp_dir = TempDir::new().unwrap();
-        let service = VfsService::new(temp_dir.path().to_path_buf(), None);
+        let service = VfsService::new(temp_dir.path().to_path_buf(), None).unwrap();
         service.initialize().await.unwrap();
         (service, temp_dir)
     }
