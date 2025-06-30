@@ -35,6 +35,7 @@ pub mod password;
 pub mod phone;
 pub mod relationship;
 pub mod file;
+pub mod select;
 pub use text::TextFieldType;
 pub use number::NumberFieldType;
 pub use boolean::BooleanFieldType;
@@ -46,6 +47,7 @@ pub use password::PasswordFieldType;
 pub use phone::PhoneFieldType;
 pub use relationship::{RelationshipFieldType, RelationshipConfig};
 pub use file::{FileFieldType, FileFieldConfig, FileReference};
+pub use select::{SelectFieldType, SelectConfig};
 
 /// Trait that all field types must implement
 pub trait FieldTypeDefinition {
@@ -97,6 +99,8 @@ pub enum FieldType {
     Relationship(RelationshipConfig),
     /// File field (references to files in virtual filesystem)
     File(FileFieldConfig),
+    /// Select field (dropdown with predefined options)
+    Select(SelectConfig),
 }
 
 impl FieldType {
@@ -114,6 +118,7 @@ impl FieldType {
             FieldType::Phone => Box::new(PhoneFieldType),
             FieldType::Relationship(config) => Box::new(RelationshipFieldType::new(config.clone())),
             FieldType::File(config) => Box::new(FileFieldType::new(config.clone())),
+            FieldType::Select(config) => Box::new(SelectFieldType::new(config.clone())),
         }
     }
     
@@ -208,4 +213,35 @@ mod tests {
         assert!(multiple_relationship.validate("test", &json!(["tag-12345678", "tag-87654321"])).is_ok());
         assert!(multiple_relationship.validate("test", &json!("single-id")).is_err());
     }
-} 
+
+    #[test]
+    fn test_select_field_type() {
+        use serde_json::json;
+        
+        // Test single select
+        let single_config = SelectConfig {
+            options: vec!["option1".to_string(), "option2".to_string(), "option3".to_string()],
+            multiple: false,
+            allow_empty: true,
+        };
+        let single_select = FieldType::Select(single_config);
+        
+        assert_eq!(single_select.to_string(), "select");
+        assert!(single_select.validate("test", &json!("option1")).is_ok());
+        assert!(single_select.validate("test", &json!("option2")).is_ok());
+        assert!(single_select.validate("test", &json!("invalid")).is_err());
+        assert!(single_select.validate("test", &json!(["option1"])).is_err());
+        
+        // Test multiple select
+        let multiple_config = SelectConfig {
+            options: vec!["tag1".to_string(), "tag2".to_string(), "tag3".to_string()],
+            multiple: true,
+            allow_empty: true,
+        };
+        let multiple_select = FieldType::Select(multiple_config);
+        
+        assert!(multiple_select.validate("test", &json!(["tag1", "tag2"])).is_ok());
+        assert!(multiple_select.validate("test", &json!(["tag1", "invalid"])).is_err());
+        assert!(multiple_select.validate("test", &json!("tag1")).is_err());
+    }
+}

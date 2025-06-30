@@ -160,7 +160,7 @@ validation: any, };
 /**
  * Supported field types in collection schemas
  */
-export type FieldType = "text" | "number" | "boolean" | "date" | "json" | "email" | "url" | "password" | "phone" | { "relationship": RelationshipConfig } | { "file": FileFieldConfig };
+export type FieldType = "text" | "number" | "boolean" | "date" | "json" | "email" | "url" | "password" | "phone" | { "relationship": RelationshipConfig } | { "file": FileFieldConfig } | { "select": SelectConfig };
 
 /**
  * Configuration for File field type
@@ -481,6 +481,23 @@ max_host_calls: number,
  * Maximum number of executions per minute
  */
 rate_limit: number, };
+
+/**
+ * Configuration for select fields
+ */
+export type SelectConfig = { 
+/**
+ * Available options for selection
+ */
+options: Array<string>, 
+/**
+ * Whether multiple values can be selected
+ */
+multiple: boolean, 
+/**
+ * Whether empty/null values are allowed
+ */
+allow_empty: boolean, };
 
 /**
  * User roles in the system

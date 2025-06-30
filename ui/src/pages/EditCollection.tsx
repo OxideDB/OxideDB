@@ -8,7 +8,20 @@ import { Label } from '@/components/ui/label';
 import PageLayout from '@/components/PageLayout';
 import { apiService } from '../services/api';
 import type { CollectionSchema, FieldDefinition, FieldType } from '../types/api';
-import type { RelationshipConfig } from '../types/generated';
+
+// Define config interfaces inline
+interface RelationshipConfig {
+  target_collection: string;
+  multiple: boolean;
+  cascade_delete: boolean;
+  display_field?: string;
+}
+
+interface SelectConfig {
+  options: string[];
+  multiple: boolean;
+  allow_empty: boolean;
+}
 
 interface FieldFormData {
   name: string;
@@ -29,6 +42,12 @@ interface FieldFormData {
     allowed_mime_types: string[] | null;
     max_file_size: number | null;
     required: boolean;
+  };
+  // Select configuration
+  selectConfig?: {
+    options: string[];
+    multiple: boolean;
+    allow_empty: boolean;
   };
 }
 
@@ -70,31 +89,41 @@ const EditCollection: React.FC = () => {
       
       // Convert schema fields to form data
       const formFields: FieldFormData[] = Object.entries(schemaData.fields).map(([name, fieldDef]) => {
+        const typedFieldDef = fieldDef as FieldDefinition;
         const field: FieldFormData = {
           name,
-          field_type: fieldDef.field_type,
-          required: fieldDef.required,
-          unique: fieldDef.unique,
-          default: fieldDef.default ? JSON.stringify(fieldDef.default) : undefined,
+          field_type: typedFieldDef.field_type,
+          required: typedFieldDef.required,
+          unique: typedFieldDef.unique,
+          default: typedFieldDef.default ? JSON.stringify(typedFieldDef.default) : undefined,
         };
 
         // If it's a relationship field, extract the configuration
-        if (typeof fieldDef.field_type === 'object' && 'relationship' in fieldDef.field_type) {
+        if (typeof typedFieldDef.field_type === 'object' && 'relationship' in typedFieldDef.field_type) {
           field.relationshipConfig = {
-            target_collection: fieldDef.field_type.relationship.target_collection,
-            multiple: fieldDef.field_type.relationship.multiple,
-            cascade_delete: fieldDef.field_type.relationship.cascade_delete,
-            display_field: fieldDef.field_type.relationship.display_field,
+            target_collection: typedFieldDef.field_type.relationship.target_collection,
+            multiple: typedFieldDef.field_type.relationship.multiple,
+            cascade_delete: typedFieldDef.field_type.relationship.cascade_delete,
+            display_field: typedFieldDef.field_type.relationship.display_field,
           };
         }
 
         // If it's a file field, extract the configuration
-        if (typeof fieldDef.field_type === 'object' && 'file' in fieldDef.field_type) {
+        if (typeof typedFieldDef.field_type === 'object' && 'file' in typedFieldDef.field_type) {
           field.fileConfig = {
-            multiple: fieldDef.field_type.file.multiple,
-            allowed_mime_types: fieldDef.field_type.file.allowed_mime_types,
-            max_file_size: fieldDef.field_type.file.max_file_size ? Number(fieldDef.field_type.file.max_file_size) : null,
-            required: fieldDef.field_type.file.required,
+            multiple: typedFieldDef.field_type.file.multiple,
+            allowed_mime_types: typedFieldDef.field_type.file.allowed_mime_types,
+            max_file_size: typedFieldDef.field_type.file.max_file_size ? Number(typedFieldDef.field_type.file.max_file_size) : null,
+            required: typedFieldDef.field_type.file.required,
+          };
+        }
+
+        // If it's a select field, extract the configuration
+        if (typeof typedFieldDef.field_type === 'object' && 'select' in typedFieldDef.field_type) {
+          field.selectConfig = {
+            options: typedFieldDef.field_type.select.options,
+            multiple: typedFieldDef.field_type.select.multiple,
+            allow_empty: typedFieldDef.field_type.select.allow_empty,
           };
         }
 
@@ -133,6 +162,8 @@ const EditCollection: React.FC = () => {
       return 'relationship';
     } else if (typeof fieldType === 'object' && 'file' in fieldType) {
       return 'file';
+    } else if (typeof fieldType === 'object' && 'select' in fieldType) {
+      return 'select';
     }
     return 'text';
   };
@@ -173,11 +204,27 @@ const EditCollection: React.FC = () => {
           required: false,
         }
       });
+    } else if (newType === 'select') {
+      updateField(index, {
+        field_type: {
+          select: {
+            options: [],
+            multiple: false,
+            allow_empty: true,
+          }
+        },
+        selectConfig: {
+          options: [],
+          multiple: false,
+          allow_empty: true,
+        }
+      });
     } else {
       updateField(index, {
         field_type: newType as FieldType,
         relationshipConfig: undefined,
-        fileConfig: undefined
+        fileConfig: undefined,
+        selectConfig: undefined
       });
     }
   };
@@ -209,6 +256,21 @@ const EditCollection: React.FC = () => {
           allowed_mime_types: newConfig.allowed_mime_types,
           max_file_size: newConfig.max_file_size ? BigInt(newConfig.max_file_size) : null,
           required: newConfig.required || false,
+        }
+      }
+    });
+  };
+
+  const updateSelectConfig = (index: number, config: Partial<SelectConfig>) => {
+    const field = fields[index];
+    const newConfig = { ...field.selectConfig, ...config };
+    updateField(index, {
+      selectConfig: newConfig,
+      field_type: {
+        select: {
+          options: newConfig.options || [],
+          multiple: newConfig.multiple || false,
+          allow_empty: newConfig.allow_empty !== undefined ? newConfig.allow_empty : true,
         }
       }
     });
@@ -392,6 +454,7 @@ const EditCollection: React.FC = () => {
                         <option value="password">Password</option>
                         <option value="relationship">Relationship</option>
                         <option value="file">File</option>
+                        <option value="select">Select</option>
                       </select>
                     </div>
 
@@ -516,6 +579,54 @@ const EditCollection: React.FC = () => {
                                   className="h-4 w-4 rounded border border-input bg-background text-primary focus:ring-2 focus:ring-ring focus:ring-offset-2"
                                 />
                                 <Label htmlFor={`field-multiple-files-${index}`}>Multiple Files</Label>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Select Configuration */}
+                    {getFieldTypeString(field.field_type) === 'select' && (
+                      <div className="col-span-full space-y-4 p-4 border rounded-md bg-muted/50">
+                        <h4 className="font-medium text-sm">Select Configuration</h4>
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                          <div className="space-y-2">
+                            <Label htmlFor={`field-options-${index}`}>Options (one per line)</Label>
+                            <textarea
+                              id={`field-options-${index}`}
+                              value={field.selectConfig?.options?.join('\n') || ''}
+                              onChange={(e) => {
+                                const options = e.target.value.split('\n').map(opt => opt.trim()).filter(opt => opt);
+                                updateSelectConfig(index, { options });
+                              }}
+                              className="flex min-h-[100px] w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                              placeholder="Option 1&#10;Option 2&#10;Option 3"
+                            />
+                          </div>
+
+                          <div className="space-y-2">
+                            <Label>Select Options</Label>
+                            <div className="space-y-2">
+                              <div className="flex items-center space-x-2">
+                                <input
+                                  type="checkbox"
+                                  id={`field-multiple-select-${index}`}
+                                  checked={field.selectConfig?.multiple || false}
+                                  onChange={(e) => updateSelectConfig(index, { multiple: e.target.checked })}
+                                  className="h-4 w-4 rounded border border-input bg-background text-primary focus:ring-2 focus:ring-ring focus:ring-offset-2"
+                                />
+                                <Label htmlFor={`field-multiple-select-${index}`}>Multiple Selection</Label>
+                              </div>
+                              <div className="flex items-center space-x-2">
+                                <input
+                                  type="checkbox"
+                                  id={`field-allow-empty-${index}`}
+                                  checked={field.selectConfig?.allow_empty !== false}
+                                  onChange={(e) => updateSelectConfig(index, { allow_empty: e.target.checked })}
+                                  className="h-4 w-4 rounded border border-input bg-background text-primary focus:ring-2 focus:ring-ring focus:ring-offset-2"
+                                />
+                                <Label htmlFor={`field-allow-empty-${index}`}>Allow Empty Values</Label>
                               </div>
                             </div>
                           </div>

@@ -607,6 +607,54 @@ export const SchemaForm: React.FC<SchemaFormProps> = ({
               required={fieldDef.required}
             />
           );
+        } else if (typeof fieldDef.field_type === 'object' && 'select' in fieldDef.field_type) {
+          // Handle select field
+          const selectConfig = fieldDef.field_type.select;
+          
+          if (selectConfig.multiple) {
+            // Multiple select (array of values)
+            const selectedValues = Array.isArray(value) ? value : [];
+            fieldComponent = (
+              <div className="space-y-2">
+                {selectConfig.options.map((option) => (
+                  <div key={option} className="flex items-center space-x-2">
+                    <input
+                      type="checkbox"
+                      id={`${fieldId}-${option}`}
+                      checked={selectedValues.includes(option)}
+                      onChange={(e) => {
+                        const newValues = e.target.checked
+                          ? [...selectedValues, option]
+                          : selectedValues.filter(v => v !== option);
+                        handleFieldChange(fieldName, newValues);
+                      }}
+                      className="h-4 w-4 rounded border border-input bg-background text-primary focus:ring-2 focus:ring-ring focus:ring-offset-2"
+                    />
+                    <Label htmlFor={`${fieldId}-${option}`}>{option}</Label>
+                  </div>
+                ))}
+              </div>
+            );
+          } else {
+            // Single select (dropdown)
+            fieldComponent = (
+              <select
+                id={fieldId}
+                value={value || ''}
+                onChange={(e) => handleFieldChange(fieldName, e.target.value || null)}
+                className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {selectConfig.allow_empty && (
+                  <option value="">-- Select an option --</option>
+                )}
+                {selectConfig.options.map((option) => (
+                  <option key={option} value={option}>
+                    {option}
+                  </option>
+                ))}
+              </select>
+            );
+          }
         } else {
           // Default text field
           fieldComponent = (
@@ -639,7 +687,9 @@ export const SchemaForm: React.FC<SchemaFormProps> = ({
                 ? 'relationship'
                 : 'file' in fieldDef.field_type
                   ? 'file'
-                  : 'unknown'}
+                  : 'select' in fieldDef.field_type
+                    ? 'select'
+                    : 'unknown'}
           </Badge>
         </div>
         {fieldComponent}
