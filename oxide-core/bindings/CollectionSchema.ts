@@ -20,6 +20,17 @@ name: string,
  */
 collection_type: CollectionType, 
 /**
+ * Schema version (increment on breaking changes)
+ *
+ * Versioning allows the database layer to perform automated migrations
+ * when a collection definition evolves in an incompatible way. The
+ * default version is `1`. The value **MUST** be incremented whenever a
+ * change would require a table rebuild (e.g. field removal or type
+ * change). Adding new optional fields does **not** require a version
+ * bump.
+ */
+version: number, 
+/**
  * Field definitions for this collection
  */
 fields: { [key in string]?: FieldDefinition }, 

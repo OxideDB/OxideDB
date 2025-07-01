@@ -1,6 +1,7 @@
 // Types
 export type {
   FieldFormData,
+  ValidationConfig,
   RelationshipConfig,
   FileConfig,
   SelectConfig,
@@ -26,6 +27,7 @@ export { useFieldManagement } from './useFieldManagement';
 // Components
 export { default as FieldsList } from './FieldsList';
 export { default as FieldItem } from './FieldItem';
+export { default as ValidationConfigComponent } from './ValidationConfig';
 export { default as RelationshipConfigComponent } from './RelationshipConfig';
 export { default as FileConfigComponent } from './FileConfig';
 export { default as SelectConfigComponent } from './SelectConfig'; 

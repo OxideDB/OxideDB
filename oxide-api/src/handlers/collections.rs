@@ -4,10 +4,10 @@
 //! including CRUD operations, schema management, and statistics.
 
 use axum::{extract::{Path, State}, http::StatusCode, response::Json};
-use oxide_core::CollectionSchema;
+use oxide_core::collection::{CollectionSchema, CollectionType, FieldDefinition, IndexDefinition};
 use oxide_db::Db;
-use serde::Serialize;
-use std::sync::Arc;
+use serde::{Deserialize, Serialize};
+use std::{collections::HashMap, sync::Arc};
 use tracing::{debug, info};
 use ts_rs::TS;
 
@@ -16,6 +16,31 @@ use crate::{
     responses::{ApiResponse, EmptyResponse},
     server::AppState,
 };
+
+/// Request payload for creating a new collection
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct CreateCollectionRequest {
+    /// Collection name (must be unique)
+    pub name: String,
+    /// Type of collection
+    pub collection_type: CollectionType,
+    /// Field definitions for this collection
+    pub fields: HashMap<String, FieldDefinition>,
+    /// Index definitions for performance optimization (optional)
+    #[serde(default)]
+    pub indexes: Vec<IndexDefinition>,
+}
+
+impl CreateCollectionRequest {
+    /// Convert to a CollectionSchema with system-generated fields
+    pub fn to_schema(self) -> CollectionSchema {
+        let mut schema = CollectionSchema::new(self.name, self.collection_type);
+        schema.fields = self.fields;
+        schema.indexes = self.indexes;
+        schema
+    }
+}
 
 /// Collection statistics response
 #[derive(Debug, Serialize, TS)]
@@ -250,8 +275,9 @@ pub async fn list_collections(
 /// POST /collections
 pub async fn create_collection(
     State(state): State<AppState>,
-    Json(schema): Json<CollectionSchema>,
+    Json(request): Json<CreateCollectionRequest>,
 ) -> Result<(StatusCode, Json<EmptyResponse>), ApiError> {
+    let schema = request.to_schema();
     CollectionHandlers::create_collection(state.db, schema).await?;
     Ok((StatusCode::CREATED, Json(EmptyResponse::created())))
 }

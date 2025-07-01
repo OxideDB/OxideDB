@@ -3,7 +3,7 @@ import { Plus } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
 import type { CollectionSchema } from '../../types/api';
-import type { FieldFormData, RelationshipConfig, FileConfig, SelectConfig } from './types';
+import type { FieldFormData, RelationshipConfig, FileConfig, SelectConfig, ValidationConfig } from './types';
 import FieldItem from './FieldItem';
 
 interface FieldsListProps {
@@ -15,6 +15,7 @@ interface FieldsListProps {
   onUpdateRelationshipConfig: (index: number, config: Partial<RelationshipConfig>) => void;
   onUpdateFileConfig: (index: number, config: Partial<FileConfig>) => void;
   onUpdateSelectConfig: (index: number, config: Partial<SelectConfig>) => void;
+  onUpdateValidationConfig: (index: number, config: Partial<ValidationConfig>) => void;
   onRemoveField: (index: number) => void;
 }
 
@@ -27,6 +28,7 @@ const FieldsList: React.FC<FieldsListProps> = ({
   onUpdateRelationshipConfig,
   onUpdateFileConfig,
   onUpdateSelectConfig,
+  onUpdateValidationConfig,
   onRemoveField,
 }) => {
   return (
@@ -56,6 +58,7 @@ const FieldsList: React.FC<FieldsListProps> = ({
           onUpdateRelationshipConfig={onUpdateRelationshipConfig}
           onUpdateFileConfig={onUpdateFileConfig}
           onUpdateSelectConfig={onUpdateSelectConfig}
+          onUpdateValidationConfig={onUpdateValidationConfig}
           onRemove={onRemoveField}
         />
       ))}

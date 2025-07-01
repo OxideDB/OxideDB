@@ -1,5 +1,5 @@
 import { useState, useCallback } from 'react';
-import type { FieldFormData, RelationshipConfig, FileConfig, SelectConfig } from './types';
+import type { FieldFormData, RelationshipConfig, FileConfig, SelectConfig, ValidationConfig } from './types';
 import { 
   createDefaultField, 
   updateFieldType as updateFieldTypeUtil,
@@ -82,6 +82,18 @@ export const useFieldManagement = (initialFields: FieldFormData[] = []) => {
     }));
   }, []);
 
+  const updateValidationConfig = useCallback((index: number, config: Partial<ValidationConfig>) => {
+    setFields(prev => prev.map((field, i) => {
+      if (i !== index) return field;
+      
+      const newConfig = { ...field.validation, ...config };
+      return {
+        ...field,
+        validation: newConfig
+      };
+    }));
+  }, []);
+
   const setFieldsFromSchema = useCallback((schemaFields: FieldFormData[]) => {
     setFields(schemaFields);
   }, []);
@@ -95,6 +107,7 @@ export const useFieldManagement = (initialFields: FieldFormData[] = []) => {
     updateRelationshipConfig,
     updateFileConfig,
     updateSelectConfig,
+    updateValidationConfig,
     setFieldsFromSchema,
   };
 }; 

@@ -159,6 +159,13 @@ export const convertSchemaFieldsToFormData = (schemaFields: Record<string, any>)
       required: fieldDef.required,
       unique: fieldDef.unique,
       default: fieldDef.default ? JSON.stringify(fieldDef.default) : undefined,
+      validation: fieldDef.validation ? {
+        regex: fieldDef.validation.regex,
+        min: fieldDef.validation.min,
+        max: fieldDef.validation.max,
+        message: fieldDef.validation.message,
+        allow_empty: fieldDef.validation.allow_empty
+      } : undefined,
     };
 
     // If it's a relationship field, extract the configuration

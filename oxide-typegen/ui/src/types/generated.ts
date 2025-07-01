@@ -106,6 +106,17 @@ name: string,
  */
 collection_type: CollectionType, 
 /**
+ * Schema version (increment on breaking changes)
+ *
+ * Versioning allows the database layer to perform automated migrations
+ * when a collection definition evolves in an incompatible way. The
+ * default version is `1`. The value **MUST** be incremented whenever a
+ * change would require a table rebuild (e.g. field removal or type
+ * change). Adding new optional fields does **not** require a version
+ * bump.
+ */
+version: number, 
+/**
  * Field definitions for this collection
  */
 fields: { [key in string]?: FieldDefinition }, 
@@ -149,13 +160,17 @@ required: boolean,
  */
 unique: boolean, 
 /**
+ * Whether this field should be indexed for performance
+ */
+index: boolean, 
+/**
  * Default value for this field (optional)
  */
 default: any, 
 /**
- * Validation rules (optional)
+ * Validation rules for this field (regex, min/max, etc.)
  */
-validation: any, };
+validation: ValidationRules | null, };
 
 /**
  * Supported field types in collection schemas
@@ -503,6 +518,31 @@ allow_empty: boolean, };
  * User roles in the system
  */
 export type UserRole = "user" | "superuser" | { "custom": string };
+
+/**
+ * Validation rules that can be applied to field values
+ */
+export type ValidationRules = { 
+/**
+ * Regular expression pattern for string validation
+ */
+regex: string | null, 
+/**
+ * Minimum length for strings or minimum value for numbers
+ */
+min: number | null, 
+/**
+ * Maximum length for strings or maximum value for numbers
+ */
+max: number | null, 
+/**
+ * Custom error message for validation failures
+ */
+message: string | null, 
+/**
+ * Whether to allow empty values (overrides field-level required setting)
+ */
+allow_empty: boolean | null, };
 
 /**
  * Backup configuration for VFS namespaces

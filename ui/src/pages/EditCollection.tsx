@@ -9,47 +9,15 @@ import PageLayout from '@/components/PageLayout';
 import { apiService } from '../services/api';
 import type { CollectionSchema, FieldDefinition, FieldType } from '../types/api';
 
-// Define config interfaces inline
-interface RelationshipConfig {
-  target_collection: string;
-  multiple: boolean;
-  cascade_delete: boolean;
-  display_field?: string;
-}
-
-interface SelectConfig {
-  options: string[];
-  multiple: boolean;
-  allow_empty: boolean;
-}
-
-interface FieldFormData {
-  name: string;
-  field_type: FieldType;
-  required: boolean;
-  unique: boolean;
-  default?: string;
-  // Relationship configuration
-  relationshipConfig?: {
-    target_collection: string;
-    multiple: boolean;
-    cascade_delete: boolean;
-    display_field?: string;
-  };
-  // File configuration
-  fileConfig?: {
-    multiple: boolean;
-    allowed_mime_types: string[] | null;
-    max_file_size: number | null;
-    required: boolean;
-  };
-  // Select configuration
-  selectConfig?: {
-    options: string[];
-    multiple: boolean;
-    allow_empty: boolean;
-  };
-}
+// Import shared types
+import type { 
+  FieldFormData, 
+  RelationshipConfig, 
+  FileConfig, 
+  SelectConfig, 
+  ValidationConfig 
+} from '../components/collection-form/types';
+import ValidationConfigComponent from '../components/collection-form/ValidationConfig';
 
 const EditCollection: React.FC = () => {
   const { collection } = useParams<{ collection: string }>();
@@ -96,6 +64,13 @@ const EditCollection: React.FC = () => {
           required: typedFieldDef.required,
           unique: typedFieldDef.unique,
           default: typedFieldDef.default ? JSON.stringify(typedFieldDef.default) : undefined,
+          validation: typedFieldDef.validation ? {
+            regex: typedFieldDef.validation.regex,
+            min: typedFieldDef.validation.min,
+            max: typedFieldDef.validation.max,
+            message: typedFieldDef.validation.message,
+            allow_empty: typedFieldDef.validation.allow_empty
+          } : undefined,
         };
 
         // If it's a relationship field, extract the configuration
@@ -276,6 +251,14 @@ const EditCollection: React.FC = () => {
     });
   };
 
+  const updateValidationConfig = (index: number, config: Partial<ValidationConfig>) => {
+    const field = fields[index];
+    const newConfig = { ...field.validation, ...config };
+    updateField(index, {
+      validation: newConfig
+    });
+  };
+
   const handleUpdateSchema = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!schema || !collection) return;
@@ -291,8 +274,15 @@ const EditCollection: React.FC = () => {
             field_type: field.field_type,
             required: field.required,
             unique: field.unique,
+            index: false,
             default: field.default ? JSON.parse(field.default) : null,
-            validation: null
+            validation: field.validation ? { 
+              regex: field.validation.regex ?? null,
+              min: field.validation.min ?? null,
+              max: field.validation.max ?? null,
+              message: field.validation.message ?? null,
+              allow_empty: field.validation.allow_empty !== undefined ? field.validation.allow_empty : null
+            } : null
           };
         }
       });
@@ -300,6 +290,7 @@ const EditCollection: React.FC = () => {
       const updatedSchema: CollectionSchema = {
         ...schema,
         fields: fieldsMap,
+        version: (schema.version || 1) + 1, // Increment version for schema update (default to 1 if undefined)
         updated_at: BigInt(Math.floor(Date.now() / 1000)),
       };
 
@@ -632,6 +623,16 @@ const EditCollection: React.FC = () => {
                           </div>
                         </div>
                       </div>
+                    )}
+
+                    {/* Validation Configuration - shown for applicable field types */}
+                    {['text', 'email', 'url', 'password', 'number'].includes(getFieldTypeString(field.field_type)) && (
+                      <ValidationConfigComponent
+                        index={index}
+                        fieldType={getFieldTypeString(field.field_type)}
+                        config={field.validation}
+                        onUpdate={updateValidationConfig}
+                      />
                     )}
 
                     <div className="space-y-2">

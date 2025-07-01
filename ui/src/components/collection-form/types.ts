@@ -20,12 +20,21 @@ export interface SelectConfig {
   allow_empty: boolean;
 }
 
+export interface ValidationConfig {
+  regex?: string;
+  min?: number;
+  max?: number;
+  message?: string;
+  allow_empty?: boolean;
+}
+
 export interface FieldFormData {
   name: string;
   field_type: FieldType;
   required: boolean;
   unique: boolean;
   default?: string;
+  validation?: ValidationConfig;
   relationshipConfig?: RelationshipConfig;
   fileConfig?: FileConfig;
   selectConfig?: SelectConfig;

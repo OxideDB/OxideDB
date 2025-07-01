@@ -57,8 +57,15 @@ const CreateCollection: React.FC = () => {
             field_type: field.field_type,
             required: field.required,
             unique: field.unique,
+            index: false,
             default: field.default ? JSON.parse(field.default) : null,
-            validation: null
+            validation: field.validation ? { 
+              regex: field.validation.regex ?? null,
+              min: field.validation.min ?? null,
+              max: field.validation.max ?? null,
+              message: field.validation.message ?? null,
+              allow_empty: field.validation.allow_empty !== undefined ? field.validation.allow_empty : null
+            } : null
           };
         }
       });
@@ -161,6 +168,7 @@ const CreateCollection: React.FC = () => {
               onUpdateRelationshipConfig={fieldManagement.updateRelationshipConfig}
               onUpdateFileConfig={fieldManagement.updateFileConfig}
               onUpdateSelectConfig={fieldManagement.updateSelectConfig}
+              onUpdateValidationConfig={fieldManagement.updateValidationConfig}
               onRemoveField={fieldManagement.removeField}
             />
 

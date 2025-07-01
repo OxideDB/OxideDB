@@ -5,11 +5,12 @@ import { Card } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import type { CollectionSchema } from '../../types/api';
-import type { FieldFormData, RelationshipConfig, FileConfig, SelectConfig } from './types';
+import type { FieldFormData, RelationshipConfig, FileConfig, SelectConfig, ValidationConfig } from './types';
 import { getFieldTypeString } from './fieldUtils';
 import RelationshipConfigComponent from './RelationshipConfig';
 import FileConfigComponent from './FileConfig';
 import SelectConfigComponent from './SelectConfig';
+import ValidationConfigComponent from './ValidationConfig';
 
 interface FieldItemProps {
   field: FieldFormData;
@@ -20,6 +21,7 @@ interface FieldItemProps {
   onUpdateRelationshipConfig: (index: number, config: Partial<RelationshipConfig>) => void;
   onUpdateFileConfig: (index: number, config: Partial<FileConfig>) => void;
   onUpdateSelectConfig: (index: number, config: Partial<SelectConfig>) => void;
+  onUpdateValidationConfig: (index: number, config: Partial<ValidationConfig>) => void;
   onRemove: (index: number) => void;
 }
 
@@ -32,6 +34,7 @@ const FieldItem: React.FC<FieldItemProps> = ({
   onUpdateRelationshipConfig,
   onUpdateFileConfig,
   onUpdateSelectConfig,
+  onUpdateValidationConfig,
   onRemove,
 }) => {
   const fieldTypeString = getFieldTypeString(field.field_type);
@@ -105,6 +108,16 @@ const FieldItem: React.FC<FieldItemProps> = ({
             index={index}
             config={field.selectConfig}
             onUpdate={onUpdateSelectConfig}
+          />
+        )}
+
+        {/* Validation Configuration - shown for applicable field types */}
+        {['text', 'email', 'url', 'password', 'number'].includes(fieldTypeString) && (
+          <ValidationConfigComponent
+            index={index}
+            fieldType={fieldTypeString}
+            config={field.validation}
+            onUpdate={onUpdateValidationConfig}
           />
         )}
 

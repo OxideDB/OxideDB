@@ -12,7 +12,7 @@ import { useAuth } from '../contexts/AuthContext';
 
 const Login: React.FC = () => {
   const navigate = useNavigate();
-  const { login, authCollections } = useAuth();
+  const { login, authCollections, isAuthenticated, isLoading: isAuthLoading } = useAuth();
   const [formData, setFormData] = useState({
     collection: '',
     identifier: '',
@@ -21,6 +21,13 @@ const Login: React.FC = () => {
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    // Redirect if we are not loading and the user is already authenticated.
+    if (!isAuthLoading && isAuthenticated) {
+      navigate('/collections');
+    }
+  }, [isAuthLoading, isAuthenticated, navigate]);
 
   // Auto-select the first available collection when collections are loaded
   useEffect(() => {
@@ -74,6 +81,16 @@ const Login: React.FC = () => {
       setLoading(false);
     }
   };
+
+  // While auth state is loading, or if user is already authed, show a loader
+  // to prevent the login form from flashing.
+  if (isAuthLoading || isAuthenticated) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-background">
+        <Database className="h-8 w-8 text-primary animate-spin" />
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-background px-4">
