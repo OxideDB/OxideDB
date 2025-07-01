@@ -51,7 +51,6 @@ pub mod password;
 pub mod permissions;
 pub mod rules;
 pub mod service;
-pub mod legacy;
 
 // Re-export commonly used types for convenience
 pub use types::{
@@ -67,7 +66,6 @@ pub use permissions::{
 };
 pub use rules::RuleEvaluator;
 pub use service::{AuthService, AuthTokens};
-pub use legacy::create_auth_collections;
 
 #[cfg(test)]
 mod tests {

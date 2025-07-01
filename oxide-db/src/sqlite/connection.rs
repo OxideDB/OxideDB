@@ -154,9 +154,6 @@ impl SqliteDb {
         // Initialize system collections
         self.initialize_system_collections().await?;
 
-        // Initialize authentication collections
-        self.initialize_auth_collections().await?;
-
         Ok(())
     }
 

@@ -345,6 +345,7 @@ mod tests {
             unique: true,
             default: None,
             validation: None,
+            index: false,
         });
         schema.add_field("password".to_string(), crate::FieldDefinition {
             field_type: crate::FieldType::Password,
@@ -352,6 +353,7 @@ mod tests {
             unique: false,
             default: None,
             validation: None,
+            index: false,
         });
 
         // Register the schema with the password hashing hook

@@ -223,40 +223,24 @@ mod tests {
 
         // Create mock schemas for _users and _superusers collections
         let mut users_schema = CollectionSchema::new("_users".to_string(), CollectionType::Auth);
-        let mut users_fields = HashMap::new();
-        users_fields.insert("email".to_string(), FieldDefinition {
-            field_type: FieldType::Email,
-            required: true,
-            unique: true,
-            default: None,
-            validation: None,
-        });
-        users_fields.insert("password".to_string(), FieldDefinition {
-            field_type: FieldType::Password,
-            required: true,
-            unique: false,
-            default: None,
-            validation: None,
-        });
-        users_schema.fields = users_fields;
+        users_schema.add_field(
+            "email".to_string(),
+            FieldDefinition::new(FieldType::Email).required().unique(),
+        );
+        users_schema.add_field(
+            "password".to_string(),
+            FieldDefinition::new(FieldType::Password).required(),
+        );
 
         let mut superusers_schema = CollectionSchema::new("_superusers".to_string(), CollectionType::Auth);
-        let mut superusers_fields = HashMap::new();
-        superusers_fields.insert("email".to_string(), FieldDefinition {
-            field_type: FieldType::Email,
-            required: true,
-            unique: true,
-            default: None,
-            validation: None,
-        });
-        superusers_fields.insert("password".to_string(), FieldDefinition {
-            field_type: FieldType::Password,
-            required: true,
-            unique: false,
-            default: None,
-            validation: None,
-        });
-        superusers_schema.fields = superusers_fields;
+        superusers_schema.add_field(
+            "email".to_string(),
+            FieldDefinition::new(FieldType::Email).required().unique(),
+        );
+        superusers_schema.add_field(
+            "password".to_string(),
+            FieldDefinition::new(FieldType::Password).required(),
+        );
 
         let schemas = vec![users_schema, superusers_schema];
 
@@ -280,40 +264,24 @@ mod tests {
 
         // Create mock schemas for _users and _superusers collections
         let mut users_schema = CollectionSchema::new("_users".to_string(), CollectionType::Auth);
-        let mut users_fields = HashMap::new();
-        users_fields.insert("email".to_string(), FieldDefinition {
-            field_type: FieldType::Email,
-            required: true,
-            unique: true,
-            default: None,
-            validation: None,
-        });
-        users_fields.insert("password".to_string(), FieldDefinition {
-            field_type: FieldType::Password,
-            required: true,
-            unique: false,
-            default: None,
-            validation: None,
-        });
-        users_schema.fields = users_fields;
+        users_schema.add_field(
+            "email".to_string(),
+            FieldDefinition::new(FieldType::Email).required().unique(),
+        );
+        users_schema.add_field(
+            "password".to_string(),
+            FieldDefinition::new(FieldType::Password).required(),
+        );
 
         let mut superusers_schema = CollectionSchema::new("_superusers".to_string(), CollectionType::Auth);
-        let mut superusers_fields = HashMap::new();
-        superusers_fields.insert("email".to_string(), FieldDefinition {
-            field_type: FieldType::Email,
-            required: true,
-            unique: true,
-            default: None,
-            validation: None,
-        });
-        superusers_fields.insert("password".to_string(), FieldDefinition {
-            field_type: FieldType::Password,
-            required: true,
-            unique: false,
-            default: None,
-            validation: None,
-        });
-        superusers_schema.fields = superusers_fields;
+        superusers_schema.add_field(
+            "email".to_string(),
+            FieldDefinition::new(FieldType::Email).required().unique(),
+        );
+        superusers_schema.add_field(
+            "password".to_string(),
+            FieldDefinition::new(FieldType::Password).required(),
+        );
 
         let schemas = vec![users_schema, superusers_schema];
 

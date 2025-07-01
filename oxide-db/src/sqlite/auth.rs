@@ -11,32 +11,6 @@ use tracing::{info, debug, warn};
 use uuid::Uuid;
 
 impl SqliteDb {
-    /// Initialize authentication collections (_users and _superusers) - legacy support
-    pub(super) async fn initialize_auth_collections(&self) -> Result<(), AppError> {
-        use oxide_core::auth::create_auth_collections;
-        
-        let (users_schema, superusers_schema) = create_auth_collections();
-        
-        // Create _users collection if it doesn't exist
-        if !self.collection_exists("_users").await? {
-            self.create_collection_with_schema(users_schema).await?;
-            info!("✅ Created _users auth collection");
-        } else {
-            debug!("_users auth collection already exists");
-        }
-        
-        // Create _superusers collection if it doesn't exist
-        if !self.collection_exists("_superusers").await? {
-            self.create_collection_with_schema(superusers_schema).await?;
-            info!("✅ Created _superusers auth collection");
-        } else {
-            debug!("_superusers auth collection already exists");
-        }
-        
-        info!("✅ Auth collections initialized");
-        Ok(())
-    }
-
     /// Authenticate a user against a specific auth collection
     pub async fn authenticate_user(&self, auth_request: AuthRequest, auth_config: &AuthCollectionConfig) -> Result<AuthResponse, AppError> {
         info!("🔑 Authenticating user in collection '{}': {}", auth_request.collection, auth_request.identifier);

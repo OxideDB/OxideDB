@@ -204,6 +204,7 @@ pub fn create_plugins_collection_schema() -> CollectionSchema {
         unique: true,
         default: None,
         validation: None,
+        index: true,
     });
 
     // Plugin version
@@ -213,6 +214,7 @@ pub fn create_plugins_collection_schema() -> CollectionSchema {
         unique: false,
         default: Some(serde_json::json!("1.0.0")),
         validation: None,
+        index: false,
     });
 
     // Plugin description
@@ -222,6 +224,7 @@ pub fn create_plugins_collection_schema() -> CollectionSchema {
         unique: false,
         default: None,
         validation: None,
+        index: false,
     });
 
     // Plugin author
@@ -231,6 +234,7 @@ pub fn create_plugins_collection_schema() -> CollectionSchema {
         unique: false,
         default: Some(serde_json::json!("Unknown")),
         validation: None,
+        index: false,
     });
 
     // Plugin status
@@ -240,6 +244,7 @@ pub fn create_plugins_collection_schema() -> CollectionSchema {
         unique: false,
         default: Some(serde_json::json!("Enabled")),
         validation: None,
+        index: false,
     });
 
     // Trust level
@@ -249,6 +254,7 @@ pub fn create_plugins_collection_schema() -> CollectionSchema {
         unique: false,
         default: Some(serde_json::json!("Untrusted")),
         validation: None,
+        index: false,
     });
 
     // Capabilities (stored as JSON array)
@@ -258,6 +264,7 @@ pub fn create_plugins_collection_schema() -> CollectionSchema {
         unique: false,
         default: Some(serde_json::json!([])),
         validation: None,
+        index: false,
     });
 
     // Resource limits (stored as JSON object)
@@ -267,6 +274,7 @@ pub fn create_plugins_collection_schema() -> CollectionSchema {
         unique: false,
         default: None,
         validation: None,
+        index: false,
     });
 
     // Plugin metadata
@@ -276,6 +284,7 @@ pub fn create_plugins_collection_schema() -> CollectionSchema {
         unique: false,
         default: Some(serde_json::json!({})),
         validation: None,
+        index: false,
     });
 
     // WASM file path (relative to plugins directory)
@@ -285,6 +294,7 @@ pub fn create_plugins_collection_schema() -> CollectionSchema {
         unique: false,
         default: None,
         validation: None,
+        index: false,
     });
 
     // Plugin directory path (relative to plugins base directory)
@@ -294,6 +304,7 @@ pub fn create_plugins_collection_schema() -> CollectionSchema {
         unique: false,
         default: None,
         validation: None,
+        index: false,
     });
 
     // WASM file size in bytes
@@ -303,6 +314,7 @@ pub fn create_plugins_collection_schema() -> CollectionSchema {
         unique: false,
         default: None,
         validation: None,
+        index: false,
     });
 
     // WASM file hash for integrity verification
@@ -312,6 +324,7 @@ pub fn create_plugins_collection_schema() -> CollectionSchema {
         unique: false,
         default: None,
         validation: None,
+        index: false,
     });
 
     // Whether plugin is enabled
@@ -321,6 +334,7 @@ pub fn create_plugins_collection_schema() -> CollectionSchema {
         unique: false,
         default: Some(serde_json::json!(true)),
         validation: None,
+        index: false,
     });
 
     // Installation timestamp
@@ -330,6 +344,7 @@ pub fn create_plugins_collection_schema() -> CollectionSchema {
         unique: false,
         default: None,
         validation: None,
+        index: false,
     });
 
     schema.fields = fields;

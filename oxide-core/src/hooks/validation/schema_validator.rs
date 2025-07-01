@@ -222,6 +222,7 @@ mod tests {
             default: None,
             validation: None,
             unique: false,
+            index: false,
         });
         
         fields.insert("age".to_string(), FieldDefinition {
@@ -230,6 +231,7 @@ mod tests {
             default: Some(json!(0)),
             validation: None,
             unique: false,
+            index: false,
         });
         
         schema.fields = fields;

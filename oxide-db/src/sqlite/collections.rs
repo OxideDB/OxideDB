@@ -181,6 +181,17 @@ impl SqliteDb {
         // Get the current schema to compare for migration
         let old_schema = self.get_collection_schema(collection).await?;
 
+        // Ensure the new schema version is greater than the existing version
+        if schema.version <= old_schema.version {
+            return Err(AppError::validation(
+                "schema.version".to_string(),
+                format!(
+                    "New schema version {} must be greater than current version {}",
+                    schema.version, old_schema.version
+                ),
+            ));
+        }
+
         // Create a mutable context for BeforeCollectionUpdate event
         let mut context = BeforeEventContext::new_collection_update(
             collection.to_string(),

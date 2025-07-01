@@ -23,7 +23,7 @@ impl RecordHandlers {
     pub async fn create_record(
         db: Arc<dyn Db>,
         collection: String,
-        data: RecordData,
+        mut data: RecordData,
     ) -> Result<Record, ApiError> {
         debug!("Creating record in collection: {}", collection);
 
@@ -33,7 +33,10 @@ impl RecordHandlers {
             return Err(ApiError::not_found(format!("Collection '{}'", collection)));
         }
 
-        // Validate record data against schema
+        // Apply default values for missing fields
+        Self::apply_record_defaults(&db, &collection, &mut data).await?;
+
+        // Validate record data against schema (including new validation rules)
         Self::validate_record_data(&db, &collection, &data).await?;
 
         let record = db.create_record(&collection, data).await?;
@@ -73,7 +76,7 @@ impl RecordHandlers {
         db: Arc<dyn Db>,
         collection: String,
         record_id: RecordId,
-        data: RecordData,
+        mut data: RecordData,
     ) -> Result<Record, ApiError> {
         debug!("Updating record {} in collection {}", record_id, collection);
 
@@ -86,7 +89,10 @@ impl RecordHandlers {
         // Validate record exists
         let _existing_record = db.read_record(&collection, &record_id).await?;
 
-        // Validate record data against schema
+        // Apply default values for missing fields (partial updates)
+        Self::apply_record_defaults(&db, &collection, &mut data).await?;
+
+        // Validate record data against schema (including new validation rules)
         Self::validate_record_data(&db, &collection, &data).await?;
 
         let record = db.update_record(&collection, &record_id, data).await?;
@@ -180,26 +186,40 @@ impl RecordHandlers {
         // Get collection schema
         let schema = db.get_collection_schema(collection).await?;
 
-        // Basic validation - ensure required fields are present
-        for (field_name, field_def) in &schema.fields {
-            if field_def.required {
-                // Check if the field exists in the data
-                let field_exists = match data {
-                    serde_json::Value::Object(map) => map.contains_key(field_name),
-                    _ => false,
-                };
-                
-                if !field_exists {
-                    return Err(ApiError::bad_request(format!(
-                        "Required field '{}' is missing",
-                        field_name
-                    )));
+        // Use the comprehensive validation system from oxide-core
+        match schema.validate_data(data) {
+            Ok(()) => {
+                debug!("Record validation passed for collection: {}", collection);
+                Ok(())
+            }
+            Err(validation_error) => {
+                debug!("Record validation failed for collection {}: {}", collection, validation_error);
+                Err(ApiError::bad_request(validation_error))
+            }
+        }
+    }
+
+    /// Apply default values to record data (when available)
+    async fn apply_record_defaults(
+        db: &Arc<dyn Db>,
+        collection: &str,
+        data: &mut RecordData,
+    ) -> Result<(), ApiError> {
+        // Get collection schema
+        let schema = db.get_collection_schema(collection).await?;
+
+        // Apply default values to missing fields
+        if let serde_json::Value::Object(data_obj) = data {
+            for (field_name, field_def) in &schema.fields {
+                // Apply default value if field is missing and has a default
+                if !data_obj.contains_key(field_name) {
+                    if let Some(default_value) = &field_def.default {
+                        data_obj.insert(field_name.clone(), default_value.clone());
+                        debug!("Applied default value for field '{}' in collection '{}'", field_name, collection);
+                    }
                 }
             }
         }
-
-        // TODO: Add more sophisticated validation based on field types
-        // This would include type checking, format validation, etc.
 
         Ok(())
     }

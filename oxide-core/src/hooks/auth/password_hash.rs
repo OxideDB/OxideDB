@@ -306,8 +306,9 @@ mod tests {
             field_type: crate::FieldType::Email,
             required: true,
             unique: true,
-            default: None,
+            default: None,  
             validation: None,
+            index: false,
         });
         schema.add_field("password".to_string(), crate::FieldDefinition {
             field_type: crate::FieldType::Password,
@@ -315,6 +316,7 @@ mod tests {
             unique: false,
             default: None,
             validation: None,
+            index: false,
         });
         schema.add_field("backup_password".to_string(), crate::FieldDefinition {
             field_type: crate::FieldType::Password,
@@ -322,6 +324,7 @@ mod tests {
             unique: false,
             default: None,
             validation: None,
+            index: false,
         });
 
         // Register the schema

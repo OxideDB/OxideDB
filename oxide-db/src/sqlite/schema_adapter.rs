@@ -135,23 +135,85 @@ impl SchemaAdapter for SqliteSchemaAdapter {
         let table_name = self.get_table_name(&new_schema.name);
         let mut migration_statements = Vec::new();
         
+        // Detect breaking changes: removed fields or type changes
+        let mut has_breaking_change = false;
+
+        for (old_field_name, old_field_def) in &old_schema.fields {
+            match new_schema.fields.get(old_field_name) {
+                None => {
+                    // Field removed => breaking change
+                    has_breaking_change = true;
+                    break;
+                }
+                Some(new_def) => {
+                    if old_field_def.field_type != new_def.field_type {
+                        has_breaking_change = true;
+                        break;
+                    }
+                }
+            }
+        }
+
+        if has_breaking_change {
+            // Perform full table rebuild strategy
+            let temp_table_name = format!("{}_new_v{}", table_name, new_schema.version);
+
+            // 1. Create new table with desired schema
+            let create_sql = self
+                .generate_create_table_sql(new_schema)
+                .replace(&table_name, &temp_table_name);
+            migration_statements.push(create_sql);
+
+            // 2. Copy intersecting fields from old table to new table
+            let mut common_fields = vec!["id", "created_at", "updated_at"]
+                .into_iter()
+                .map(String::from)
+                .collect::<Vec<_>>();
+            for (field_name, _) in &new_schema.fields {
+                if old_schema.fields.contains_key(field_name) {
+                    common_fields.push(field_name.clone());
+                }
+            }
+            let fields_str = common_fields.join(", ");
+            migration_statements.push(format!(
+                "INSERT INTO {temp} ({fields}) SELECT {fields} FROM {orig}",
+                temp = temp_table_name,
+                fields = fields_str,
+                orig = table_name
+            ));
+
+            // 3. Drop old table
+            migration_statements.push(format!("DROP TABLE {orig}", orig = table_name));
+
+            // 4. Rename new table
+            migration_statements.push(format!(
+                "ALTER TABLE {temp} RENAME TO {orig}",
+                temp = temp_table_name,
+                orig = table_name
+            ));
+
+            // 5. Recreate indexes for the new schema
+            migration_statements.extend(self.generate_index_sql(new_schema));
+
+            return migration_statements;
+        }
+
+        // Non-breaking changes: handle additive modifications in-place
+
         // Find new fields that need to be added
         for (field_name, field_def) in &new_schema.fields {
             if !old_schema.fields.contains_key(field_name) {
                 // This is a new field, generate ALTER TABLE ADD COLUMN statement
                 let mut column_def = format!("{} {}", field_name, self.field_type_to_sql(&field_def.field_type));
-                
-                // Add constraints - Note: SQLite doesn't support adding NOT NULL columns without defaults
-                // so we'll add as nullable first, then handle required fields separately if needed
+
+                // Handle unique constraints via separate indexes (SQLite limitation)
                 if field_def.unique {
-                    // For unique constraints, we'll add them as separate indexes since SQLite
-                    // doesn't support adding UNIQUE constraints via ALTER TABLE
                     migration_statements.push(format!(
                         "CREATE UNIQUE INDEX IF NOT EXISTS idx_{}_unique_{} ON {}({})",
                         table_name, field_name, table_name, field_name
                     ));
                 }
-                
+
                 // Add default value if specified
                 if let Some(default) = &field_def.default {
                     match field_def.field_type.sql_type() {
@@ -159,7 +221,6 @@ impl SchemaAdapter for SqliteSchemaAdapter {
                             if let Some(s) = default.as_str() {
                                 column_def.push_str(&format!(" DEFAULT '{}'", s.replace('\'', "''")));
                             } else {
-                                // For JSON fields, serialize the default value
                                 column_def.push_str(&format!(" DEFAULT '{}'", default.to_string().replace('\'', "''")));
                             }
                         }
@@ -178,20 +239,21 @@ impl SchemaAdapter for SqliteSchemaAdapter {
                             }
                         }
                         _ => {
-                            // Fallback to text representation
                             column_def.push_str(&format!(" DEFAULT '{}'", default.to_string().replace('\'', "''")));
                         }
                     }
                 }
-                
+
                 migration_statements.push(format!("ALTER TABLE {} ADD COLUMN {}", table_name, column_def));
             }
         }
-        
-        // Add indexes for new fields that need them
+
+        // Add indexes for new fields or explicitly defined indexes
         for index_def in &new_schema.indexes {
-            // Check if this index involves new fields
-            let has_new_fields = index_def.fields.iter().any(|field| !old_schema.fields.contains_key(field));
+            let has_new_fields = index_def
+                .fields
+                .iter()
+                .any(|field| !old_schema.fields.contains_key(field));
             if has_new_fields {
                 let index_type = if index_def.unique { "UNIQUE INDEX" } else { "INDEX" };
                 let fields_str = index_def.fields.join(", ");
@@ -201,7 +263,7 @@ impl SchemaAdapter for SqliteSchemaAdapter {
                 ));
             }
         }
-        
+
         migration_statements
     }
 }
@@ -244,6 +306,7 @@ mod tests {
                 unique: true,
                 default: None,
                 validation: None,
+                index: false,
             },
         );
         schema.add_field(
@@ -254,6 +317,7 @@ mod tests {
                 unique: false,
                 default: Some(serde_json::json!(false)),
                 validation: None,
+                index: false,
             },
         );
 
@@ -280,6 +344,7 @@ mod tests {
                 unique: true,
                 default: None,
                 validation: None,
+                index: false,
             },
         );
         
@@ -293,6 +358,7 @@ mod tests {
                 unique: false,
                 default: Some(serde_json::json!(0)),
                 validation: None,
+                index: false,
             },
         );
         new_schema.add_field(
@@ -303,6 +369,7 @@ mod tests {
                 unique: false,
                 default: Some(serde_json::json!(false)),
                 validation: None,
+                index: false,
             },
         );
         
@@ -327,6 +394,7 @@ mod tests {
                 unique: true,
                 default: None,
                 validation: None,
+                index: false,
             },
         );
         schema.add_field(
@@ -337,6 +405,7 @@ mod tests {
                 unique: false,
                 default: None,
                 validation: None,
+                index: false,
             },
         );
         schema.add_field(
@@ -347,6 +416,7 @@ mod tests {
                 unique: false,
                 default: None,
                 validation: None,
+                index: false,
             },
         );
 
@@ -371,6 +441,7 @@ mod tests {
                 unique: true,
                 default: None,
                 validation: None,
+                index: false,
             },
         );
 
