@@ -65,6 +65,28 @@ refresh_tokens_required: boolean, };
 export type AuthMethod = "email_password" | { "o_auth": { provider: string, } } | { "saml": { provider: string, } } | { "ldap": { server: string, } };
 
 /**
+ * Auth-specific operation types for permission rules
+ */
+export type AuthOperation = "login" | "register" | "token_validation" | "token_refresh" | "logout" | "get_current_user" | "list_auth_collections";
+
+/**
+ * Permission rule for a specific auth operation on a collection
+ */
+export type AuthOperationRule = { 
+/**
+ * The auth operation this rule applies to
+ */
+operation: AuthOperation, 
+/**
+ * The permission level for this operation
+ */
+permission: PermissionLevel, 
+/**
+ * Optional filter for auth operations
+ */
+filter: string | null, };
+
+/**
  * Complete permission rules for a collection
  */
 export type CollectionPermissions = { 
@@ -73,9 +95,13 @@ export type CollectionPermissions = {
  */
 collection: string, 
 /**
- * Rules for each CRUD operation
+ * Rules for CRUD operations
  */
-rules: { [key in CrudOperation]?: OperationRule }, 
+crud_rules: { [key in CrudOperation]?: CrudOperationRule }, 
+/**
+ * Rules for auth operations (only for auth collections)
+ */
+auth_rules: { [key in AuthOperation]?: AuthOperationRule }, 
 /**
  * Whether this collection requires authentication by default
  */
@@ -142,6 +168,23 @@ export type CollectionType = "base" | "auth";
  * CRUD operation types for permission rules
  */
 export type CrudOperation = "create" | "read" | "update" | "delete" | "list";
+
+/**
+ * Permission rule for a specific CRUD operation on a collection
+ */
+export type CrudOperationRule = { 
+/**
+ * The CRUD operation this rule applies to
+ */
+operation: CrudOperation, 
+/**
+ * The permission level for this operation
+ */
+permission: PermissionLevel, 
+/**
+ * Optional filter for list operations (like PocketBase filter syntax)
+ */
+filter: string | null, };
 
 /**
  * Field definition within a collection schema
@@ -294,19 +337,24 @@ fields: Array<string>,
 unique: boolean, };
 
 /**
- * Permission rule for a specific operation on a collection
+ * Combined operation type that can be either CRUD or Auth
+ */
+export type Operation = { "crud": CrudOperation } | { "auth": AuthOperation };
+
+/**
+ * Permission rule for any operation (CRUD or Auth)
  */
 export type OperationRule = { 
 /**
- * The CRUD operation this rule applies to
+ * The operation this rule applies to
  */
-operation: CrudOperation, 
+operation: Operation, 
 /**
  * The permission level for this operation
  */
 permission: PermissionLevel, 
 /**
- * Optional filter for list operations (like PocketBase filter syntax)
+ * Optional filter for operations
  */
 filter: string | null, };
 
@@ -714,6 +762,27 @@ created_at: string | null,
  * Last modification timestamp
  */
 updated_at: string | null, };
+
+/**
+ * Request payload for creating a new collection
+ */
+export type CreateCollectionRequest = { 
+/**
+ * Collection name (must be unique)
+ */
+name: string, 
+/**
+ * Type of collection
+ */
+collection_type: CollectionType, 
+/**
+ * Field definitions for this collection
+ */
+fields: { [key in string]?: FieldDefinition }, 
+/**
+ * Index definitions for performance optimization (optional)
+ */
+indexes: Array<IndexDefinition>, };
 
 /**
  * Empty response for operations that don't return data

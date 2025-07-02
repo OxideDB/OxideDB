@@ -20,6 +20,7 @@ import type {
   FieldDefinition, 
   CollectionPermissions, 
   CrudOperation, 
+  AuthOperation,
   PermissionLevel, 
   PermissionPresetType,
   FileReference 
@@ -46,8 +47,6 @@ const Records: React.FC = () => {
     lastModified: "2 hours ago", // Placeholder
     status: "active",
   };
-
-
 
   useEffect(() => {
     if (collection) {
@@ -118,7 +117,7 @@ const Records: React.FC = () => {
     }
   };
 
-  const getOperationIcon = (operation: CrudOperation) => {
+  const getCrudOperationIcon = (operation: CrudOperation) => {
     switch (operation) {
       case 'create': return <Plus className="w-4 h-4" />;
       case 'read': return <Eye className="w-4 h-4" />;
@@ -128,6 +127,24 @@ const Records: React.FC = () => {
       default: return <Settings className="w-4 h-4" />;
     }
   };
+
+  const getAuthOperationIcon = (operation: AuthOperation) => {
+    switch (operation) {
+      case 'login': return <Lock className="w-4 h-4" />;
+      case 'register': return <Users className="w-4 h-4" />;
+      case 'token_validation': return <Shield className="w-4 h-4" />;
+      case 'token_refresh': return <RotateCcw className="w-4 h-4" />;
+      case 'logout': return <Unlock className="w-4 h-4" />;
+      case 'get_current_user': return <Users className="w-4 h-4" />;
+      case 'list_auth_collections': return <Database className="w-4 h-4" />;
+      default: return <Settings className="w-4 h-4" />;
+    }
+  };
+
+  // Determine collection type and appropriate operations
+  const isAuthCollection = schema?.collection_type === 'auth';
+  const crudOperations: CrudOperation[] = ['create', 'read', 'update', 'delete', 'list'];
+  const authOperations: AuthOperation[] = ['login', 'register', 'token_validation', 'token_refresh', 'logout', 'get_current_user', 'list_auth_collections'];
 
   // Permission management functions
   const updateCollectionPermissions = async (updatedPermissions: CollectionPermissions) => {
@@ -169,11 +186,9 @@ const Records: React.FC = () => {
     permissions: CollectionPermissions;
     onChange: (permissions: CollectionPermissions) => void;
   }> = ({ permissions, onChange }) => {
-    const operations: CrudOperation[] = ['create', 'read', 'update', 'delete', 'list'];
-
-    const updateOperation = (operation: CrudOperation, level: PermissionLevel, filter?: string) => {
-      const newRules = { ...permissions.rules };
-      newRules[operation] = {
+    const updateCrudOperation = (operation: CrudOperation, level: PermissionLevel, filter?: string) => {
+      const newCrudRules = { ...permissions.crud_rules };
+      newCrudRules[operation] = {
         operation,
         permission: level,
         filter: filter || undefined,
@@ -181,69 +196,151 @@ const Records: React.FC = () => {
       
       onChange({
         ...permissions,
-        rules: newRules,
+        crud_rules: newCrudRules,
+      });
+    };
+
+    const updateAuthOperation = (operation: AuthOperation, level: PermissionLevel, filter?: string) => {
+      const newAuthRules = { ...permissions.auth_rules };
+      newAuthRules[operation] = {
+        operation,
+        permission: level,
+        filter: filter || undefined,
+      };
+      
+      onChange({
+        ...permissions,
+        auth_rules: newAuthRules,
       });
     };
 
     return (
-      <div className="space-y-4">
-        <div className="grid gap-4">
-          {operations.map((operation) => {
-            const rule = permissions.rules[operation];
-            return (
-              <div key={operation} className="flex items-center space-x-4 p-4 border rounded-lg">
-                <div className="flex items-center space-x-2 min-w-0 flex-1">
-                  {getOperationIcon(operation)}
-                  <span className="font-medium capitalize">{operation}</span>
-                </div>
-                
-                <div className="flex-1">
-                  <Select
-                    value={typeof rule?.permission === 'object' ? 'rule' : rule?.permission || 'none'}
-                    onValueChange={(value: string) => {
-                      if (value === 'rule') {
-                        updateOperation(operation, { rule: '@request.auth.id != null' });
-                      } else {
-                        updateOperation(operation, value as PermissionLevel);
-                      }
-                    }}
-                  >
-                    <SelectTrigger>
-                      <SelectValue placeholder="Select permission" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="none">None</SelectItem>
-                      <SelectItem value="public">Public</SelectItem>
-                      <SelectItem value="authenticatedonly">Authenticated Only</SelectItem>
-                      <SelectItem value="superuseronly">Superuser Only</SelectItem>
-                      <SelectItem value="rule">Custom Rule</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-
-                {typeof rule?.permission === 'object' && 'rule' in rule.permission && (
-                  <div className="flex-1">
-                    <Input
-                      placeholder="Custom rule expression"
-                      value={rule.permission.rule}
-                      onChange={(e) => updateOperation(operation, { rule: e.target.value })}
-                    />
+      <div className="space-y-6">
+        {/* CRUD Operations Section */}
+        <div className="space-y-4">
+          <h3 className="text-lg font-medium">CRUD Operations</h3>
+          <div className="grid gap-4">
+            {crudOperations.map((operation) => {
+              const rule = permissions.crud_rules[operation];
+              return (
+                <div key={operation} className="flex items-center space-x-4 p-4 border rounded-lg">
+                  <div className="flex items-center space-x-2 min-w-0 flex-1">
+                    {getCrudOperationIcon(operation)}
+                    <span className="font-medium capitalize">{operation.replace(/([A-Z])/g, ' $1').toLowerCase()}</span>
                   </div>
-                )}
-
-                {rule?.filter !== undefined && (
+                  
                   <div className="flex-1">
-                    <Input
-                      placeholder="Filter expression (optional)"
-                      value={rule.filter || ''}
-                      onChange={(e) => updateOperation(operation, rule.permission, e.target.value)}
-                    />
+                    <Select
+                      value={typeof rule?.permission === 'object' ? 'rule' : rule?.permission || 'none'}
+                      onValueChange={(value: string) => {
+                        if (value === 'rule') {
+                          updateCrudOperation(operation, { rule: '@request.auth.id != null' });
+                        } else {
+                          updateCrudOperation(operation, value as PermissionLevel);
+                        }
+                      }}
+                    >
+                      <SelectTrigger>
+                        <SelectValue placeholder="Select permission" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="none">None</SelectItem>
+                        <SelectItem value="public">Public</SelectItem>
+                        <SelectItem value="authenticatedonly">Authenticated Only</SelectItem>
+                        <SelectItem value="superuseronly">Superuser Only</SelectItem>
+                        <SelectItem value="rule">Custom Rule</SelectItem>
+                      </SelectContent>
+                    </Select>
                   </div>
-                )}
-              </div>
-            );
-          })}
+
+                  {typeof rule?.permission === 'object' && 'rule' in rule.permission && (
+                    <div className="flex-1">
+                      <Input
+                        placeholder="Custom rule expression"
+                        value={rule.permission.rule}
+                        onChange={(e) => updateCrudOperation(operation, { rule: e.target.value })}
+                      />
+                    </div>
+                  )}
+
+                  {rule?.filter !== undefined && (
+                    <div className="flex-1">
+                      <Input
+                        placeholder="Filter expression (optional)"
+                        value={rule.filter || ''}
+                        onChange={(e) => updateCrudOperation(operation, rule.permission, e.target.value)}
+                      />
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
         </div>
+
+        {/* Auth Operations Section - Only show for auth collections */}
+        {isAuthCollection && (
+          <div className="space-y-4">
+            <h3 className="text-lg font-medium">Authentication Operations</h3>
+            <div className="grid gap-4">
+              {authOperations.map((operation) => {
+                const rule = permissions.auth_rules[operation];
+                return (
+                  <div key={operation} className="flex items-center space-x-4 p-4 border rounded-lg bg-blue-50">
+                    <div className="flex items-center space-x-2 min-w-0 flex-1">
+                      {getAuthOperationIcon(operation)}
+                      <span className="font-medium capitalize">{operation.replace(/([A-Z])/g, ' $1').toLowerCase()}</span>
+                    </div>
+                    
+                    <div className="flex-1">
+                      <Select
+                        value={typeof rule?.permission === 'object' ? 'rule' : rule?.permission || 'none'}
+                        onValueChange={(value: string) => {
+                          if (value === 'rule') {
+                            updateAuthOperation(operation, { rule: '@request.auth.id != null' });
+                          } else {
+                            updateAuthOperation(operation, value as PermissionLevel);
+                          }
+                        }}
+                      >
+                        <SelectTrigger>
+                          <SelectValue placeholder="Select permission" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="none">None</SelectItem>
+                          <SelectItem value="public">Public</SelectItem>
+                          <SelectItem value="authenticatedonly">Authenticated Only</SelectItem>
+                          <SelectItem value="superuseronly">Superuser Only</SelectItem>
+                          <SelectItem value="rule">Custom Rule</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+
+                    {typeof rule?.permission === 'object' && 'rule' in rule.permission && (
+                      <div className="flex-1">
+                        <Input
+                          placeholder="Custom rule expression"
+                          value={rule.permission.rule}
+                          onChange={(e) => updateAuthOperation(operation, { rule: e.target.value })}
+                        />
+                      </div>
+                    )}
+
+                    {rule?.filter !== undefined && (
+                      <div className="flex-1">
+                        <Input
+                          placeholder="Filter expression (optional)"
+                          value={rule.filter || ''}
+                          onChange={(e) => updateAuthOperation(operation, rule.permission, e.target.value)}
+                        />
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
       </div>
     );
   };
@@ -411,7 +508,7 @@ const Records: React.FC = () => {
           <CardHeader>
             <CardTitle>Edit Permissions: {collection}</CardTitle>
             <CardDescription>
-              Configure access control rules for each CRUD operation
+              Configure access control rules for each operation
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -481,98 +578,211 @@ const Records: React.FC = () => {
           <CardContent>
             {permissions ? (
               <>
-                {/* Mobile view - Cards */}
-                <div className="block md:hidden space-y-3">
-                  {Object.entries(permissions.rules).map(([operation, rule]) => {
-                    const display = getPermissionLevelDisplay(rule.permission);
-                    return (
-                      <Card key={operation} className="p-4">
-                        <div className="space-y-3">
-                          <div className="flex items-center justify-between">
-                            <div className="flex items-center space-x-2">
-                              {getOperationIcon(operation as CrudOperation)}
-                              <span className="font-medium capitalize">{operation}</span>
-                            </div>
-                            <Badge className={display.color}>
-                              <span className="flex items-center space-x-1">
-                                {display.icon}
-                                <span className="text-xs">{display.text}</span>
-                              </span>
-                            </Badge>
-                          </div>
-                          {typeof rule.permission === 'object' && 'rule' in rule.permission && (
-                            <div>
-                              <div className="font-mono text-sm bg-gray-50 p-2 rounded border break-all">
-                                {rule.permission.rule}
-                              </div>
-                            </div>
-                          )}
-                          {rule.filter && (
-                            <div>
-                              <span className="text-sm text-muted-foreground">Filter: </span>
-                              <code className="text-sm bg-gray-100 px-2 py-1 rounded">{rule.filter}</code>
-                            </div>
-                          )}
-                        </div>
-                      </Card>
-                    );
-                  })}
-                </div>
-
-                {/* Desktop view - Table */}
-                <div className="hidden md:block">
-                  <Table>
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead>Operation</TableHead>
-                        <TableHead>Permission Level</TableHead>
-                        <TableHead>Custom Rule</TableHead>
-                        <TableHead>Filter</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {Object.entries(permissions.rules).map(([operation, rule]) => {
-                        const display = getPermissionLevelDisplay(rule.permission);
-                        return (
-                          <TableRow key={operation}>
-                            <TableCell>
+                {/* CRUD Operations Section */}
+                <div className="space-y-4 mb-6">
+                  <h3 className="text-lg font-medium">CRUD Operations</h3>
+                  
+                  {/* Mobile view - Cards */}
+                  <div className="block md:hidden space-y-3">
+                    {crudOperations.map((operation) => {
+                      const rule = permissions.crud_rules[operation];
+                      if (!rule) return null; // Skip operations without rules
+                      const display = getPermissionLevelDisplay(rule.permission);
+                      return (
+                        <Card key={operation} className="p-4">
+                          <div className="space-y-3">
+                            <div className="flex items-center justify-between">
                               <div className="flex items-center space-x-2">
-                                {getOperationIcon(operation as CrudOperation)}
-                                <span className="font-medium capitalize">{operation}</span>
+                                {getCrudOperationIcon(operation)}
+                                <span className="font-medium capitalize">{operation.replace(/([A-Z])/g, ' $1').toLowerCase()}</span>
                               </div>
-                            </TableCell>
-                            <TableCell>
                               <Badge className={display.color}>
                                 <span className="flex items-center space-x-1">
                                   {display.icon}
                                   <span className="text-xs">{display.text}</span>
                                 </span>
                               </Badge>
-                            </TableCell>
-                            <TableCell>
-                              {typeof rule.permission === 'object' && 'rule' in rule.permission ? (
-                                <code className="text-xs bg-gray-100 px-2 py-1 rounded max-w-xs block truncate">
+                            </div>
+                            {typeof rule.permission === 'object' && 'rule' in rule.permission && (
+                              <div>
+                                <div className="font-mono text-sm bg-gray-50 p-2 rounded border break-all">
                                   {rule.permission.rule}
-                                </code>
-                              ) : (
-                                <span className="text-muted-foreground">-</span>
+                                </div>
+                              </div>
+                            )}
+                            {rule.filter && (
+                              <div>
+                                <span className="text-sm text-muted-foreground">Filter: </span>
+                                <code className="text-sm bg-gray-100 px-2 py-1 rounded">{rule.filter}</code>
+                              </div>
+                            )}
+                          </div>
+                        </Card>
+                      );
+                    })}
+                  </div>
+
+                  {/* Desktop view - Table */}
+                  <div className="hidden md:block">
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>Operation</TableHead>
+                          <TableHead>Permission Level</TableHead>
+                          <TableHead>Custom Rule</TableHead>
+                          <TableHead>Filter</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {crudOperations.map((operation) => {
+                          const rule = permissions.crud_rules[operation];
+                          if (!rule) return null; // Skip operations without rules
+                          const display = getPermissionLevelDisplay(rule.permission);
+                          return (
+                            <TableRow key={operation}>
+                              <TableCell>
+                                <div className="flex items-center space-x-2">
+                                  {getCrudOperationIcon(operation)}
+                                  <span className="font-medium capitalize">{operation.replace(/([A-Z])/g, ' $1').toLowerCase()}</span>
+                                </div>
+                              </TableCell>
+                              <TableCell>
+                                <Badge className={display.color}>
+                                  <span className="flex items-center space-x-1">
+                                    {display.icon}
+                                    <span className="text-xs">{display.text}</span>
+                                  </span>
+                                </Badge>
+                              </TableCell>
+                              <TableCell>
+                                {typeof rule.permission === 'object' && 'rule' in rule.permission ? (
+                                  <code className="text-xs bg-gray-100 px-2 py-1 rounded max-w-xs block truncate">
+                                    {rule.permission.rule}
+                                  </code>
+                                ) : (
+                                  <span className="text-muted-foreground">-</span>
+                                )}
+                              </TableCell>
+                              <TableCell>
+                                {rule.filter ? (
+                                  <code className="text-xs bg-gray-100 px-2 py-1 rounded max-w-xs block truncate">
+                                    {rule.filter}
+                                  </code>
+                                ) : (
+                                  <span className="text-muted-foreground">-</span>
+                                )}
+                              </TableCell>
+                            </TableRow>
+                          );
+                        })}
+                      </TableBody>
+                    </Table>
+                  </div>
+                </div>
+
+                {/* Auth Operations Section - Only show for auth collections */}
+                {isAuthCollection && (
+                  <div className="space-y-4">
+                    <h3 className="text-lg font-medium">Authentication Operations</h3>
+                    
+                    {/* Mobile view - Cards */}
+                    <div className="block md:hidden space-y-3">
+                      {authOperations.map((operation) => {
+                        const rule = permissions.auth_rules[operation];
+                        if (!rule) return null; // Skip operations without rules
+                        const display = getPermissionLevelDisplay(rule.permission);
+                        return (
+                          <Card key={operation} className="p-4 bg-blue-50">
+                            <div className="space-y-3">
+                              <div className="flex items-center justify-between">
+                                <div className="flex items-center space-x-2">
+                                  {getAuthOperationIcon(operation)}
+                                  <span className="font-medium capitalize">{operation.replace(/([A-Z])/g, ' $1').toLowerCase()}</span>
+                                </div>
+                                <Badge className={display.color}>
+                                  <span className="flex items-center space-x-1">
+                                    {display.icon}
+                                    <span className="text-xs">{display.text}</span>
+                                  </span>
+                                </Badge>
+                              </div>
+                              {typeof rule.permission === 'object' && 'rule' in rule.permission && (
+                                <div>
+                                  <div className="font-mono text-sm bg-gray-50 p-2 rounded border break-all">
+                                    {rule.permission.rule}
+                                  </div>
+                                </div>
                               )}
-                            </TableCell>
-                            <TableCell>
-                              {rule.filter ? (
-                                <code className="text-xs bg-gray-100 px-2 py-1 rounded max-w-xs block truncate">
-                                  {rule.filter}
-                                </code>
-                              ) : (
-                                <span className="text-muted-foreground">-</span>
+                              {rule.filter && (
+                                <div>
+                                  <span className="text-sm text-muted-foreground">Filter: </span>
+                                  <code className="text-sm bg-gray-100 px-2 py-1 rounded">{rule.filter}</code>
+                                </div>
                               )}
-                            </TableCell>
-                          </TableRow>
+                            </div>
+                          </Card>
                         );
                       })}
-                    </TableBody>
-                  </Table>
-                </div>
+                    </div>
+
+                    {/* Desktop view - Table */}
+                    <div className="hidden md:block">
+                      <Table>
+                        <TableHeader>
+                          <TableRow>
+                            <TableHead>Operation</TableHead>
+                            <TableHead>Permission Level</TableHead>
+                            <TableHead>Custom Rule</TableHead>
+                            <TableHead>Filter</TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {authOperations.map((operation) => {
+                            const rule = permissions.auth_rules[operation];
+                            if (!rule) return null; // Skip operations without rules
+                            const display = getPermissionLevelDisplay(rule.permission);
+                            return (
+                              <TableRow key={operation} className="bg-blue-50">
+                                <TableCell>
+                                  <div className="flex items-center space-x-2">
+                                    {getAuthOperationIcon(operation)}
+                                    <span className="font-medium capitalize">{operation.replace(/([A-Z])/g, ' $1').toLowerCase()}</span>
+                                  </div>
+                                </TableCell>
+                                <TableCell>
+                                  <Badge className={display.color}>
+                                    <span className="flex items-center space-x-1">
+                                      {display.icon}
+                                      <span className="text-xs">{display.text}</span>
+                                    </span>
+                                  </Badge>
+                                </TableCell>
+                                <TableCell>
+                                  {typeof rule.permission === 'object' && 'rule' in rule.permission ? (
+                                    <code className="text-xs bg-gray-100 px-2 py-1 rounded max-w-xs block truncate">
+                                      {rule.permission.rule}
+                                    </code>
+                                  ) : (
+                                    <span className="text-muted-foreground">-</span>
+                                  )}
+                                </TableCell>
+                                <TableCell>
+                                  {rule.filter ? (
+                                    <code className="text-xs bg-gray-100 px-2 py-1 rounded max-w-xs block truncate">
+                                      {rule.filter}
+                                    </code>
+                                  ) : (
+                                    <span className="text-muted-foreground">-</span>
+                                  )}
+                                </TableCell>
+                              </TableRow>
+                            );
+                          })}
+                        </TableBody>
+                      </Table>
+                    </div>
+                  </div>
+                )}
               </>
             ) : (
               <div className="text-center py-8">

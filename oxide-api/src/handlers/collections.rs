@@ -97,7 +97,7 @@ impl CollectionHandlers {
 
         // Check if this is a system collection and prevent deletion
         let schema = db.get_collection_schema(&collection).await?;
-        if schema.collection_type == oxide_core::collection::CollectionType::Auth {
+        if schema.name.starts_with('_') {
             return Err(ApiError::forbidden("System collections cannot be deleted"));
         }
 

@@ -27,30 +27,52 @@ export interface CreateCollectionRequest {
   name: string;
   collection_type: CollectionType;
   fields: Record<string, FieldDefinition>;
-  indexes?: IndexDefinition[];
+  indexes: IndexDefinition[];
+  auth_config?: AuthCollectionConfig;
 }
 
 // Permission system types (will be auto-generated when types are regenerated)
 export type UserRole = 'user' | 'superuser';
 
-export type CrudOperation = 'create' | 'read' | 'update' | 'delete' | 'list';
+export type CrudOperation =
+  | 'create'
+  | 'read'
+  | 'update'
+  | 'delete'
+  | 'list';
 
-export type PermissionLevel = 
+export type AuthOperation =
+  | 'login'
+  | 'register'
+  | 'token_validation'
+  | 'token_refresh'
+  | 'logout'
+  | 'get_current_user'
+  | 'list_auth_collections';
+
+export type PermissionLevel =
   | 'none'
-  | 'superuseronly' 
+  | 'superuseronly'
   | 'authenticatedonly'
   | 'public'
   | { rule: string };
 
-export interface OperationRule {
+export interface CrudOperationRule {
   operation: CrudOperation;
+  permission: PermissionLevel;
+  filter?: string;
+}
+
+export interface AuthOperationRule {
+  operation: AuthOperation;
   permission: PermissionLevel;
   filter?: string;
 }
 
 export interface CollectionPermissions {
   collection: string;
-  rules: Record<CrudOperation, OperationRule>;
+  crud_rules: Record<CrudOperation, CrudOperationRule>;
+  auth_rules: Record<AuthOperation, AuthOperationRule>;
   auth_required: boolean;
   created_at: number;
   updated_at: number;
@@ -480,4 +502,14 @@ export interface FileUploadProgress {
   progress: number;
   status: 'uploading' | 'completed' | 'error';
   error?: string;
+}
+
+export interface AuthCollectionConfig {
+  identifierField: string;
+  credentialField: string;
+  registrationEnabled: boolean;
+  emailVerificationRequired: boolean;
+  refreshTokensEnabled: boolean;
+  refreshTokensRequired: boolean;
+  customClaimFields: string[];
 } 

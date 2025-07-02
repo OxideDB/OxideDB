@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { Plus, Trash2, Database, Shield, AlertTriangle, Search, MoreHorizontal, Edit } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -11,6 +11,7 @@ import { apiService } from '../services/api';
 import type { CollectionStats, CollectionSchema } from '../types/api';
 
 const Collections: React.FC = () => {
+  const navigate = useNavigate();
   const [collections, setCollections] = useState<CollectionSchema[]>([]);
   const [collectionStats, setCollectionStats] = useState<Record<string, CollectionStats>>({});
   const [loading, setLoading] = useState(true);
@@ -152,10 +153,14 @@ const Collections: React.FC = () => {
         <div className="grid gap-4 grid-cols-1 md:grid-cols-2 xl:grid-cols-3">
           {filteredCollections.map((collection) => {
             const stats = collectionStats[collection.name];
-            const isSystemCollection = collection.collection_type === 'auth' || collection.name.startsWith('_');
-            
+            const isSystemCollection = apiService.isSystemCollection(collection);
+            const isAuthCollection = collection.collection_type === 'auth';
             return (
-              <Card key={collection.id} className={`hover:shadow-md transition-shadow ${isSystemCollection ? 'border-orange-200' : ''}`}>
+              <Card 
+                key={collection.id} 
+                className={`hover:shadow-md transition-shadow cursor-pointer ${isSystemCollection ? 'border-orange-200' : ''}`}
+                onClick={() => navigate(`/collections/${encodeURIComponent(collection.name)}`)}
+              >
                 <CardHeader className="pb-3">
                   <div className="flex items-start justify-between">
                     <div className="flex items-center gap-2 min-w-0 flex-1">
@@ -165,15 +170,27 @@ const Collections: React.FC = () => {
                         <Database className="h-5 w-5 text-blue-500 flex-shrink-0" />
                       )}
                       <CardTitle className="text-lg truncate">{collection.name}</CardTitle>
-                      {isSystemCollection && (
-                        <Badge variant="outline" className="text-orange-600 border-orange-200 ml-2">
-                          System
-                        </Badge>
-                      )}
+                      <div className="flex items-center gap-2 ml-2">
+                        {isSystemCollection && (
+                          <Badge variant="outline" className="text-orange-600 border-orange-200">
+                            System
+                          </Badge>
+                        )}
+                        {isAuthCollection && (
+                          <Badge variant="outline" className="text-blue-600 border-blue-200">
+                            Auth
+                          </Badge>
+                        )}
+                      </div>
                     </div>
                     <DropdownMenu>
                       <DropdownMenuTrigger asChild>
-                        <Button variant="ghost" size="sm" className="flex-shrink-0">
+                        <Button 
+                          variant="ghost" 
+                          size="sm" 
+                          className="flex-shrink-0"
+                          onClick={(e) => e.stopPropagation()}
+                        >
                           <MoreHorizontal className="h-4 w-4" />
                         </Button>
                       </DropdownMenuTrigger>
@@ -203,9 +220,11 @@ const Collections: React.FC = () => {
                     </DropdownMenu>
                   </div>
                   <CardDescription className="line-clamp-2">
-                    {isSystemCollection 
-                      ? "System collection for authentication and user management" 
-                      : "User-defined collection for storing custom data"
+                    {isAuthCollection 
+                      ? "Authentication collection for user management and security" 
+                      : isSystemCollection 
+                        ? "System collection for internal operations" 
+                        : "User-defined collection for storing custom data"
                     }
                   </CardDescription>
                 </CardHeader>

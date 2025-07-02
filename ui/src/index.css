@@ -12,6 +12,95 @@ body {
   }
 }
 
+/* Accessibility and responsiveness improvements for collection forms */
+@layer utilities {
+  /* Focus improvements */
+  .focus-visible:focus-visible {
+    @apply outline-2 outline-offset-2 outline-primary;
+  }
+  
+  /* Smooth transitions for step navigation */
+  .step-transition {
+    @apply transition-all duration-200 ease-in-out;
+  }
+  
+  /* Improved radio button styling for collection type selection */
+  .collection-type-option {
+    @apply cursor-pointer transition-all duration-200 ease-in-out;
+  }
+  
+  .collection-type-option:hover {
+    @apply border-primary/50 bg-primary/5;
+  }
+  
+  .collection-type-option:focus-visible {
+    @apply outline-2 outline-offset-2 outline-primary;
+  }
+  
+  /* Responsive step indicator */
+  .step-indicator {
+    @apply hidden sm:inline;
+  }
+  
+  /* Improved field grid responsiveness */
+  .field-grid {
+    @apply grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4;
+  }
+  
+  /* Better spacing for mobile */
+  @media (max-width: 640px) {
+    .mobile-spacing {
+      @apply space-y-4;
+    }
+    
+    .mobile-padding {
+      @apply p-4;
+    }
+  }
+  
+  /* High contrast mode support */
+  @media (prefers-contrast: high) {
+    .high-contrast {
+      @apply border-2 border-black;
+    }
+  }
+  
+  /* Reduced motion support */
+  @media (prefers-reduced-motion: reduce) {
+    .step-transition {
+      @apply transition-none;
+    }
+  }
+}
+
+/* Accessibility improvements for form elements */
+@layer components {
+  .form-field-group {
+    @apply space-y-2;
+  }
+  
+  .form-label {
+    @apply text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70;
+  }
+  
+  .form-description {
+    @apply text-sm text-muted-foreground;
+  }
+  
+  .form-error {
+    @apply text-sm font-medium text-destructive;
+  }
+  
+  /* Better visual hierarchy */
+  .section-header {
+    @apply text-lg font-semibold leading-none tracking-tight;
+  }
+  
+  .subsection-header {
+    @apply text-base font-medium;
+  }
+}
+
 @layer base {
   :root {
     --background: 0 0% 100%;

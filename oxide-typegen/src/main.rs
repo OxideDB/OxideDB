@@ -10,6 +10,7 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::collections::HashSet;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("🚀 Consolidating TypeScript types from ts-rs bindings...");
@@ -41,21 +42,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     consolidated_types.push_str("// - oxide-db/bindings/ (database record types)\n");
     consolidated_types.push_str("// - oxide-api/bindings/ (API response types)\n\n");
     
-    // Consolidate types from each crate
+    // Global deduplication set to track types across all crates
+    let mut global_type_definitions = HashSet::new();
+    
+    // Consolidate bindings from each crate in priority order
+    // oxide-core first (canonical definitions), then oxide-db, then oxide-api
     consolidated_types.push_str("// ===================================================================\n");
     consolidated_types.push_str("// CORE TYPES - Basic building blocks from oxide-core\n");
     consolidated_types.push_str("// ===================================================================\n\n");
-    consolidate_bindings_from_crate(&mut consolidated_types, "oxide-core")?;
+    consolidate_bindings_from_crate(&mut consolidated_types, "oxide-core", &mut global_type_definitions)?;
     
     consolidated_types.push_str("\n// ===================================================================\n");
     consolidated_types.push_str("// DATABASE TYPES - Data structures from oxide-db\n");
     consolidated_types.push_str("// ===================================================================\n\n");
-    consolidate_bindings_from_crate(&mut consolidated_types, "oxide-db")?;
+    consolidate_bindings_from_crate(&mut consolidated_types, "oxide-db", &mut global_type_definitions)?;
     
     consolidated_types.push_str("\n// ===================================================================\n");
     consolidated_types.push_str("// API RESPONSE TYPES - HTTP response structures from oxide-api\n");
     consolidated_types.push_str("// ===================================================================\n\n");
-    consolidate_bindings_from_crate(&mut consolidated_types, "oxide-api")?;
+    consolidate_bindings_from_crate(&mut consolidated_types, "oxide-api", &mut global_type_definitions)?;
     
     // Add utility types and aliases
     consolidated_types.push_str("\n// ===================================================================\n");
@@ -146,7 +151,8 @@ fn generate_all_bindings() -> Result<(), Box<dyn std::error::Error>> {
 /// Consolidate all TypeScript bindings from a specific crate
 fn consolidate_bindings_from_crate(
     output: &mut String, 
-    crate_name: &str
+    crate_name: &str,
+    global_type_definitions: &mut HashSet<String>
 ) -> Result<(), Box<dyn std::error::Error>> {
     let bindings_dir = PathBuf::from(format!("../{}/bindings", crate_name));
     
@@ -168,8 +174,7 @@ fn consolidate_bindings_from_crate(
     // Sort for consistent output
     binding_files.sort();
     
-    // Collect all type definitions and deduplicate
-    let mut type_definitions = std::collections::HashSet::new();
+    // Process files and add to global consolidated output
     let mut all_content = String::new();
     
     for file_path in binding_files {
@@ -178,12 +183,18 @@ fn consolidate_bindings_from_crate(
         // Extract the main export from each file
         let processed_content = process_binding_file(&content)?;
         if !processed_content.trim().is_empty() {
-            // Extract type name to check for duplicates
+            // Extract type name to check for global duplicates
             let type_name = extract_type_name(&processed_content);
-            if !type_name.is_empty() && !type_definitions.contains(&type_name) {
-                type_definitions.insert(type_name);
+            if !type_name.is_empty() && !global_type_definitions.contains(&type_name) {
+                // Add to global tracking and include in output
+                global_type_definitions.insert(type_name.clone());
                 all_content.push_str(&processed_content);
                 all_content.push('\n');
+                
+                println!("  ✅ Added type: {} (from {})", type_name, crate_name);
+            } else if !type_name.is_empty() {
+                // Type already exists - skip duplicate
+                println!("  ⏭️  Skipped duplicate type: {} (from {})", type_name, crate_name);
             }
         }
     }

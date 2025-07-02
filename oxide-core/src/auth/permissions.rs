@@ -4,22 +4,46 @@
 //! and operations, including permission rules, contexts, and service traits.
 
 use crate::AppError;
-use super::types::{CrudOperation, PermissionLevel, UserRole};
+use super::types::{CrudOperation, AuthOperation, Operation, PermissionLevel, UserRole};
 use super::jwt::Claims;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use ts_rs::TS;
 
-/// Permission rule for a specific operation on a collection
+/// Permission rule for a specific CRUD operation on a collection
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
-pub struct OperationRule {
+pub struct CrudOperationRule {
     /// The CRUD operation this rule applies to
     pub operation: CrudOperation,
     /// The permission level for this operation
     pub permission: PermissionLevel,
     /// Optional filter for list operations (like PocketBase filter syntax)
+    pub filter: Option<String>,
+}
+
+/// Permission rule for a specific auth operation on a collection
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct AuthOperationRule {
+    /// The auth operation this rule applies to
+    pub operation: AuthOperation,
+    /// The permission level for this operation
+    pub permission: PermissionLevel,
+    /// Optional filter for auth operations
+    pub filter: Option<String>,
+}
+
+/// Permission rule for any operation (CRUD or Auth)
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct OperationRule {
+    /// The operation this rule applies to
+    pub operation: Operation,
+    /// The permission level for this operation
+    pub permission: PermissionLevel,
+    /// Optional filter for operations
     pub filter: Option<String>,
 }
 
@@ -29,8 +53,10 @@ pub struct OperationRule {
 pub struct CollectionPermissions {
     /// Collection name
     pub collection: String,
-    /// Rules for each CRUD operation
-    pub rules: HashMap<CrudOperation, OperationRule>,
+    /// Rules for CRUD operations
+    pub crud_rules: HashMap<CrudOperation, CrudOperationRule>,
+    /// Rules for auth operations (only for auth collections)
+    pub auth_rules: HashMap<AuthOperation, AuthOperationRule>,
     /// Whether this collection requires authentication by default
     pub auth_required: bool,
     /// Timestamp when permissions were created
@@ -47,11 +73,13 @@ impl CollectionPermissions {
             .unwrap_or_default()
             .as_secs() as i64;
 
-        let mut rules = HashMap::new();
+        let mut crud_rules = HashMap::new();
         
-        // Default rules: superuser only for all operations
-        for operation in [CrudOperation::Create, CrudOperation::Read, CrudOperation::Update, CrudOperation::Delete, CrudOperation::List] {
-            rules.insert(operation.clone(), OperationRule {
+        // Default CRUD rules: superuser only for all operations
+        for operation in [
+            CrudOperation::Create, CrudOperation::Read, CrudOperation::Update, CrudOperation::Delete, CrudOperation::List,
+        ] {
+            crud_rules.insert(operation.clone(), CrudOperationRule {
                 operation: operation.clone(),
                 permission: PermissionLevel::SuperuserOnly,
                 filter: None,
@@ -60,7 +88,84 @@ impl CollectionPermissions {
 
         Self {
             collection,
-            rules,
+            crud_rules,
+            auth_rules: HashMap::new(), // No auth rules for base collections
+            auth_required: true,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    /// Create appropriate default permission rules for auth collections
+    /// Auth operations (login, register, etc.) are more permissive while CRUD operations remain restrictive
+    pub fn new_for_auth_collection(collection: String) -> Self {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+
+        let mut crud_rules = HashMap::new();
+        let mut auth_rules = HashMap::new();
+        
+        // CRUD operations: superuser only by default for auth collections
+        for operation in [CrudOperation::Create, CrudOperation::Read, CrudOperation::Update, CrudOperation::Delete, CrudOperation::List] {
+            crud_rules.insert(operation.clone(), CrudOperationRule {
+                operation: operation.clone(),
+                permission: PermissionLevel::SuperuserOnly,
+                filter: None,
+            });
+        }
+
+        // Auth operations: more permissive defaults for auth collections
+        // Login and register should be public so users can authenticate
+        auth_rules.insert(AuthOperation::Login, AuthOperationRule {
+            operation: AuthOperation::Login,
+            permission: PermissionLevel::Public,
+            filter: None,
+        });
+        auth_rules.insert(AuthOperation::Register, AuthOperationRule {
+            operation: AuthOperation::Register,
+            permission: PermissionLevel::Public,
+            filter: None,
+        });
+        
+        // Token operations should be public for proper auth flow
+        auth_rules.insert(AuthOperation::TokenValidation, AuthOperationRule {
+            operation: AuthOperation::TokenValidation,
+            permission: PermissionLevel::Public,
+            filter: None,
+        });
+        auth_rules.insert(AuthOperation::TokenRefresh, AuthOperationRule {
+            operation: AuthOperation::TokenRefresh,
+            permission: PermissionLevel::Public,
+            filter: None,
+        });
+        
+        // Logout should be accessible to authenticated users
+        auth_rules.insert(AuthOperation::Logout, AuthOperationRule {
+            operation: AuthOperation::Logout,
+            permission: PermissionLevel::AuthenticatedOnly,
+            filter: None,
+        });
+        
+        // GetCurrentUser should be accessible to authenticated users
+        auth_rules.insert(AuthOperation::GetCurrentUser, AuthOperationRule {
+            operation: AuthOperation::GetCurrentUser,
+            permission: PermissionLevel::AuthenticatedOnly,
+            filter: None,
+        });
+
+        // ListAuthCollections should be public so users can see available auth collections
+        auth_rules.insert(AuthOperation::ListAuthCollections, AuthOperationRule {
+            operation: AuthOperation::ListAuthCollections,
+            permission: PermissionLevel::Public,
+            filter: None,
+        });
+
+        Self {
+            collection,
+            crud_rules,
+            auth_rules,
             auth_required: true,
             created_at: now,
             updated_at: now,
@@ -74,11 +179,26 @@ impl CollectionPermissions {
             .unwrap_or_default()
             .as_secs() as i64;
 
-        let mut rules = HashMap::new();
+        let mut crud_rules = HashMap::new();
+        let mut auth_rules = HashMap::new();
         
-        // Public rules: allow all operations for everyone
-        for operation in [CrudOperation::Create, CrudOperation::Read, CrudOperation::Update, CrudOperation::Delete, CrudOperation::List] {
-            rules.insert(operation.clone(), OperationRule {
+        // Public CRUD rules: allow all operations for everyone
+        for operation in [
+            CrudOperation::Create, CrudOperation::Read, CrudOperation::Update, CrudOperation::Delete, CrudOperation::List,
+        ] {
+            crud_rules.insert(operation.clone(), CrudOperationRule {
+                operation: operation.clone(),
+                permission: PermissionLevel::Public,
+                filter: None,
+            });
+        }
+
+        // Public auth rules: allow all auth operations for everyone
+        for operation in [
+            AuthOperation::Login, AuthOperation::Register, AuthOperation::TokenValidation, 
+            AuthOperation::TokenRefresh, AuthOperation::Logout, AuthOperation::GetCurrentUser, AuthOperation::ListAuthCollections
+        ] {
+            auth_rules.insert(operation.clone(), AuthOperationRule {
                 operation: operation.clone(),
                 permission: PermissionLevel::Public,
                 filter: None,
@@ -87,26 +207,63 @@ impl CollectionPermissions {
 
         Self {
             collection,
-            rules,
+            crud_rules,
+            auth_rules,
             auth_required: false,
             created_at: now,
             updated_at: now,
         }
     }
 
-    /// Get the operation rule for a specific CRUD operation
-    pub fn get_operation_rule(&self, operation: &CrudOperation) -> Option<&OperationRule> {
-        self.rules.get(operation)
+    /// Get the CRUD operation rule for a specific operation
+    pub fn get_crud_rule(&self, operation: &CrudOperation) -> Option<&CrudOperationRule> {
+        self.crud_rules.get(operation)
     }
 
-    /// Set the permission level for a specific operation
-    pub fn set_operation_permission(&mut self, operation: CrudOperation, permission: PermissionLevel) {
-        let rule = OperationRule {
+    /// Get the auth operation rule for a specific operation
+    pub fn get_auth_rule(&self, operation: &AuthOperation) -> Option<&AuthOperationRule> {
+        self.auth_rules.get(operation)
+    }
+
+    /// Get the operation rule for any operation (CRUD or Auth)
+    pub fn get_operation_rule(&self, operation: &Operation) -> Option<OperationRule> {
+        match operation {
+            Operation::Crud(crud_op) => {
+                self.crud_rules.get(crud_op).map(|rule| OperationRule {
+                    operation: Operation::Crud(rule.operation.clone()),
+                    permission: rule.permission.clone(),
+                    filter: rule.filter.clone(),
+                })
+            }
+            Operation::Auth(auth_op) => {
+                self.auth_rules.get(auth_op).map(|rule| OperationRule {
+                    operation: Operation::Auth(rule.operation.clone()),
+                    permission: rule.permission.clone(),
+                    filter: rule.filter.clone(),
+                })
+            }
+        }
+    }
+
+    /// Set the permission level for a specific CRUD operation
+    pub fn set_crud_permission(&mut self, operation: CrudOperation, permission: PermissionLevel) {
+        let rule = CrudOperationRule {
             operation: operation.clone(),
             permission,
             filter: None,
         };
-        self.rules.insert(operation, rule);
+        self.crud_rules.insert(operation, rule);
+        self.update_timestamp();
+    }
+
+    /// Set the permission level for a specific auth operation
+    pub fn set_auth_permission(&mut self, operation: AuthOperation, permission: PermissionLevel) {
+        let rule = AuthOperationRule {
+            operation: operation.clone(),
+            permission,
+            filter: None,
+        };
+        self.auth_rules.insert(operation, rule);
         self.update_timestamp();
     }
 
@@ -124,8 +281,8 @@ impl CollectionPermissions {
 pub struct PermissionContext {
     /// The user's JWT claims (if authenticated)
     pub user_claims: Option<Claims>,
-    /// The CRUD operation being performed
-    pub operation: CrudOperation,
+    /// The operation being performed (CRUD or Auth)
+    pub operation: Operation,
     /// The collection being accessed
     pub collection: String,
     /// The specific record ID (if applicable)
@@ -140,7 +297,7 @@ impl PermissionContext {
     /// Create a new permission context
     pub fn new(
         user_claims: Option<Claims>,
-        operation: CrudOperation,
+        operation: Operation,
         collection: String,
         record_id: Option<String>,
     ) -> Self {

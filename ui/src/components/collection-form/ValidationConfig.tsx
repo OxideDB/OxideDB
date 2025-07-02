@@ -23,7 +23,7 @@ const ValidationConfigComponent: React.FC<ValidationConfigProps> = ({
   };
 
   const showRegex = ['text', 'email', 'url', 'password'].includes(fieldType);
-  const showMinMax = ['text', 'number'].includes(fieldType);
+  const showMinMax = ['text', 'email', 'url', 'password', 'number'].includes(fieldType);
   const showAllowEmpty = true; // Can be used for any field type
 
   return (
@@ -64,7 +64,7 @@ const ValidationConfigComponent: React.FC<ValidationConfigProps> = ({
           <>
             <div className="space-y-2">
               <Label htmlFor={`field-min-${index}`}>
-                {fieldType === 'text' ? 'Min Length' : 'Min Value'}
+                {['text', 'email', 'url', 'password'].includes(fieldType) ? 'Min Length' : 'Min Value'}
                 <span className="text-xs text-muted-foreground ml-1">(optional)</span>
               </Label>
               <Input
@@ -73,16 +73,23 @@ const ValidationConfigComponent: React.FC<ValidationConfigProps> = ({
                 step={fieldType === 'number' ? 'any' : '1'}
                 value={config.min || ''}
                 onChange={(e) => handleUpdate('min', e.target.value ? Number(e.target.value) : undefined)}
-                placeholder={fieldType === 'text' ? '3' : '0'}
+                placeholder={
+                  fieldType === 'password' ? '8' :
+                  fieldType === 'email' ? '5' :
+                  ['text', 'url'].includes(fieldType) ? '3' : 
+                  '0'
+                }
               />
               <p className="text-xs text-muted-foreground">
-                {fieldType === 'text' ? 'Minimum character length' : 'Minimum numeric value'}
+                {['text', 'email', 'url', 'password'].includes(fieldType) ? 'Minimum character length' : 'Minimum numeric value'}
+                {fieldType === 'password' && ' (recommended: 8+)'}
+                {fieldType === 'email' && ' (recommended: 5+)'}
               </p>
             </div>
 
             <div className="space-y-2">
               <Label htmlFor={`field-max-${index}`}>
-                {fieldType === 'text' ? 'Max Length' : 'Max Value'}
+                {['text', 'email', 'url', 'password'].includes(fieldType) ? 'Max Length' : 'Max Value'}
                 <span className="text-xs text-muted-foreground ml-1">(optional)</span>
               </Label>
               <Input
@@ -91,10 +98,18 @@ const ValidationConfigComponent: React.FC<ValidationConfigProps> = ({
                 step={fieldType === 'number' ? 'any' : '1'}
                 value={config.max || ''}
                 onChange={(e) => handleUpdate('max', e.target.value ? Number(e.target.value) : undefined)}
-                placeholder={fieldType === 'text' ? '255' : '100'}
+                placeholder={
+                  fieldType === 'password' ? '128' :
+                  fieldType === 'email' ? '254' :
+                  fieldType === 'url' ? '2048' :
+                  fieldType === 'text' ? '255' :
+                  '100'
+                }
               />
               <p className="text-xs text-muted-foreground">
-                {fieldType === 'text' ? 'Maximum character length' : 'Maximum numeric value'}
+                {['text', 'email', 'url', 'password'].includes(fieldType) ? 'Maximum character length' : 'Maximum numeric value'}
+                {fieldType === 'email' && ' (RFC limit: 254)'}
+                {fieldType === 'password' && ' (recommended: 128)'}
               </p>
             </div>
           </>
@@ -152,10 +167,10 @@ const ValidationConfigComponent: React.FC<ValidationConfigProps> = ({
               <li>• Pattern: <code className="bg-muted px-1 rounded">{config.regex}</code></li>
             )}
             {config.min !== undefined && (
-              <li>• Minimum {fieldType === 'text' ? 'length' : 'value'}: {config.min}</li>
+              <li>• Minimum {['text', 'email', 'url', 'password'].includes(fieldType) ? 'length' : 'value'}: {config.min}</li>
             )}
             {config.max !== undefined && (
-              <li>• Maximum {fieldType === 'text' ? 'length' : 'value'}: {config.max}</li>
+              <li>• Maximum {['text', 'email', 'url', 'password'].includes(fieldType) ? 'length' : 'value'}: {config.max}</li>
             )}
             {config.allow_empty === false && (
               <li>• Empty values not allowed</li>

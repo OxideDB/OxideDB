@@ -9,7 +9,7 @@ use crate::{
     hooks::{
         auth::{PasswordHashingHook, UserValidationHook, AuthorizationHook},
         audit::{ActivityLoggerHook, SecurityAuditHook},
-        validation::{SchemaValidatorHook, DataSanitizerHook},
+        validation::{SchemaValidatorHook, DataSanitizerHook, AuthSchemaValidatorHook},
     }
 };
 use std::sync::Arc;
@@ -32,6 +32,8 @@ pub struct HookRegistryConfig {
     pub enable_schema_validation: bool,
     /// Enable data sanitization hooks
     pub enable_data_sanitization: bool,
+    /// Enable auth schema validation hooks
+    pub enable_auth_schema_validation: bool,
 }
 
 impl Default for HookRegistryConfig {
@@ -44,6 +46,7 @@ impl Default for HookRegistryConfig {
             enable_security_audit: true,
             enable_schema_validation: false, // Disabled by default as it requires schema setup
             enable_data_sanitization: true,
+            enable_auth_schema_validation: true, // Enabled by default for auth collections
         }
     }
 }
@@ -128,6 +131,11 @@ impl HookRegistry {
         // Register validation hooks
         if self.config.enable_schema_validation {
             self.register_schema_validation_hooks(event_bus).await?;
+            registered_count += 1;
+        }
+
+        if self.config.enable_auth_schema_validation {
+            self.register_auth_schema_validation_hooks(event_bus).await?;
             registered_count += 1;
         }
 
@@ -397,6 +405,33 @@ impl HookRegistry {
         ).await?;
 
         info!("🧹 Data sanitization hooks registered");
+        Ok(())
+    }
+
+    /// Register auth schema validation hooks
+    async fn register_auth_schema_validation_hooks(&self, event_bus: &dyn EventBus) -> Result<(), AppError> {
+        let hook = Arc::new(AuthSchemaValidatorHook::new());
+
+        // Register for record creation
+        let hook_create = Arc::clone(&hook);
+        let metadata = crate::event::HandlerMetadata::new(
+            "auth_schema_validation".to_string(),
+            "Auth Schema Validation".to_string()
+        ).with_description("Validate data against auth schema".to_string())
+         .with_priority(70); // High priority for data integrity
+
+        event_bus.subscribe_before(
+            BeforeEventType::RecordCreate.name(),
+            Arc::new(move |context| {
+                let hook = Arc::clone(&hook_create);
+                Box::pin(async move {
+                    hook.handle_before_record_create(context)
+                })
+            }),
+            metadata,
+        ).await?;
+
+        info!("📝 Auth schema validation hooks registered");
         Ok(())
     }
 }

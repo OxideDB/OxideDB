@@ -12,6 +12,7 @@ use oxide_core::{
     CollectionPermissions, CrudOperation, PermissionLevel, UserRole,
     Claims,
 };
+use oxide_core::auth::types::AuthOperation;
 use oxide_db::Db;
 use std::sync::Arc;
 use tracing::{debug, info};
@@ -46,9 +47,24 @@ impl PermissionHandlers {
                 Ok(permissions)
             }
             None => {
-                debug!("No custom permissions found, returning defaults for collection: {}", collection);
-                // Return default permissions if no custom ones exist
-                Ok(CollectionPermissions::new(collection))
+                debug!("No custom permissions found, determining appropriate defaults for collection: {}", collection);
+                
+                // Get collection schema to determine type
+                let schema = db.get_collection_schema(&collection).await?;
+                
+                // Return appropriate default permissions based on collection type
+                let permissions = match schema.collection_type {
+                    oxide_core::CollectionType::Auth => {
+                        debug!("Using auth collection defaults for: {}", collection);
+                        CollectionPermissions::new_for_auth_collection(collection)
+                    }
+                    oxide_core::CollectionType::Base => {
+                        debug!("Using base collection defaults for: {}", collection);
+                        CollectionPermissions::new(collection)
+                    }
+                };
+                
+                Ok(permissions)
             }
         }
     }
@@ -82,7 +98,7 @@ impl PermissionHandlers {
         // Store permissions in database
         let mut updated_permissions = permissions;
         updated_permissions.collection = collection;
-        // Note: timestamp is updated automatically by the set_operation_permission method
+        // Note: timestamp is updated automatically by the set_crud_permission/set_auth_permission methods
 
         db.store_permissions(&updated_permissions).await?;
 
@@ -101,10 +117,22 @@ impl PermissionHandlers {
         let mut permissions_info = Vec::new();
 
         for collection_schema in collections {
-            // Try to get custom permissions, fall back to defaults
+            // Try to get custom permissions, fall back to appropriate defaults based on collection type
             let permissions = match db.get_permissions(&collection_schema.name).await? {
                 Some(custom_permissions) => custom_permissions,
-                None => CollectionPermissions::new(collection_schema.name.clone()),
+                None => {
+                    // Use appropriate defaults based on collection type
+                    match collection_schema.collection_type {
+                        oxide_core::CollectionType::Auth => {
+                            debug!("Using auth collection defaults for: {}", collection_schema.name);
+                            CollectionPermissions::new_for_auth_collection(collection_schema.name.clone())
+                        }
+                        oxide_core::CollectionType::Base => {
+                            debug!("Using base collection defaults for: {}", collection_schema.name);
+                            CollectionPermissions::new(collection_schema.name.clone())
+                        }
+                    }
+                }
             };
 
             let has_custom_rules = collections_with_custom_permissions.contains(&collection_schema.name);
@@ -147,8 +175,20 @@ impl PermissionHandlers {
         // Delete custom permissions (revert to defaults)
         db.delete_permissions(&collection).await?;
 
-        // Return default permissions
-        let permissions = CollectionPermissions::new(collection);
+        // Get collection schema to determine appropriate defaults
+        let schema = db.get_collection_schema(&collection).await?;
+        
+        // Return appropriate default permissions based on collection type
+        let permissions = match schema.collection_type {
+            oxide_core::CollectionType::Auth => {
+                debug!("Resetting to auth collection defaults for: {}", collection);
+                CollectionPermissions::new_for_auth_collection(collection)
+            }
+            oxide_core::CollectionType::Base => {
+                debug!("Resetting to base collection defaults for: {}", collection);
+                CollectionPermissions::new(collection)
+            }
+        };
 
         info!("Reset permissions to defaults for collection: {}", permissions.collection);
         Ok(permissions)
@@ -165,8 +205,18 @@ impl PermissionHandlers {
             PermissionPresetType::Public => CollectionPermissions::public(collection),
             PermissionPresetType::AuthenticatedOnly => {
                 let mut perms = CollectionPermissions::new(collection);
-                for operation in [CrudOperation::Create, CrudOperation::Read, CrudOperation::Update, CrudOperation::Delete, CrudOperation::List] {
-                    perms.set_operation_permission(operation, PermissionLevel::AuthenticatedOnly);
+                // Set CRUD operations to authenticated only
+                for operation in [
+                    CrudOperation::Create, CrudOperation::Read, CrudOperation::Update, CrudOperation::Delete, CrudOperation::List,
+                ] {
+                    perms.set_crud_permission(operation, PermissionLevel::AuthenticatedOnly);
+                }
+                // Set auth operations to authenticated only
+                for operation in [
+                    AuthOperation::Login, AuthOperation::Register, AuthOperation::TokenValidation, 
+                    AuthOperation::TokenRefresh, AuthOperation::Logout, AuthOperation::GetCurrentUser, AuthOperation::ListAuthCollections
+                ] {
+                    perms.set_auth_permission(operation, PermissionLevel::AuthenticatedOnly);
                 }
                 perms
             }
@@ -174,8 +224,16 @@ impl PermissionHandlers {
             PermissionPresetType::ReadOnly => {
                 let mut perms = CollectionPermissions::new(collection);
                 // Allow public read and list, but restrict create/update/delete to superuser
-                perms.set_operation_permission(CrudOperation::Read, PermissionLevel::Public);
-                perms.set_operation_permission(CrudOperation::List, PermissionLevel::Public);
+                perms.set_crud_permission(CrudOperation::Read, PermissionLevel::Public);
+                perms.set_crud_permission(CrudOperation::List, PermissionLevel::Public);
+                // For auth collections, allow public login/register but restrict other auth operations
+                perms.set_auth_permission(AuthOperation::Login, PermissionLevel::Public);
+                perms.set_auth_permission(AuthOperation::Register, PermissionLevel::Public);
+                perms.set_auth_permission(AuthOperation::TokenValidation, PermissionLevel::Public);
+                perms.set_auth_permission(AuthOperation::TokenRefresh, PermissionLevel::Public);
+                perms.set_auth_permission(AuthOperation::Logout, PermissionLevel::Public);
+                perms.set_auth_permission(AuthOperation::GetCurrentUser, PermissionLevel::AuthenticatedOnly);
+                perms.set_auth_permission(AuthOperation::ListAuthCollections, PermissionLevel::Public);
                 perms
             }
         };
@@ -191,7 +249,7 @@ impl PermissionHandlers {
         }
 
         // Validate that all CRUD operations have rules
-        let required_operations = [
+        let required_crud_operations = [
             CrudOperation::Create,
             CrudOperation::Read,
             CrudOperation::Update,
@@ -199,8 +257,28 @@ impl PermissionHandlers {
             CrudOperation::List,
         ];
 
-        for operation in &required_operations {
-            if permissions.get_operation_rule(operation).is_none() {
+        for operation in &required_crud_operations {
+            if permissions.get_crud_rule(operation).is_none() {
+                return Err(ApiError::bad_request(format!(
+                    "Missing permission rule for {} operation",
+                    operation
+                )));
+            }
+        }
+
+        // Validate that all auth operations have rules (for auth collections)
+        let required_auth_operations = [
+            AuthOperation::Login,
+            AuthOperation::Register,
+            AuthOperation::TokenValidation,
+            AuthOperation::TokenRefresh,
+            AuthOperation::Logout,
+            AuthOperation::GetCurrentUser,
+            AuthOperation::ListAuthCollections,
+        ];
+
+        for operation in &required_auth_operations {
+            if permissions.get_auth_rule(operation).is_none() {
                 return Err(ApiError::bad_request(format!(
                     "Missing permission rule for {} operation",
                     operation
@@ -209,7 +287,16 @@ impl PermissionHandlers {
         }
 
         // Validate custom rules syntax (basic check)
-        for rule in permissions.rules.values() {
+        for rule in permissions.crud_rules.values() {
+            if let PermissionLevel::Rule(rule_expr) = &rule.permission {
+                if rule_expr.is_empty() {
+                    return Err(ApiError::bad_request("Custom rule expression cannot be empty".to_string()));
+                }
+                // TODO: Add more sophisticated rule validation
+            }
+        }
+
+        for rule in permissions.auth_rules.values() {
             if let PermissionLevel::Rule(rule_expr) = &rule.permission {
                 if rule_expr.is_empty() {
                     return Err(ApiError::bad_request("Custom rule expression cannot be empty".to_string()));

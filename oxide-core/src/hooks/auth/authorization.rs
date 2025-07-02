@@ -5,9 +5,10 @@
 //! intercepting BeforeApiRequest events and validating permissions.
 
 use crate::{
-    BeforeEventContext, AppError, AuthService, Claims, CrudOperation, 
+    BeforeEventContext, AppError, AuthService, Claims, CrudOperation,
     CollectionPermissions, PermissionContext
 };
+use crate::auth::types::{AuthOperation, Operation};
 use crate::auth::PermissionService;
 use std::sync::Arc;
 use tracing::{debug, warn, info};
@@ -30,7 +31,7 @@ impl Default for AuthorizationConfig {
             bypass_collections: vec![
                 "health".to_string(), // Health checks bypass auth
                 "admin".to_string(),  // Admin UI should be publicly accessible
-                "auth".to_string(),   // Auth endpoints must be publicly accessible
+                // Note: Auth endpoints are controlled via collection-specific rules
             ],
             log_decisions: true,
         }
@@ -99,12 +100,9 @@ impl AuthorizationHook {
                 // For collections without explicit permissions, we need to handle auth collections
                 // specially to allow custom rules to work properly
                 if self.is_auth_collection(&collection) {
-                    // Auth collections like "users" should not get restrictive defaults
-                    // that would block custom rule evaluation. Instead, return early with
-                    // a permissive default that allows the request to proceed to other hooks
-                    // where custom rules can be evaluated.
-                    debug!("No explicit permissions found for auth collection '{}', allowing request to proceed for custom rule evaluation", collection);
-                    return Ok(());
+                    // For auth collections, default to public permissions to allow login/register, etc.
+                    debug!("No explicit permissions found for auth collection '{}', using public defaults", collection);
+                    CollectionPermissions::public(collection.clone())
                 } else if self.is_system_collection(&collection) {
                     // System collections get restrictive defaults
                     if self.config.default_auth_required {
@@ -175,25 +173,54 @@ impl AuthorizationHook {
     }
 
     /// Parse request information to extract collection, operation, and record ID
-    fn parse_request_info(&self, method: &str, path: &str) -> Result<(String, CrudOperation, Option<String>), AppError> {
+    fn parse_request_info(&self, method: &str, path: &str) -> Result<(String, Operation, Option<String>), AppError> {
         // Handle health checks
         if path.starts_with("/health") {
-            return Ok(("health".to_string(), CrudOperation::Read, None));
+            return Ok(("health".to_string(), Operation::Crud(CrudOperation::Read), None));
         }
 
         // Handle auth endpoints
         if path.starts_with("/auth") {
-            return Ok(("auth".to_string(), CrudOperation::Read, None));
+            let path_parts: Vec<&str> = path.trim_start_matches('/').split('/').collect();
+            
+            // Handle collection-specific auth endpoints: /auth/{collection}/{operation}
+            if path_parts.len() >= 3 && path_parts[0] == "auth" {
+                let collection = path_parts[1].to_string();
+                let auth_operation = path_parts[2];
+                
+                let operation = match auth_operation {
+                    "login" => Operation::Auth(AuthOperation::Login),
+                    "register" => Operation::Auth(AuthOperation::Register),
+                    _ => Operation::Crud(CrudOperation::Read),
+                };
+                
+                return Ok((collection, operation, None));
+            }
+            
+            // Handle global auth endpoints (not collection-specific)
+            if path_parts.len() >= 2 && path_parts[0] == "auth" {
+                let operation = match path_parts[1] {
+                    "validate" => Operation::Auth(AuthOperation::TokenValidation),
+                    "refresh" => Operation::Auth(AuthOperation::TokenRefresh),
+                    "logout" => Operation::Auth(AuthOperation::Logout),
+                    "me" => Operation::Auth(AuthOperation::GetCurrentUser),
+                    "collections" => Operation::Auth(AuthOperation::ListAuthCollections),
+                    _ => Operation::Crud(CrudOperation::Read),
+                };
+                return Ok(("auth".to_string(), operation, None));
+            }
+            
+            return Ok(("auth".to_string(), Operation::Crud(CrudOperation::Read), None));
         }
 
         // Handle admin UI endpoints - these should be publicly accessible
         if path.starts_with("/admin") {
-            return Ok(("admin".to_string(), CrudOperation::Read, None));
+            return Ok(("admin".to_string(), Operation::Crud(CrudOperation::Read), None));
         }
 
         // Handle permission endpoints
         if path.starts_with("/permissions") {
-            return Ok(("permissions".to_string(), CrudOperation::Read, None));
+            return Ok(("permissions".to_string(), Operation::Crud(CrudOperation::Read), None));
         }
 
         // Parse collection endpoints: /collections/{collection} or /collections/{collection}/records/{id}
@@ -202,9 +229,9 @@ impl AuthorizationHook {
         // Handle the base /collections endpoint (list all collections)
         if path_parts.len() == 1 && path_parts[0] == "collections" {
             let operation = match method {
-                "GET" => CrudOperation::List,
-                "POST" => CrudOperation::Create,
-                _ => CrudOperation::List,
+                "GET" => Operation::Crud(CrudOperation::List),
+                "POST" => Operation::Crud(CrudOperation::Create),
+                _ => Operation::Crud(CrudOperation::List),
             };
             return Ok(("collections".to_string(), operation, None));
         }
@@ -214,25 +241,25 @@ impl AuthorizationHook {
             
             // Handle collection-specific permission endpoints
             if path_parts.len() >= 3 && path_parts[2] == "permissions" {
-                return Ok(("permissions".to_string(), CrudOperation::Update, None));
+                return Ok(("permissions".to_string(), Operation::Crud(CrudOperation::Update), None));
             }
             
             if path_parts.len() >= 4 && path_parts[2] == "records" {
                 // Record-specific operations: /collections/{collection}/records/{id}
                 let record_id = Some(path_parts[3].to_string());
                 let operation = match method {
-                    "GET" => CrudOperation::Read,
-                    "PUT" | "PATCH" => CrudOperation::Update,
-                    "DELETE" => CrudOperation::Delete,
-                    _ => CrudOperation::Read,
+                    "GET" => Operation::Crud(CrudOperation::Read),
+                    "PUT" | "PATCH" => Operation::Crud(CrudOperation::Update),
+                    "DELETE" => Operation::Crud(CrudOperation::Delete),
+                    _ => Operation::Crud(CrudOperation::Read),
                 };
                 return Ok((collection, operation, record_id));
             } else if path_parts.len() == 3 && path_parts[2] == "records" {
                 // Collection-level operations: /collections/{collection}/records
                 let operation = match method {
-                    "GET" => CrudOperation::List,
-                    "POST" => CrudOperation::Create,
-                    _ => CrudOperation::List,
+                    "GET" => Operation::Crud(CrudOperation::List),
+                    "POST" => Operation::Crud(CrudOperation::Create),
+                    _ => Operation::Crud(CrudOperation::List),
                 };
                 return Ok((collection, operation, None));
             }
@@ -240,11 +267,11 @@ impl AuthorizationHook {
 
         // Other collection-related endpoints (schema, stats, etc.)
         let operation = match method {
-            "GET" => CrudOperation::Read,
-            "POST" => CrudOperation::Create,
-            "PUT" | "PATCH" => CrudOperation::Update,
-            "DELETE" => CrudOperation::Delete,
-            _ => CrudOperation::Read,
+            "GET" => Operation::Crud(CrudOperation::Read),
+            "POST" => Operation::Crud(CrudOperation::Create),
+            "PUT" | "PATCH" => Operation::Crud(CrudOperation::Update),
+            "DELETE" => Operation::Crud(CrudOperation::Delete),
+            _ => Operation::Crud(CrudOperation::Read),
         };
         
         Ok(("unknown".to_string(), operation, None))
@@ -416,7 +443,7 @@ mod tests {
             .parse_request_info("GET", "/collections")
             .unwrap();
         assert_eq!(collection, "collections");
-        assert_eq!(operation, CrudOperation::List);
+        assert_eq!(operation, Operation::Crud(CrudOperation::List));
         assert_eq!(record_id, None);
 
         // Test collections create endpoint
@@ -424,7 +451,7 @@ mod tests {
             .parse_request_info("POST", "/collections")
             .unwrap();
         assert_eq!(collection, "collections");
-        assert_eq!(operation, CrudOperation::Create);
+        assert_eq!(operation, Operation::Crud(CrudOperation::Create));
         assert_eq!(record_id, None);
 
         // Test collection list endpoint
@@ -432,7 +459,7 @@ mod tests {
             .parse_request_info("GET", "/collections/users/records")
             .unwrap();
         assert_eq!(collection, "users");
-        assert_eq!(operation, CrudOperation::List);
+        assert_eq!(operation, Operation::Crud(CrudOperation::List));
         assert_eq!(record_id, None);
 
         // Test record read endpoint
@@ -440,7 +467,7 @@ mod tests {
             .parse_request_info("GET", "/collections/users/records/123")
             .unwrap();
         assert_eq!(collection, "users");
-        assert_eq!(operation, CrudOperation::Read);
+        assert_eq!(operation, Operation::Crud(CrudOperation::Read));
         assert_eq!(record_id, Some("123".to_string()));
     }
 

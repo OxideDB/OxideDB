@@ -402,7 +402,7 @@ class ApiService {
 
   // Helper method to check if a collection is a system collection
   isSystemCollection(schema: CollectionSchema): boolean {
-    return schema.collection_type === 'auth' || schema.name.startsWith('_');
+    return schema.name.startsWith('_');
   }
 
   async getCollectionStats(collection: string): Promise<CollectionStats> {

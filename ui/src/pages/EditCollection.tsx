@@ -1,23 +1,31 @@
 import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { ArrowLeft, Plus, X, Save } from 'lucide-react';
+import { ArrowLeft, Plus, X, Save, Database, Settings, Shield, ChevronDown, ChevronRight } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { Badge } from '@/components/ui/badge';
+import { Alert, AlertDescription } from '@/components/ui/alert';
+import { Separator } from '@/components/ui/separator';
+import { Checkbox } from '@/components/ui/checkbox';
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import PageLayout from '@/components/PageLayout';
 import { apiService } from '../services/api';
 import type { CollectionSchema, FieldDefinition, FieldType } from '../types/api';
+import { parseFieldDefaultValue } from '../utils/fieldDefaults';
+import { useFieldManagement, FieldsList, convertSchemaFieldsToFormData } from '@/components/collection-form';
 
-// Import shared types
-import type { 
-  FieldFormData, 
-  RelationshipConfig, 
-  FileConfig, 
-  SelectConfig, 
-  ValidationConfig 
-} from '../components/collection-form/types';
-import ValidationConfigComponent from '../components/collection-form/ValidationConfig';
+// Auth collection configuration interface
+interface AuthCollectionConfig {
+  identifierField: string;
+  credentialField: string;
+  registrationEnabled: boolean;
+  emailVerificationRequired: boolean;
+  refreshTokensEnabled: boolean;
+  refreshTokensRequired: boolean;
+  customClaimFields: string[];
+}
 
 const EditCollection: React.FC = () => {
   const { collection } = useParams<{ collection: string }>();
@@ -27,9 +35,22 @@ const EditCollection: React.FC = () => {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [collections, setCollections] = useState<CollectionSchema[]>([]);
-
-  // Schema form state
-  const [fields, setFields] = useState<FieldFormData[]>([]);
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  
+  // Use the field management hook
+  const fieldManagement = useFieldManagement();
+  
+  // Auth collection configuration
+  const [authConfig, setAuthConfig] = useState<AuthCollectionConfig>({
+    identifierField: 'email',
+    credentialField: 'password',
+    registrationEnabled: true,
+    emailVerificationRequired: false,
+    refreshTokensEnabled: false,
+    refreshTokensRequired: false,
+    customClaimFields: [],
+  });
+  const [newClaimField, setNewClaimField] = useState('');
 
   useEffect(() => {
     if (collection) {
@@ -37,6 +58,13 @@ const EditCollection: React.FC = () => {
     }
     loadCollections();
   }, [collection]);
+
+  // Auto-expand auth configuration for auth collections
+  useEffect(() => {
+    if (schema?.collection_type === 'auth' && !showAdvanced) {
+      setShowAdvanced(true);
+    }
+  }, [schema?.collection_type]);
 
   const loadCollections = async () => {
     try {
@@ -55,57 +83,25 @@ const EditCollection: React.FC = () => {
       const schemaData = await apiService.getCollectionSchema(collection);
       setSchema(schemaData);
       
-      // Convert schema fields to form data
-      const formFields: FieldFormData[] = Object.entries(schemaData.fields).map(([name, fieldDef]) => {
-        const typedFieldDef = fieldDef as FieldDefinition;
-        const field: FieldFormData = {
-          name,
-          field_type: typedFieldDef.field_type,
-          required: typedFieldDef.required,
-          unique: typedFieldDef.unique,
-          default: typedFieldDef.default ? JSON.stringify(typedFieldDef.default) : undefined,
-          validation: typedFieldDef.validation ? {
-            regex: typedFieldDef.validation.regex,
-            min: typedFieldDef.validation.min,
-            max: typedFieldDef.validation.max,
-            message: typedFieldDef.validation.message,
-            allow_empty: typedFieldDef.validation.allow_empty
-          } : undefined,
-        };
-
-        // If it's a relationship field, extract the configuration
-        if (typeof typedFieldDef.field_type === 'object' && 'relationship' in typedFieldDef.field_type) {
-          field.relationshipConfig = {
-            target_collection: typedFieldDef.field_type.relationship.target_collection,
-            multiple: typedFieldDef.field_type.relationship.multiple,
-            cascade_delete: typedFieldDef.field_type.relationship.cascade_delete,
-            display_field: typedFieldDef.field_type.relationship.display_field,
-          };
-        }
-
-        // If it's a file field, extract the configuration
-        if (typeof typedFieldDef.field_type === 'object' && 'file' in typedFieldDef.field_type) {
-          field.fileConfig = {
-            multiple: typedFieldDef.field_type.file.multiple,
-            allowed_mime_types: typedFieldDef.field_type.file.allowed_mime_types,
-            max_file_size: typedFieldDef.field_type.file.max_file_size ? Number(typedFieldDef.field_type.file.max_file_size) : null,
-            required: typedFieldDef.field_type.file.required,
-          };
-        }
-
-        // If it's a select field, extract the configuration
-        if (typeof typedFieldDef.field_type === 'object' && 'select' in typedFieldDef.field_type) {
-          field.selectConfig = {
-            options: typedFieldDef.field_type.select.options,
-            multiple: typedFieldDef.field_type.select.multiple,
-            allow_empty: typedFieldDef.field_type.select.allow_empty,
-          };
-        }
-
-        return field;
-      });
+      // Convert schema fields to form data using the utility
+      const formFields = convertSchemaFieldsToFormData(schemaData.fields);
       
-      setFields(formFields);
+      // Initialize field management with existing fields
+      fieldManagement.setFieldsFromSchema(formFields);
+      
+      // Extract auth config if this is an auth collection
+      if (schemaData.collection_type === 'auth' && (schemaData as any).auth_config) {
+        const authConfigData = (schemaData as any).auth_config;
+        setAuthConfig({
+          identifierField: authConfigData.identifierField || 'email',
+          credentialField: authConfigData.credentialField || 'password',
+          registrationEnabled: authConfigData.registrationEnabled !== false,
+          emailVerificationRequired: authConfigData.emailVerificationRequired || false,
+          refreshTokensEnabled: authConfigData.refreshTokensEnabled || false,
+          refreshTokensRequired: authConfigData.refreshTokensRequired || false,
+          customClaimFields: authConfigData.customClaimFields || [],
+        });
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to fetch collection schema');
     } finally {
@@ -113,150 +109,22 @@ const EditCollection: React.FC = () => {
     }
   };
 
-  const addField = () => {
-    setFields([...fields, {
-      name: '',
-      field_type: 'text',
-      required: false,
-      unique: false,
-    }]);
-  };
-
-  const updateField = (index: number, field: Partial<FieldFormData>) => {
-    setFields(fields.map((f, i) => i === index ? { ...f, ...field } : f));
-  };
-
-  const removeField = (index: number) => {
-    setFields(fields.filter((_, i) => i !== index));
-  };
-
-  const getFieldTypeString = (fieldType: FieldType): string => {
-    if (typeof fieldType === 'string') {
-      return fieldType;
-    } else if (typeof fieldType === 'object' && 'relationship' in fieldType) {
-      return 'relationship';
-    } else if (typeof fieldType === 'object' && 'file' in fieldType) {
-      return 'file';
-    } else if (typeof fieldType === 'object' && 'select' in fieldType) {
-      return 'select';
-    }
-    return 'text';
-  };
-
-  const updateFieldType = (index: number, newType: string) => {
-    const field = fields[index];
-    if (newType === 'relationship') {
-      updateField(index, {
-        field_type: {
-          relationship: {
-            target_collection: '',
-            multiple: false,
-            cascade_delete: false,
-            display_field: undefined,
-          }
-        },
-        relationshipConfig: {
-          target_collection: '',
-          multiple: false,
-          cascade_delete: false,
-          display_field: undefined,
-        }
-      });
-    } else if (newType === 'file') {
-      updateField(index, {
-        field_type: {
-          file: {
-            multiple: false,
-            allowed_mime_types: null,
-            max_file_size: BigInt(10 * 1024 * 1024), // 10MB default
-            required: false,
-          }
-        },
-        fileConfig: {
-          multiple: false,
-          allowed_mime_types: null,
-          max_file_size: 10 * 1024 * 1024, // 10MB default
-          required: false,
-        }
-      });
-    } else if (newType === 'select') {
-      updateField(index, {
-        field_type: {
-          select: {
-            options: [],
-            multiple: false,
-            allow_empty: true,
-          }
-        },
-        selectConfig: {
-          options: [],
-          multiple: false,
-          allow_empty: true,
-        }
-      });
-    } else {
-      updateField(index, {
-        field_type: newType as FieldType,
-        relationshipConfig: undefined,
-        fileConfig: undefined,
-        selectConfig: undefined
-      });
+  // Auth config helper functions
+  const addCustomClaimField = () => {
+    if (newClaimField.trim() && !authConfig.customClaimFields.includes(newClaimField.trim())) {
+      setAuthConfig(prev => ({
+        ...prev,
+        customClaimFields: [...prev.customClaimFields, newClaimField.trim()]
+      }));
+      setNewClaimField('');
     }
   };
 
-  const updateRelationshipConfig = (index: number, config: Partial<RelationshipConfig>) => {
-    const field = fields[index];
-    const newConfig = { ...field.relationshipConfig, ...config };
-    updateField(index, {
-      relationshipConfig: newConfig,
-      field_type: {
-        relationship: {
-          target_collection: newConfig.target_collection || '',
-          multiple: newConfig.multiple || false,
-          cascade_delete: newConfig.cascade_delete || false,
-          display_field: newConfig.display_field,
-        }
-      }
-    });
-  };
-
-  const updateFileConfig = (index: number, config: Partial<{ multiple: boolean; allowed_mime_types: string[] | null; max_file_size: number | null; required: boolean }>) => {
-    const field = fields[index];
-    const newConfig = { ...field.fileConfig, ...config };
-    updateField(index, {
-      fileConfig: newConfig,
-      field_type: {
-        file: {
-          multiple: newConfig.multiple || false,
-          allowed_mime_types: newConfig.allowed_mime_types,
-          max_file_size: newConfig.max_file_size ? BigInt(newConfig.max_file_size) : null,
-          required: newConfig.required || false,
-        }
-      }
-    });
-  };
-
-  const updateSelectConfig = (index: number, config: Partial<SelectConfig>) => {
-    const field = fields[index];
-    const newConfig = { ...field.selectConfig, ...config };
-    updateField(index, {
-      selectConfig: newConfig,
-      field_type: {
-        select: {
-          options: newConfig.options || [],
-          multiple: newConfig.multiple || false,
-          allow_empty: newConfig.allow_empty !== undefined ? newConfig.allow_empty : true,
-        }
-      }
-    });
-  };
-
-  const updateValidationConfig = (index: number, config: Partial<ValidationConfig>) => {
-    const field = fields[index];
-    const newConfig = { ...field.validation, ...config };
-    updateField(index, {
-      validation: newConfig
-    });
+  const removeCustomClaimField = (field: string) => {
+    setAuthConfig(prev => ({
+      ...prev,
+      customClaimFields: prev.customClaimFields.filter(f => f !== field)
+    }));
   };
 
   const handleUpdateSchema = async (e: React.FormEvent) => {
@@ -268,14 +136,17 @@ const EditCollection: React.FC = () => {
       
       // Convert fields to the required format
       const fieldsMap: Record<string, FieldDefinition> = {};
-      fields.forEach(field => {
+      fieldManagement.fields.forEach(field => {
         if (field.name.trim()) {
+          // Parse default value based on field type using utility function
+          const defaultValue = parseFieldDefaultValue(field.default, field.field_type);
+
           fieldsMap[field.name.trim()] = {
             field_type: field.field_type,
             required: field.required,
             unique: field.unique,
             index: false,
-            default: field.default ? JSON.parse(field.default) : null,
+            default: defaultValue,
             validation: field.validation ? { 
               regex: field.validation.regex ?? null,
               min: field.validation.min ?? null,
@@ -292,6 +163,8 @@ const EditCollection: React.FC = () => {
         fields: fieldsMap,
         version: (schema.version || 1) + 1, // Increment version for schema update (default to 1 if undefined)
         updated_at: BigInt(Math.floor(Date.now() / 1000)),
+        // Include auth config for auth collections
+        ...(schema.collection_type === 'auth' ? { auth_config: authConfig } : {})
       };
 
       await apiService.updateCollectionSchema(collection, updatedSchema);
@@ -355,325 +228,281 @@ const EditCollection: React.FC = () => {
       description={`Update schema for "${collection}"`}
       leftActions={leftActions}
     >
-      <div className="max-w-4xl mx-auto">
+      <div className="max-w-5xl mx-auto space-y-6">
 
-      {error && (
-        <Card className="mb-6 border-destructive">
-          <CardContent className="p-4">
-            <div className="text-destructive">{error}</div>
-            <Button
-              onClick={() => setError(null)}
-              variant="ghost"
-              size="sm"
-              className="text-destructive text-sm mt-2 hover:text-destructive/80 p-0 h-auto"
-            >
-              Dismiss
-            </Button>
-          </CardContent>
-        </Card>
-      )}
+        {/* Error Display */}
+        {error && (
+          <Alert variant="destructive">
+            <AlertDescription className="flex items-center justify-between">
+              <span>{error}</span>
+              <Button
+                onClick={() => setError(null)}
+                variant="ghost"
+                size="sm"
+                className="text-destructive hover:text-destructive/80 h-auto p-1"
+              >
+                ×
+              </Button>
+            </AlertDescription>
+          </Alert>
+        )}
 
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center space-x-2">
-            <span>Collection Schema</span>
-            <span className="text-sm text-muted-foreground font-normal">({schema.collection_type})</span>
-          </CardTitle>
-        </CardHeader>
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center justify-between">
+              <div className="flex items-center space-x-2">
+                <Settings className="h-5 w-5" />
+                <span>Edit Collection Schema</span>
+              </div>
+              <div className="flex items-center space-x-2">
+                <Badge variant="outline" className="capitalize">
+                  {schema?.collection_type}
+                </Badge>
+                <Badge variant="secondary">
+                  {fieldManagement.fields.length} field{fieldManagement.fields.length !== 1 ? 's' : ''}
+                </Badge>
+              </div>
+            </CardTitle>
+          </CardHeader>
         <CardContent>
           <form onSubmit={handleUpdateSchema} className="space-y-6">
-            {/* Basic collection info (read-only) */}
-            <div className="space-y-4">
-              <div className="space-y-2">
-                <Label>Collection Name</Label>
-                <Input
-                  value={schema.name}
-                  disabled
-                  className="bg-muted"
-                />
-                <p className="text-sm text-muted-foreground">
-                  Collection name cannot be changed after creation
-                </p>
+            {/* Collection Info */}
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              <div className="space-y-4">
+                <div className="space-y-2">
+                  <Label className="text-base font-medium">Collection Name</Label>
+                  <Input
+                    value={schema.name}
+                    disabled
+                    className="bg-muted text-base"
+                  />
+                  <p className="text-sm text-muted-foreground">
+                    Collection name cannot be changed after creation
+                  </p>
+                </div>
+              </div>
+              
+              <div className="space-y-4">
+                <div className="space-y-2">
+                  <Label className="text-base font-medium">Collection Type</Label>
+                  <div className="flex items-center space-x-2 p-3 bg-muted rounded-md">
+                    {schema.collection_type === 'auth' ? (
+                      <>
+                        <Shield className="h-4 w-4" />
+                        <span className="font-medium">Auth Collection</span>
+                        <Badge variant="secondary" className="text-xs">Security</Badge>
+                      </>
+                    ) : (
+                      <>
+                        <Database className="h-4 w-4" />
+                        <span className="font-medium">Base Collection</span>
+                      </>
+                    )}
+                  </div>
+                  <p className="text-sm text-muted-foreground">
+                    Collection type cannot be changed after creation
+                  </p>
+                </div>
               </div>
             </div>
+
+            <Separator />
 
             {/* Schema fields */}
             <div className="space-y-4">
               <div className="flex justify-between items-center">
-                <Label>Schema Fields</Label>
-                <Button type="button" onClick={addField} size="sm" variant="outline">
-                  <Plus className="h-4 w-4 mr-2" />
-                  Add Field
-                </Button>
+                <Label className="text-base font-medium">Schema Fields</Label>
+                <Badge variant="outline">
+                  {fieldManagement.fields.length} field{fieldManagement.fields.length !== 1 ? 's' : ''}
+                </Badge>
               </div>
 
-              {fields.length === 0 && (
-                <div className="text-center text-muted-foreground py-4 border-2 border-dashed rounded-lg">
-                  No fields defined. Click "Add Field" to start building your schema.
-                </div>
-              )}
-
-              {fields.map((field, index) => (
-                <Card key={index} className="p-4">
-                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-                    <div className="space-y-2">
-                      <Label htmlFor={`field-name-${index}`}>Field Name</Label>
-                      <Input
-                        id={`field-name-${index}`}
-                        value={field.name}
-                        onChange={(e) => updateField(index, { name: e.target.value })}
-                        placeholder="field_name"
-                        required
-                      />
-                    </div>
-
-                    <div className="space-y-2">
-                      <Label htmlFor={`field-type-${index}`}>Type</Label>
-                      <select 
-                        id={`field-type-${index}`}
-                        value={getFieldTypeString(field.field_type)} 
-                        onChange={(e) => updateFieldType(index, e.target.value)}
-                        className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
-                      >
-                        <option value="text">Text</option>
-                        <option value="number">Number</option>
-                        <option value="boolean">Boolean</option>
-                        <option value="date">Date</option>
-                        <option value="json">JSON</option>
-                        <option value="email">Email</option>
-                        <option value="url">URL</option>
-                        <option value="password">Password</option>
-                        <option value="relationship">Relationship</option>
-                        <option value="file">File</option>
-                        <option value="select">Select</option>
-                      </select>
-                    </div>
-
-                    <div className="space-y-2">
-                      <Label htmlFor={`field-default-${index}`}>Default Value</Label>
-                      <Input
-                        id={`field-default-${index}`}
-                        value={field.default || ''}
-                        onChange={(e) => updateField(index, { default: e.target.value })}
-                        placeholder="JSON value"
-                      />
-                    </div>
-
-                    {/* Relationship Configuration */}
-                    {getFieldTypeString(field.field_type) === 'relationship' && (
-                      <div className="col-span-full space-y-4 p-4 border rounded-md bg-muted/50">
-                        <h4 className="font-medium text-sm">Relationship Configuration</h4>
-                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                          <div className="space-y-2">
-                            <Label htmlFor={`field-target-${index}`}>Target Collection</Label>
-                            <select
-                              id={`field-target-${index}`}
-                              value={field.relationshipConfig?.target_collection || ''}
-                              onChange={(e) => updateRelationshipConfig(index, { target_collection: e.target.value })}
-                              className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
-                            >
-                              <option value="">Select collection...</option>
-                              {collections.map((col) => (
-                                <option key={col.id} value={col.name}>
-                                  {col.name}
-                                </option>
-                              ))}
-                            </select>
-                          </div>
-                          
-                          <div className="space-y-2">
-                            <Label htmlFor={`field-display-${index}`}>Display Field (optional)</Label>
-                            <Input
-                              id={`field-display-${index}`}
-                              value={field.relationshipConfig?.display_field || ''}
-                              onChange={(e) => updateRelationshipConfig(index, { display_field: e.target.value || undefined })}
-                              placeholder="name, title, etc."
-                            />
-                          </div>
-
-                          <div className="space-y-2">
-                            <Label>Relationship Options</Label>
-                            <div className="space-y-2">
-                              <div className="flex items-center space-x-2">
-                                <input
-                                  type="checkbox"
-                                  id={`field-multiple-${index}`}
-                                  checked={field.relationshipConfig?.multiple || false}
-                                  onChange={(e) => updateRelationshipConfig(index, { multiple: e.target.checked })}
-                                  className="h-4 w-4 rounded border border-input bg-background text-primary focus:ring-2 focus:ring-ring focus:ring-offset-2"
-                                />
-                                <Label htmlFor={`field-multiple-${index}`}>Multiple (many-to-many)</Label>
-                              </div>
-                              <div className="flex items-center space-x-2">
-                                <input
-                                  type="checkbox"
-                                  id={`field-cascade-${index}`}
-                                  checked={field.relationshipConfig?.cascade_delete || false}
-                                  onChange={(e) => updateRelationshipConfig(index, { cascade_delete: e.target.checked })}
-                                  className="h-4 w-4 rounded border border-input bg-background text-primary focus:ring-2 focus:ring-ring focus:ring-offset-2"
-                                />
-                                <Label htmlFor={`field-cascade-${index}`}>Cascade Delete</Label>
-                              </div>
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-                    )}
-
-                    {/* File Configuration */}
-                    {getFieldTypeString(field.field_type) === 'file' && (
-                      <div className="col-span-full space-y-4 p-4 border rounded-md bg-muted/50">
-                        <h4 className="font-medium text-sm">File Configuration</h4>
-                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                          <div className="space-y-2">
-                            <Label htmlFor={`field-max-size-${index}`}>Max File Size (MB)</Label>
-                            <Input
-                              id={`field-max-size-${index}`}
-                              type="number"
-                              value={field.fileConfig?.max_file_size ? field.fileConfig.max_file_size / (1024 * 1024) : 10}
-                              onChange={(e) => {
-                                const sizeMB = parseFloat(e.target.value) || 10;
-                                updateFileConfig(index, {
-                                  max_file_size: sizeMB * 1024 * 1024
-                                });
-                              }}
-                              placeholder="10"
-                            />
-                          </div>
-                          
-                          <div className="space-y-2">
-                            <Label htmlFor={`field-mime-types-${index}`}>Allowed MIME Types (optional)</Label>
-                            <Input
-                              id={`field-mime-types-${index}`}
-                              value={field.fileConfig?.allowed_mime_types?.join(', ') || ''}
-                              onChange={(e) => {
-                                const types = e.target.value ? e.target.value.split(',').map(t => t.trim()).filter(t => t) : null;
-                                updateFileConfig(index, {
-                                  allowed_mime_types: types
-                                });
-                              }}
-                              placeholder="image/*, application/pdf"
-                            />
-                          </div>
-
-                          <div className="space-y-2">
-                            <Label>File Options</Label>
-                            <div className="space-y-2">
-                              <div className="flex items-center space-x-2">
-                                <input
-                                  type="checkbox"
-                                  id={`field-multiple-files-${index}`}
-                                  checked={field.fileConfig?.multiple || false}
-                                  onChange={(e) => updateFileConfig(index, {
-                                    multiple: e.target.checked
-                                  })}
-                                  className="h-4 w-4 rounded border border-input bg-background text-primary focus:ring-2 focus:ring-ring focus:ring-offset-2"
-                                />
-                                <Label htmlFor={`field-multiple-files-${index}`}>Multiple Files</Label>
-                              </div>
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-                    )}
-
-                    {/* Select Configuration */}
-                    {getFieldTypeString(field.field_type) === 'select' && (
-                      <div className="col-span-full space-y-4 p-4 border rounded-md bg-muted/50">
-                        <h4 className="font-medium text-sm">Select Configuration</h4>
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                          <div className="space-y-2">
-                            <Label htmlFor={`field-options-${index}`}>Options (one per line)</Label>
-                            <textarea
-                              id={`field-options-${index}`}
-                              value={field.selectConfig?.options?.join('\n') || ''}
-                              onChange={(e) => {
-                                const options = e.target.value.split('\n').map(opt => opt.trim()).filter(opt => opt);
-                                updateSelectConfig(index, { options });
-                              }}
-                              className="flex min-h-[100px] w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
-                              placeholder="Option 1&#10;Option 2&#10;Option 3"
-                            />
-                          </div>
-
-                          <div className="space-y-2">
-                            <Label>Select Options</Label>
-                            <div className="space-y-2">
-                              <div className="flex items-center space-x-2">
-                                <input
-                                  type="checkbox"
-                                  id={`field-multiple-select-${index}`}
-                                  checked={field.selectConfig?.multiple || false}
-                                  onChange={(e) => updateSelectConfig(index, { multiple: e.target.checked })}
-                                  className="h-4 w-4 rounded border border-input bg-background text-primary focus:ring-2 focus:ring-ring focus:ring-offset-2"
-                                />
-                                <Label htmlFor={`field-multiple-select-${index}`}>Multiple Selection</Label>
-                              </div>
-                              <div className="flex items-center space-x-2">
-                                <input
-                                  type="checkbox"
-                                  id={`field-allow-empty-${index}`}
-                                  checked={field.selectConfig?.allow_empty !== false}
-                                  onChange={(e) => updateSelectConfig(index, { allow_empty: e.target.checked })}
-                                  className="h-4 w-4 rounded border border-input bg-background text-primary focus:ring-2 focus:ring-ring focus:ring-offset-2"
-                                />
-                                <Label htmlFor={`field-allow-empty-${index}`}>Allow Empty Values</Label>
-                              </div>
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-                    )}
-
-                    {/* Validation Configuration - shown for applicable field types */}
-                    {['text', 'email', 'url', 'password', 'number'].includes(getFieldTypeString(field.field_type)) && (
-                      <ValidationConfigComponent
-                        index={index}
-                        fieldType={getFieldTypeString(field.field_type)}
-                        config={field.validation}
-                        onUpdate={updateValidationConfig}
-                      />
-                    )}
-
-                    <div className="space-y-2">
-                      <div className="flex items-center space-x-4">
-                        <div className="flex items-center space-x-2">
-                          <input
-                            type="checkbox"
-                            id={`field-required-${index}`}
-                            checked={field.required}
-                            onChange={(e) => updateField(index, { required: e.target.checked })}
-                            className="h-4 w-4 rounded border border-input bg-background text-primary focus:ring-2 focus:ring-ring focus:ring-offset-2"
-                          />
-                          <Label htmlFor={`field-required-${index}`}>Required</Label>
-                        </div>
-                        <div className="flex items-center space-x-2">
-                          <input
-                            type="checkbox"
-                            id={`field-unique-${index}`}
-                            checked={field.unique}
-                            onChange={(e) => updateField(index, { unique: e.target.checked })}
-                            className="h-4 w-4 rounded border border-input bg-background text-primary focus:ring-2 focus:ring-ring focus:ring-offset-2"
-                          />
-                          <Label htmlFor={`field-unique-${index}`}>Unique</Label>
-                        </div>
-                      </div>
-                      <div className="flex justify-end">
-                        <Button
-                          type="button"
-                          onClick={() => removeField(index)}
-                          size="sm"
-                          variant="ghost"
-                          className="text-destructive hover:text-destructive/80"
-                        >
-                          <X className="h-4 w-4" />
-                        </Button>
-                      </div>
-                    </div>
-                  </div>
-                </Card>
-              ))}
+              <FieldsList
+                fields={fieldManagement.fields}
+                collections={collections}
+                onAddField={fieldManagement.addField}
+                onUpdateField={fieldManagement.updateField}
+                onUpdateFieldType={fieldManagement.updateFieldType}
+                onUpdateRelationshipConfig={fieldManagement.updateRelationshipConfig}
+                onUpdateFileConfig={fieldManagement.updateFileConfig}
+                onUpdateSelectConfig={fieldManagement.updateSelectConfig}
+                onUpdateValidationConfig={fieldManagement.updateValidationConfig}
+                onRemoveField={fieldManagement.removeField}
+              />
             </div>
+
+            {/* Auth Collection Info */}
+            {schema.collection_type === 'auth' && (
+              <Alert>
+                <Shield className="h-4 w-4" />
+                <AlertDescription>
+                  This is an authentication collection with built-in security features. 
+                  You can customize authentication settings and security options below.
+                </AlertDescription>
+              </Alert>
+            )}
+
+            {/* Advanced Auth Configuration */}
+            {schema.collection_type === 'auth' && (
+              <Collapsible open={showAdvanced} onOpenChange={setShowAdvanced}>
+                <Card>
+                  <CollapsibleTrigger asChild>
+                    <CardHeader className="cursor-pointer hover:bg-muted/50 transition-colors">
+                      <CardTitle className="flex items-center justify-between">
+                        <div className="flex items-center space-x-2">
+                          <Shield className="h-5 w-5" />
+                          <span>Advanced Authentication Settings</span>
+                        </div>
+                        <div className="flex items-center space-x-2">
+                          <Badge variant="secondary">Optional</Badge>
+                          {showAdvanced ? (
+                            <ChevronDown className="h-4 w-4" />
+                          ) : (
+                            <ChevronRight className="h-4 w-4" />
+                          )}
+                        </div>
+                      </CardTitle>
+                    </CardHeader>
+                  </CollapsibleTrigger>
+                  
+                  <CollapsibleContent>
+                    <CardContent className="space-y-6">
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        <div className="space-y-4">
+                          <div className="space-y-2">
+                            <Label htmlFor="identifierField" className="font-medium">
+                              Identifier Field
+                            </Label>
+                            <Input
+                              id="identifierField"
+                              value={authConfig.identifierField}
+                              onChange={(e) => setAuthConfig(prev => ({ ...prev, identifierField: e.target.value }))}
+                              placeholder="email, username, etc."
+                            />
+                            <p className="text-xs text-muted-foreground">
+                              Field used for login (usually email or username)
+                            </p>
+                          </div>
+
+                          <div className="space-y-2">
+                            <Label htmlFor="credentialField" className="font-medium">
+                              Credential Field
+                            </Label>
+                            <Input
+                              id="credentialField"
+                              value={authConfig.credentialField}
+                              onChange={(e) => setAuthConfig(prev => ({ ...prev, credentialField: e.target.value }))}
+                              placeholder="password"
+                            />
+                            <p className="text-xs text-muted-foreground">
+                              Field used for password storage
+                            </p>
+                          </div>
+                        </div>
+
+                        <div className="space-y-4">
+                          <Label className="font-medium">Security Options</Label>
+                          <div className="space-y-3">
+                            <div className="flex items-center space-x-2">
+                              <Checkbox
+                                id="registrationEnabled"
+                                checked={authConfig.registrationEnabled}
+                                onCheckedChange={(checked) => setAuthConfig(prev => ({ ...prev, registrationEnabled: !!checked }))}
+                              />
+                              <Label htmlFor="registrationEnabled" className="font-normal">
+                                Enable user registration
+                              </Label>
+                            </div>
+
+                            <div className="flex items-center space-x-2">
+                              <Checkbox
+                                id="emailVerificationRequired"
+                                checked={authConfig.emailVerificationRequired}
+                                onCheckedChange={(checked) => setAuthConfig(prev => ({ ...prev, emailVerificationRequired: !!checked }))}
+                              />
+                              <Label htmlFor="emailVerificationRequired" className="font-normal">
+                                Require email verification
+                              </Label>
+                            </div>
+
+                            <div className="flex items-center space-x-2">
+                              <Checkbox
+                                id="refreshTokensEnabled"
+                                checked={authConfig.refreshTokensEnabled}
+                                onCheckedChange={(checked) => setAuthConfig(prev => ({ ...prev, refreshTokensEnabled: !!checked }))}
+                              />
+                              <Label htmlFor="refreshTokensEnabled" className="font-normal">
+                                Enable refresh tokens
+                              </Label>
+                            </div>
+
+                            {authConfig.refreshTokensEnabled && (
+                              <div className="flex items-center space-x-2 ml-6">
+                                <Checkbox
+                                  id="refreshTokensRequired"
+                                  checked={authConfig.refreshTokensRequired}
+                                  onCheckedChange={(checked) => setAuthConfig(prev => ({ ...prev, refreshTokensRequired: !!checked }))}
+                                />
+                                <Label htmlFor="refreshTokensRequired" className="font-normal">
+                                  Require refresh tokens
+                                </Label>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+
+                      <Separator />
+
+                      <div className="space-y-4">
+                        <Label className="font-medium">Custom JWT Claim Fields</Label>
+                        <div className="space-y-3">
+                          {authConfig.customClaimFields.map((field, index) => (
+                            <div key={index} className="flex items-center space-x-2">
+                              <Input value={field} readOnly className="flex-1" />
+                              <Button
+                                type="button"
+                                variant="outline"
+                                size="sm"
+                                onClick={() => removeCustomClaimField(field)}
+                              >
+                                Remove
+                              </Button>
+                            </div>
+                          ))}
+                          <div className="flex items-center space-x-2">
+                            <Input
+                              value={newClaimField}
+                              onChange={(e) => setNewClaimField(e.target.value)}
+                              placeholder="Field name to include in JWT"
+                              className="flex-1"
+                              onKeyPress={(e) => {
+                                if (e.key === 'Enter') {
+                                  e.preventDefault();
+                                  addCustomClaimField();
+                                }
+                              }}
+                            />
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              onClick={addCustomClaimField}
+                              disabled={!newClaimField.trim()}
+                            >
+                              Add
+                            </Button>
+                          </div>
+                        </div>
+                        <p className="text-xs text-muted-foreground">
+                          Additional fields to include in JWT tokens for this collection
+                        </p>
+                      </div>
+                    </CardContent>
+                  </CollapsibleContent>
+                </Card>
+              </Collapsible>
+            )}
 
             <div className="flex justify-end space-x-2">
               <Button
@@ -704,4 +533,4 @@ const EditCollection: React.FC = () => {
   );
 };
 
-export default EditCollection; 
+export default EditCollection;

@@ -69,6 +69,8 @@ pub use service::{AuthService, AuthTokens};
 
 #[cfg(test)]
 mod tests {
+    use crate::auth::types::Operation;
+
     use super::*;
     use serde_json::json;
 
@@ -124,7 +126,7 @@ mod tests {
     fn test_rule_evaluator_boolean_literals() {
         let context = PermissionContext::new(
             None,
-            CrudOperation::Read,
+            Operation::Crud(CrudOperation::Read),
             "test".to_string(),
             None,
         );
@@ -145,7 +147,7 @@ mod tests {
 
         let context = PermissionContext::new(
             None,
-            CrudOperation::Read,
+            Operation::Crud(CrudOperation::Read),
             "test".to_string(),
             None,
         ).with_metadata(metadata);
@@ -171,7 +173,7 @@ mod tests {
 
         let context = PermissionContext::new(
             None,
-            CrudOperation::Read,
+            Operation::Crud(CrudOperation::Read),
             "test".to_string(),
             None,
         ).with_metadata(metadata);
@@ -203,7 +205,7 @@ mod tests {
 
         let context = PermissionContext::new(
             Some(claims),
-            CrudOperation::Read,
+            Operation::Crud(CrudOperation::Read),
             "test".to_string(),
             None,
         );
@@ -227,7 +229,7 @@ mod tests {
 
         let context = PermissionContext::new(
             None,
-            CrudOperation::Read,
+            Operation::Crud(CrudOperation::Read),
             "test".to_string(),
             None,
         ).with_record_data(record_data);
@@ -244,7 +246,7 @@ mod tests {
     fn test_rule_evaluator_system_variables() {
         let context = PermissionContext::new(
             None,
-            CrudOperation::Read,
+            Operation::Crud(CrudOperation::Read),
             "test".to_string(),
             None,
         );
@@ -263,7 +265,7 @@ mod tests {
     fn test_rule_evaluator_comparisons() {
         let context = PermissionContext::new(
             None,
-            CrudOperation::Read,
+            Operation::Crud(CrudOperation::Read),
             "test".to_string(),
             None,
         );
@@ -282,7 +284,7 @@ mod tests {
     fn test_rule_evaluator_logical_operators() {
         let context = PermissionContext::new(
             None,
-            CrudOperation::Read,
+            Operation::Crud(CrudOperation::Read),
             "test".to_string(),
             None,
         );
@@ -306,7 +308,7 @@ mod tests {
 
         let context = PermissionContext::new(
             None,
-            CrudOperation::Read,
+            Operation::Crud(CrudOperation::Read),
             "test".to_string(),
             None,
         ).with_metadata(metadata);
@@ -335,7 +337,7 @@ mod tests {
 
         let context = PermissionContext::new(
             Some(claims),
-            CrudOperation::Update,
+            Operation::Crud(CrudOperation::Update),
             "posts".to_string(),
             None,
         ).with_record_data(record_data);

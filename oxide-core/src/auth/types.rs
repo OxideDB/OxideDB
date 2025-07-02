@@ -154,13 +154,36 @@ impl AuthServiceConfig {
 /// CRUD operation types for permission rules
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash, TS)]
 #[ts(export)]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "snake_case")]
 pub enum CrudOperation {
     Create,
     Read,
     Update,
     Delete,
     List,
+}
+
+/// Auth-specific operation types for permission rules
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash, TS)]
+#[ts(export)]
+#[serde(rename_all = "snake_case")]
+pub enum AuthOperation {
+    Login,
+    Register,
+    TokenValidation,
+    TokenRefresh,
+    Logout,
+    GetCurrentUser,
+    ListAuthCollections,
+}
+
+/// Combined operation type that can be either CRUD or Auth
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash, TS)]
+#[ts(export)]
+#[serde(rename_all = "snake_case")]
+pub enum Operation {
+    Crud(CrudOperation),
+    Auth(AuthOperation),
 }
 
 impl fmt::Display for CrudOperation {
@@ -171,6 +194,29 @@ impl fmt::Display for CrudOperation {
             CrudOperation::Update => write!(f, "update"),
             CrudOperation::Delete => write!(f, "delete"),
             CrudOperation::List => write!(f, "list"),
+        }
+    }
+}
+
+impl fmt::Display for AuthOperation {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            AuthOperation::Login => write!(f, "login"),
+            AuthOperation::Register => write!(f, "register"),
+            AuthOperation::TokenValidation => write!(f, "token_validation"),
+            AuthOperation::TokenRefresh => write!(f, "token_refresh"),
+            AuthOperation::Logout => write!(f, "logout"),
+            AuthOperation::GetCurrentUser => write!(f, "get_current_user"),
+            AuthOperation::ListAuthCollections => write!(f, "list_auth_collections"),
+        }
+    }
+}
+
+impl fmt::Display for Operation {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Operation::Crud(op) => write!(f, "{}", op),
+            Operation::Auth(op) => write!(f, "{}", op),
         }
     }
 }

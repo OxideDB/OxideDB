@@ -159,7 +159,7 @@ async fn check_plugin_route_authorization(
             // For now, default to authenticated-only access
             let default_permission = PermissionLevel::AuthenticatedOnly;
             
-            perms.set_operation_permission(CrudOperation::Read, default_permission);
+            perms.set_crud_permission(CrudOperation::Read, default_permission);
             
             // Store the default permissions
             permission_service.store_permissions(&perms).await?;
@@ -183,9 +183,9 @@ async fn check_plugin_route_authorization(
 
     let permission_context = PermissionContext::new(
         user_claims.map(|user| user.claims.clone()),
-        operation,
+        oxide_core::auth::types::Operation::Crud(operation),
         plugin_collection,
-        None, // No specific record ID for plugin routes
+        None,
     ).with_metadata(metadata);
 
     // Check permission

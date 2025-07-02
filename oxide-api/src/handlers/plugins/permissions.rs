@@ -27,7 +27,7 @@ pub async fn get_plugin_permissions(
         .unwrap_or_else(|| {
             // Return default permissions if none exist
             let mut perms = CollectionPermissions::new(plugin_collection);
-            perms.set_operation_permission(CrudOperation::Read, PermissionLevel::AuthenticatedOnly);
+            perms.set_crud_permission(CrudOperation::Read, PermissionLevel::AuthenticatedOnly);
             perms
         });
 
