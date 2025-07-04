@@ -4,7 +4,8 @@ import { Edit, Trash2, Download, FileIcon } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Badge } from '@/components/ui/badge';
-import type { DbRecord, CollectionSchema, FieldType, FileReference } from '../types/api';
+import type { DbRecord, CollectionSchema, FieldType, FileReference, FieldDefinition } from '../types/api';
+import type { FieldCustomization } from '../types/fieldCustomization';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 
 interface RecordTableProps {
@@ -12,6 +13,11 @@ interface RecordTableProps {
   schema: CollectionSchema | null;
   collection: string;
   onDelete: (recordId: string) => void;
+  orderedFields?: Array<{
+    fieldName: string;
+    fieldDef: FieldDefinition;
+    customization: FieldCustomization;
+  }>;
 }
 
 export const RecordTable: React.FC<RecordTableProps> = ({
@@ -19,9 +25,15 @@ export const RecordTable: React.FC<RecordTableProps> = ({
   schema,
   collection,
   onDelete,
+  orderedFields,
 }) => {
   // Extract all unique data keys from records to create columns
   const getDataColumns = (): string[] => {
+    // Use ordered fields if available (from field customization)
+    if (orderedFields && orderedFields.length > 0) {
+      return orderedFields.map(field => field.fieldName);
+    }
+    
     if (schema && Object.keys(schema.fields).length > 0) {
       // Use schema fields as primary columns
       return Object.keys(schema.fields);

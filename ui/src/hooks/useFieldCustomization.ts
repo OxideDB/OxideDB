@@ -67,10 +67,13 @@ export const useFieldCustomization = (collection: string, schema: CollectionSche
   const createDefaultSettings = (schema: CollectionSchema): CollectionViewSettings => {
     const fieldCustomizations: FieldCustomizationSettings = {};
     
-    Object.keys(schema.fields).forEach((fieldName, index) => {
+    // Get all field names and sort them for consistent ordering
+    const fieldNames = Object.keys(schema.fields).sort();
+    
+    fieldNames.forEach((fieldName, index) => {
       fieldCustomizations[fieldName] = {
         visible: true,
-        order: index,
+        order: index, // Each field gets a unique sequential order
         size: 'full' as FieldSize
       };
     });
@@ -86,15 +89,21 @@ export const useFieldCustomization = (collection: string, schema: CollectionSche
     settings: CollectionViewSettings, 
     schema: CollectionSchema
   ): CollectionViewSettings => {
-    const currentFields = Object.keys(schema.fields);
+    const currentFields = Object.keys(schema.fields).sort(); // Sort for consistent ordering
     const existingCustomizations = { ...settings.fieldCustomizations };
     
-    // Add missing fields
+    // Get the maximum order value from existing customizations
+    const maxOrder = Object.values(existingCustomizations).reduce(
+      (max, customization) => Math.max(max, customization.order), 
+      -1
+    );
+    
+    // Add missing fields with proper sequential order values
     currentFields.forEach((fieldName, index) => {
       if (!existingCustomizations[fieldName]) {
         existingCustomizations[fieldName] = {
           visible: true,
-          order: Object.keys(existingCustomizations).length + index,
+          order: maxOrder + 1 + index, // Continue from the highest existing order
           size: 'full' as FieldSize
         };
       }
@@ -132,12 +141,44 @@ export const useFieldCustomization = (collection: string, schema: CollectionSche
 
   // Toggle customization mode
   const toggleCustomizationMode = useCallback(async () => {
-    await updateSettings(prev => ({
-      ...prev,
-      customizationMode: !prev.customizationMode,
-      lastUpdated: Date.now()
-    }));
-  }, [updateSettings]);
+    await updateSettings(prev => {
+      const newSettings = {
+        ...prev,
+        customizationMode: !prev.customizationMode,
+        lastUpdated: Date.now()
+      };
+      
+      // If entering customization mode and we have schema, ensure all fields have proper settings
+      if (!prev.customizationMode && schema) {
+        const currentFields = Object.keys(schema.fields).sort();
+        const existingCustomizations = { ...prev.fieldCustomizations };
+        
+        // Check if any fields are missing customization
+        const missingFields = currentFields.filter(fieldName => !existingCustomizations[fieldName]);
+        
+        if (missingFields.length > 0) {
+          // Get the maximum order value from existing customizations
+          const maxOrder = Object.values(existingCustomizations).reduce(
+            (max, customization) => Math.max(max, customization.order), 
+            -1
+          );
+          
+          // Add missing fields with proper order values
+          missingFields.forEach((fieldName, index) => {
+            existingCustomizations[fieldName] = {
+              visible: true,
+              order: maxOrder + 1 + index,
+              size: 'full' as FieldSize
+            };
+          });
+          
+          newSettings.fieldCustomizations = existingCustomizations;
+        }
+      }
+      
+      return newSettings;
+    });
+  }, [updateSettings, schema]);
 
   // Update field customization
   const updateFieldCustomization = useCallback(async (
@@ -191,15 +232,18 @@ export const useFieldCustomization = (collection: string, schema: CollectionSche
     if (!schema) return [];
     
     return Object.entries(schema.fields)
-      .map(([fieldName, fieldDef]) => ({
-        fieldName,
-        fieldDef,
-        customization: settings.fieldCustomizations[fieldName] || {
-          visible: true,
-          order: 0,
-          size: 'full' as FieldSize
-        }
-      }))
+      .map(([fieldName, fieldDef]) => {
+        const customization = settings.fieldCustomizations[fieldName];
+        return {
+          fieldName,
+          fieldDef,
+          customization: customization || {
+            visible: true,
+            order: 0,
+            size: 'full' as FieldSize
+          }
+        };
+      })
       .sort((a, b) => a.customization.order - b.customization.order);
   }, [schema, settings.fieldCustomizations]);
 
@@ -210,6 +254,7 @@ export const useFieldCustomization = (collection: string, schema: CollectionSche
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
   }, []);
 
   const handleDrop = useCallback(async (e: React.DragEvent, targetFieldName: string) => {
@@ -233,11 +278,35 @@ export const useFieldCustomization = (collection: string, schema: CollectionSche
     const draggedOrder = draggedFieldData.customization.order;
     const targetOrder = targetFieldData.customization.order;
     
-    await updateFieldCustomization(draggedField, { order: targetOrder });
-    await updateFieldCustomization(targetFieldName, { order: draggedOrder });
+    try {
+      // Update both fields atomically
+      await updateSettings(prev => {
+        const newCustomizations = { ...prev.fieldCustomizations };
+        
+        // Update dragged field
+        newCustomizations[draggedField] = {
+          ...newCustomizations[draggedField],
+          order: targetOrder
+        };
+        
+        // Update target field
+        newCustomizations[targetFieldName] = {
+          ...newCustomizations[targetFieldName],
+          order: draggedOrder
+        };
+        
+        return {
+          ...prev,
+          fieldCustomizations: newCustomizations,
+          lastUpdated: Date.now()
+        };
+      });
+    } catch (error) {
+      console.error('Failed to update field orders:', error);
+    }
     
     setDraggedField(null);
-  }, [draggedField, getAllFieldsWithCustomization, updateFieldCustomization]);
+  }, [draggedField, getAllFieldsWithCustomization, updateSettings]);
 
   // Reset all customizations to default
   const resetToDefault = useCallback(async () => {
@@ -285,6 +354,36 @@ export const useFieldCustomization = (collection: string, schema: CollectionSche
     }));
   }, [schema, settings.fieldCustomizations, updateSettings]);
 
+  // Fix field customizations with duplicate order values
+  const fixDuplicateOrders = useCallback(async () => {
+    if (!schema) return;
+    
+    const currentFields = Object.keys(schema.fields).sort();
+    const existingCustomizations = { ...settings.fieldCustomizations };
+    
+    // Check if there are duplicate order values
+    const orders = Object.values(existingCustomizations).map(c => c.order);
+    const uniqueOrders = new Set(orders);
+    
+    if (orders.length !== uniqueOrders.size) {
+      // Reassign all fields with sequential order values
+      currentFields.forEach((fieldName, index) => {
+        if (existingCustomizations[fieldName]) {
+          existingCustomizations[fieldName] = {
+            ...existingCustomizations[fieldName],
+            order: index
+          };
+        }
+      });
+      
+      await updateSettings(prev => ({
+        ...prev,
+        fieldCustomizations: existingCustomizations,
+        lastUpdated: Date.now()
+      }));
+    }
+  }, [schema, settings.fieldCustomizations, updateSettings]);
+
   return {
     settings,
     customizationMode: settings.customizationMode,
@@ -300,6 +399,7 @@ export const useFieldCustomization = (collection: string, schema: CollectionSche
     draggedField,
     resetToDefault,
     showAllFields,
-    hideAllFields
+    hideAllFields,
+    fixDuplicateOrders
   };
 }; 

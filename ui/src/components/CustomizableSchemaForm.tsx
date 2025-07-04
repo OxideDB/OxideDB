@@ -7,7 +7,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { Switch } from '@/components/ui/switch';
 import { GripVertical, Eye, EyeOff, RotateCcw } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import type { CollectionSchema, FieldDefinition, DbRecord, FileFieldConfig } from '../types/api';
+import type { CollectionSchema, FieldDefinition, FileFieldConfig, FileReference } from '../types/api';
 import type { FieldCustomization, FieldSize } from '../types/fieldCustomization';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { FileUpload } from '@/components/ui/file-upload';
@@ -63,18 +63,9 @@ const FieldCustomizationControls: React.FC<{
 
   return (
     <div className="flex items-center gap-2 p-2 bg-muted/50 rounded border">
-      <Button
-        type="button"
-        variant="ghost"
-        size="sm"
-        className="h-8 w-8 p-0 cursor-grab"
-        draggable
-        onDragStart={(e) => {
-          e.dataTransfer.setData('text/plain', fieldName);
-        }}
-      >
+      <div className="h-8 w-8 flex items-center justify-center text-muted-foreground">
         <GripVertical className="h-4 w-4" />
-      </Button>
+      </div>
       
       <Button
         type="button"
@@ -137,17 +128,31 @@ const CustomizableField: React.FC<{
 }) => {
   const isDragging = draggedField === fieldName;
   const sizeClass = getFieldSizeClass(customization.size);
+  const [isDragOver, setIsDragOver] = useState(false);
 
   const handleDragStart = (e: React.DragEvent) => {
-    onDragStart(fieldName);
+    e.dataTransfer.setData('text/plain', fieldName);
     e.dataTransfer.effectAllowed = 'move';
+    onDragStart(fieldName);
   };
 
   const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    if (draggedField && draggedField !== fieldName) {
+      setIsDragOver(true);
+    }
     onDragOver(e);
   };
 
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragOver(false);
+  };
+
   const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragOver(false);
     onDrop(e, fieldName);
   };
 
@@ -160,13 +165,17 @@ const CustomizableField: React.FC<{
       className={cn(
         sizeClass,
         'space-y-3',
-        customizationMode && 'border rounded-lg p-3',
-        isDragging && 'opacity-50',
-        !customization.visible && customizationMode && 'bg-muted/30 border-dashed'
+        customizationMode && 'border rounded-lg p-3 transition-all duration-200',
+        isDragging && 'opacity-50 scale-95',
+        isDragOver && 'border-primary bg-primary/5 shadow-lg',
+        !customization.visible && customizationMode && 'bg-muted/30 border-dashed',
+        customizationMode && 'cursor-grab active:cursor-grabbing hover:shadow-md hover:border-primary/50',
+        customizationMode && !isDragging && 'hover:bg-muted/20'
       )}
       draggable={customizationMode}
       onDragStart={handleDragStart}
       onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
       onDrop={handleDrop}
     >
       {customizationMode && (
@@ -504,7 +513,7 @@ export const CustomizableSchemaForm: React.FC<CustomizableSchemaFormProps> = ({
 
       default:
         if (typeof fieldDef.field_type === 'object' && 'file' in fieldDef.field_type) {
-          const fileConfig: FileFieldConfig = (fieldDef.field_type as any).file || {
+          const fileConfig: FileFieldConfig = ((fieldDef.field_type as unknown) as { file: FileFieldConfig }).file || {
             multiple: false,
             allowed_mime_types: undefined,
             max_file_size: 10 * 1024 * 1024,
@@ -513,7 +522,7 @@ export const CustomizableSchemaForm: React.FC<CustomizableSchemaFormProps> = ({
 
           fieldComponent = (
             <FileUpload
-              value={value}
+              value={value as FileReference | FileReference[] | null}
               onChange={(newValue) => handleFieldChange(fieldName, newValue)}
               config={fileConfig}
               collection={schema.name}

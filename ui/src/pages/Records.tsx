@@ -1,30 +1,26 @@
 import React, { useState, useEffect } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
-import { ArrowLeft, Edit, Database, Trash2, Plus, Download, Upload, Shield, Lock, Unlock, Users, Settings, Eye, Edit3, RotateCcw } from 'lucide-react';
+import { ArrowLeft, Edit, Database, Trash2, Plus, Download, Upload, Shield, Lock, Unlock, Users, Settings, Eye, Edit3, RotateCcw, GripVertical, EyeOff } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
-import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { Separator } from '@/components/ui/separator';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Textarea } from '@/components/ui/textarea';
 import { Input } from '@/components/ui/input';
 import { RecordTable } from '@/components/RecordTable';
 import PageLayout from '@/components/PageLayout';
 import { apiService } from '../services/api';
+import { useFieldCustomization } from '../hooks/useFieldCustomization';
 import type { 
   DbRecord, 
   CollectionSchema, 
-  FieldDefinition, 
   CollectionPermissions, 
   CrudOperation, 
   AuthOperation,
   PermissionLevel, 
-  PermissionPresetType,
-  FileReference 
+  PermissionPresetType
 } from '../types/api';
+import type { FieldSize } from '../types/fieldCustomization';
 
 const Records: React.FC = () => {
   const { collection } = useParams<{ collection: string }>();
@@ -34,8 +30,10 @@ const Records: React.FC = () => {
   const [permissions, setPermissions] = useState<CollectionPermissions | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [isRuleDialogOpen, setIsRuleDialogOpen] = useState(false);
   const [editingPermissions, setEditingPermissions] = useState<CollectionPermissions | null>(null);
+
+  // Field customization hook
+  const fieldCustomization = useFieldCustomization(collection || '', schema);
 
   // Mock data for features not yet implemented
   const collectionInfo = {
@@ -346,7 +344,7 @@ const Records: React.FC = () => {
   };
 
   // Helper function to get display string for field type
-  const getFieldTypeDisplay = (fieldType: any): string => {
+  const getFieldTypeDisplay = (fieldType: unknown): string => {
     if (typeof fieldType === 'string') {
       return fieldType;
     } else if (typeof fieldType === 'object' && fieldType !== null) {
@@ -907,6 +905,15 @@ const Records: React.FC = () => {
               <CardDescription>Latest records in this collection</CardDescription>
             </div>
             <div className="flex flex-col sm:flex-row gap-2">
+              <Button 
+                variant="outline" 
+                size="sm" 
+                onClick={fieldCustomization.toggleCustomizationMode}
+                className="w-full sm:w-auto"
+              >
+                <Settings className="h-4 w-4 mr-2" />
+                {fieldCustomization.customizationMode ? 'Exit Customization' : 'Customize Fields'}
+              </Button>
               <Button variant="outline" size="sm" className="w-full sm:w-auto" disabled>
                 <Download className="h-4 w-4 mr-2" />
                 Export
@@ -923,6 +930,103 @@ const Records: React.FC = () => {
           </div>
         </CardHeader>
         <CardContent>
+          {/* Field Customization Controls */}
+          {fieldCustomization.customizationMode && schema && (
+            <div className="mb-6 p-4 border rounded-lg bg-muted/50">
+              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-4">
+                <div>
+                  <h3 className="text-lg font-medium">Field Customization</h3>
+                  <p className="text-sm text-muted-foreground">
+                    Drag fields to reorder, toggle visibility, and adjust display settings
+                  </p>
+                </div>
+                <div className="flex flex-col sm:flex-row gap-2">
+                  <Button 
+                    variant="outline" 
+                    size="sm" 
+                    onClick={fieldCustomization.showAllFields}
+                    className="w-full sm:w-auto"
+                  >
+                    <Eye className="h-4 w-4 mr-2" />
+                    Show All
+                  </Button>
+                  <Button 
+                    variant="outline" 
+                    size="sm" 
+                    onClick={fieldCustomization.hideAllFields}
+                    className="w-full sm:w-auto"
+                  >
+                    <EyeOff className="h-4 w-4 mr-2" />
+                    Hide All
+                  </Button>
+                  <Button 
+                    variant="outline" 
+                    size="sm" 
+                    onClick={fieldCustomization.resetToDefault}
+                    className="w-full sm:w-auto"
+                  >
+                    <RotateCcw className="h-4 w-4 mr-2" />
+                    Reset
+                  </Button>
+                </div>
+              </div>
+              
+              <div className="grid gap-2">
+                {fieldCustomization.getAllFieldsWithCustomization().map((field) => (
+                  <div
+                    key={field.fieldName}
+                    className="flex items-center gap-2 p-2 bg-background rounded border"
+                    draggable
+                    onDragStart={() => fieldCustomization.handleDragStart(field.fieldName)}
+                    onDragOver={fieldCustomization.handleDragOver}
+                    onDrop={(e) => fieldCustomization.handleDrop(e, field.fieldName)}
+                  >
+                    <div className="h-6 w-6 flex items-center justify-center text-muted-foreground">
+                      <GripVertical className="h-4 w-4" />
+                    </div>
+                    
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      className="h-6 w-6 p-0"
+                      onClick={() => fieldCustomization.toggleFieldVisibility(field.fieldName)}
+                    >
+                      {field.customization.visible ? (
+                        <Eye className="h-3 w-3" />
+                      ) : (
+                        <EyeOff className="h-3 w-3 text-muted-foreground" />
+                      )}
+                    </Button>
+
+                    <Select 
+                      value={field.customization.size} 
+                      onValueChange={(size: FieldSize) => fieldCustomization.setFieldSize(field.fieldName, size)}
+                    >
+                      <SelectTrigger className="h-6 w-16">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="full">Full</SelectItem>
+                        <SelectItem value="half">Half</SelectItem>
+                        <SelectItem value="third">Third</SelectItem>
+                        <SelectItem value="quarter">Quarter</SelectItem>
+                      </SelectContent>
+                    </Select>
+
+                    <Badge variant="outline" className="text-xs">
+                      Order: {field.customization.order}
+                    </Badge>
+                    
+                    <span className="text-sm font-medium text-muted-foreground ml-2">
+                      {field.fieldName}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
           {records.length === 0 ? (
             <div className="text-center py-12">
               <Database className="mx-auto h-12 w-12 text-muted-foreground" />
@@ -940,6 +1044,7 @@ const Records: React.FC = () => {
               schema={schema}
               collection={collection || ''}
               onDelete={handleDeleteRecord}
+              orderedFields={fieldCustomization.getOrderedVisibleFields()}
             />
           )}
         </CardContent>

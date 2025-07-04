@@ -924,7 +924,8 @@ class ApiService {
    */
   async getFieldCustomization(collection: string): Promise<unknown | null> {
     const key = `field_customization_${collection}`;
-    return this.getUserPreference(key);
+    const result = await this.getUserPreference(key);
+    return result;
   }
 
   /**
