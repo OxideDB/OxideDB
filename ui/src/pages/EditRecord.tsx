@@ -1,16 +1,17 @@
 import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
-import { ChevronLeft, Save, Code, FileText, Plus } from 'lucide-react';
+import { ChevronLeft, Save, Code, FileText, Plus, Settings } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
-import { SchemaForm } from '@/components/SchemaForm';
+import { CustomizableSchemaForm } from '@/components/CustomizableSchemaForm';
 import PageLayout from '@/components/PageLayout';
 import ActionDropdown from '@/components/ActionDropdown';
 import { apiService } from '../services/api';
 import type { DbRecord, CollectionSchema } from '../types/api';
 import { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from '@/components/ui/tooltip';
+import { useFieldCustomization } from '../hooks/useFieldCustomization';
 
 const EditRecord: React.FC = () => {
   const { collection, recordId } = useParams<{ collection: string; recordId: string }>();
@@ -26,6 +27,9 @@ const EditRecord: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [useSchemaForm, setUseSchemaForm] = useState(true);
   const [jsonData, setJsonData] = useState('{}');
+
+  // Field customization hook
+  const fieldCustomization = useFieldCustomization(collection || '', schema);
 
   useEffect(() => {
     if (collection) {
@@ -65,7 +69,7 @@ const EditRecord: React.FC = () => {
     }
   };
 
-  const handleSchemaFormSave = async (data: Record<string, any>) => {
+  const handleSchemaFormSave = async (data: Record<string, unknown>) => {
     if (!collection) return;
 
     try {
@@ -172,6 +176,13 @@ const EditRecord: React.FC = () => {
           icon: <Code className="h-4 w-4" />,
           onClick: () => setUseSchemaForm(false),
           active: !useSchemaForm,
+        },
+        {
+          id: "customize-fields",
+          label: fieldCustomization.customizationMode ? "Exit Customization" : "Customize Fields",
+          icon: <Settings className="h-4 w-4" />,
+          onClick: fieldCustomization.toggleCustomizationMode,
+          active: fieldCustomization.customizationMode,
         }
       ]}
       showDropdownOn="mobile"
@@ -260,13 +271,24 @@ const EditRecord: React.FC = () => {
         </CardHeader>
         <CardContent className="pt-0">
           {useSchemaForm && schema && Object.keys(schema.fields).length > 0 ? (
-            <SchemaForm
+            <CustomizableSchemaForm
               schema={schema}
               initialData={isCreateMode ? {} : record?.data}
               onSubmit={handleSchemaFormSave}
               onCancel={handleCancel}
               submitLabel={isCreateMode ? "Create Record" : "Save Changes"}
               isSubmitting={saving}
+              customizationMode={fieldCustomization.customizationMode}
+              fieldCustomizations={fieldCustomization.settings.fieldCustomizations}
+              onFieldCustomizationChange={fieldCustomization.updateFieldCustomization}
+              onDragStart={fieldCustomization.handleDragStart}
+              onDragOver={fieldCustomization.handleDragOver}
+              onDrop={fieldCustomization.handleDrop}
+              draggedField={fieldCustomization.draggedField}
+              onToggleCustomizationMode={fieldCustomization.toggleCustomizationMode}
+              onResetToDefault={fieldCustomization.resetToDefault}
+              onShowAllFields={fieldCustomization.showAllFields}
+              onHideAllFields={fieldCustomization.hideAllFields}
             />
           ) : (
             <form onSubmit={handleJsonSave} className="space-y-4 sm:space-y-6">

@@ -1,12 +1,11 @@
- import React, { useState } from 'react';
+import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ArrowLeft, Info, ChevronDown, ChevronRight, Database, Shield, Settings } from 'lucide-react';
+import { ArrowLeft, ChevronDown, ChevronRight, Database, Shield, Settings } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Checkbox } from '@/components/ui/checkbox';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import { Separator } from '@/components/ui/separator';
 import { Badge } from '@/components/ui/badge';
@@ -16,6 +15,7 @@ import { apiService } from '../services/api';
 import type { CollectionSchema, FieldDefinition, CollectionType, CreateCollectionRequest } from '../types/api';
 import { useFieldManagement, FieldsList } from '@/components/collection-form';
 import { parseFieldDefaultValue } from '../utils/fieldDefaults';
+import type { FieldFormData } from '@/components/collection-form/types';
 
 // Auth collection configuration interface
 interface AuthCollectionConfig {
@@ -55,6 +55,9 @@ const CreateCollection: React.FC = () => {
   // Use the field management hook
   const fieldManagement = useFieldManagement();
 
+  // Keep track of previous collection type to detect transitions
+  const prevCollectionTypeRef = React.useRef<CollectionType>(collectionType);
+
   // Load collections for relationship field options
   React.useEffect(() => {
     const loadCollections = async () => {
@@ -68,78 +71,76 @@ const CreateCollection: React.FC = () => {
     loadCollections();
   }, []);
 
-  // Set up default fields when collection type changes
+  // Set up default auth fields when switching into auth collection type
   React.useEffect(() => {
-    if (collectionType === 'auth' && fieldManagement.fields.length === 0) {
-      // Add default auth collection fields
-      
-      // Add email field
-      fieldManagement.addField();
-      fieldManagement.updateField(0, {
-        name: authConfig.identifierField,
-        field_type: 'email',
-        required: true,
-        unique: true,
-        default: '',
-        validation: {
-          regex: '^[\\w\\.-]+@[\\w\\.-]+\\.[a-zA-Z]{2,}$',
-          message: 'Please enter a valid email address',
-          allow_empty: false,
-          min: null,
-          max: null
-        }
-      });
-
-      // Add password field
-      fieldManagement.addField();
-      fieldManagement.updateField(1, {
-        name: authConfig.credentialField,
-        field_type: 'password',
-        required: true,
-        unique: false,
-        default: '',
-        validation: {
-          min: 8,
-          message: 'Password must be at least 8 characters long',
-          allow_empty: false,
-          regex: null,
-          max: null
-        }
-      });
-
-      // Add role field
-      fieldManagement.addField();
-      fieldManagement.updateField(2, {
-        name: 'role',
-        field_type: {
-          select: {
+    if (collectionType === 'auth' && prevCollectionTypeRef.current !== 'auth') {
+      // Define exactly four default fields for auth collections
+      const defaultAuthFields: FieldFormData[] = [
+        {
+          name: authConfig.identifierField,
+          field_type: 'email',
+          required: true,
+          unique: true,
+          default: '',
+          validation: {
+            regex: '^[\\w\\.-]+@[\\w\\.-]+\\.[a-zA-Z]{2,}$',
+            message: 'Please enter a valid email address',
+            allow_empty: false,
+            min: null,
+            max: null,
+          },
+        },
+        {
+          name: authConfig.credentialField,
+          field_type: 'password',
+          required: true,
+          unique: false,
+          default: '',
+          validation: {
+            min: 8,
+            message: 'Password must be at least 8 characters long',
+            allow_empty: false,
+            regex: null,
+            max: null,
+          },
+        },
+        {
+          name: 'role',
+          field_type: {
+            select: {
+              options: ['user', 'admin'],
+              multiple: false,
+              allow_empty: false,
+            },
+          },
+          required: true,
+          unique: false,
+          default: 'user',
+          validation: null,
+          selectConfig: {
             options: ['user', 'admin'],
             multiple: false,
-            allow_empty: false
-          }
+            allow_empty: false,
+          },
         },
-        required: true,
-        unique: false,
-        default: 'user',
-        validation: null,
-        selectConfig: {
-          options: ['user', 'admin'],
-          multiple: false,
-          allow_empty: false
-        }
-      });
+        {
+          name: 'email_verified',
+          field_type: 'boolean',
+          required: true,
+          unique: false,
+          default: 'false',
+          validation: null,
+        },
+      ];
 
-      // Add email_verified field
-      fieldManagement.addField();
-      fieldManagement.updateField(3, {
-        name: 'email_verified',
-        field_type: 'boolean',
-        required: true,
-        unique: false,
-        default: 'false',
-        validation: null
-      });
+      fieldManagement.setFieldsFromSchema(defaultAuthFields);
+    } else if (collectionType === 'base' && prevCollectionTypeRef.current === 'auth') {
+      // Switching from auth back to base: clear fields
+      fieldManagement.setFieldsFromSchema([]);
     }
+
+    // Update previous collection type reference
+    prevCollectionTypeRef.current = collectionType;
   }, [collectionType, authConfig.identifierField, authConfig.credentialField, fieldManagement]);
 
   // Auto-enable refresh tokens for superuser collections

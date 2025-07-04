@@ -857,6 +857,83 @@ class ApiService {
 
     return results;
   }
+
+  // User Preferences Operations
+
+  /**
+   * Store or update a user preference
+   */
+  async storeUserPreference(key: string, value: unknown): Promise<void> {
+    await this.put(`/user/preferences/${encodeURIComponent(key)}`, value);
+  }
+
+  /**
+   * Get a specific user preference by key
+   */
+  async getUserPreference(key: string): Promise<unknown | null> {
+    try {
+      const response = await this.get<ApiResponse<{ preference?: { preference_value: unknown } }>>(`/user/preferences/${encodeURIComponent(key)}`);
+      return response.data.preference?.preference_value || null;
+    } catch (error) {
+      // Return null if preference doesn't exist
+      if (error instanceof Error && error.message.includes('not found')) {
+        return null;
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Get all user preferences
+   */
+  async getAllUserPreferences(): Promise<Record<string, unknown>> {
+    const response = await this.get<ApiResponse<{ preferences: Array<{ preference_key: string; preference_value: unknown }> }>>('/user/preferences');
+    const preferences: Record<string, unknown> = {};
+    
+    response.data.preferences.forEach(pref => {
+      preferences[pref.preference_key] = pref.preference_value;
+    });
+    
+    return preferences;
+  }
+
+  /**
+   * Delete a specific user preference
+   */
+  async deleteUserPreference(key: string): Promise<void> {
+    await this.delete(`/user/preferences/${encodeURIComponent(key)}`);
+  }
+
+  /**
+   * Delete all user preferences
+   */
+  async deleteAllUserPreferences(): Promise<void> {
+    await this.delete('/user/preferences');
+  }
+
+  /**
+   * Store field customization settings for a collection
+   */
+  async storeFieldCustomization(collection: string, customization: unknown): Promise<void> {
+    const key = `field_customization_${collection}`;
+    await this.storeUserPreference(key, customization);
+  }
+
+  /**
+   * Get field customization settings for a collection
+   */
+  async getFieldCustomization(collection: string): Promise<unknown | null> {
+    const key = `field_customization_${collection}`;
+    return this.getUserPreference(key);
+  }
+
+  /**
+   * Delete field customization settings for a collection
+   */
+  async deleteFieldCustomization(collection: string): Promise<void> {
+    const key = `field_customization_${collection}`;
+    await this.deleteUserPreference(key);
+  }
 }
 
 export const apiService = new ApiService();

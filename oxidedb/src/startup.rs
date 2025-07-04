@@ -57,32 +57,35 @@ impl ApplicationBootstrap {
             Arc::clone(&auth_service),
         ).await?;
 
-        // 5. Update auth service with discovered collections
+        // 5. Ensure auth system collections exist
+        self.ensure_auth_collections_exist(&database).await?;
+
+        // 6. Update auth service with discovered collections
         self.update_auth_collections(&database, &auth_service).await?;
 
-        // 6. Initialize permission service
+        // 7. Initialize permission service
         let permission_service = self.initialize_permission_service(Arc::clone(&database))?;
 
-        // 7. Register system hooks
+        // 8. Register system hooks
         self.register_system_hooks(
             &event_bus,
             Arc::clone(&auth_service),
             Arc::clone(&permission_service),
         ).await?;
 
-        // 8. Initialize plugin system (optional)
+        // 9. Initialize plugin system (optional)
         let plugin_manager = self.initialize_plugin_system(
             Arc::clone(&event_bus), 
             Arc::clone(&database) as Arc<dyn oxide_db::Db>
         ).await?;
 
-        // 9. Initialize VFS service (optional)
+        // 10. Initialize VFS service (optional)
         let vfs_service = self.initialize_vfs_system(Arc::clone(&event_bus)).await?;
 
-        // 10. Create logging API service if logging is enabled
+        // 11. Create logging API service if logging is enabled
         let logging_api_service = self.create_logging_api_service(&logging_service);
 
-        // 11. Populate sample data if requested
+        // 12. Populate sample data if requested
         if self.config.database.auto_populate {
             self.populate_sample_data(&database, &auth_service, &logging_service).await?;
         }
@@ -212,6 +215,83 @@ impl ApplicationBootstrap {
         database.initialize().await?;
         info!("✅ SQLite database initialized with event integration and authentication");
         Ok(database)
+    }
+
+    /// Ensure auth system collections exist
+    async fn ensure_auth_collections_exist(&self, database: &Arc<SqliteDb>) -> Result<()> {
+        info!("🔐 Ensuring auth system collections exist...");
+
+        // Get existing auth collections
+        let existing_collections = database.list_auth_collections().await?;
+        let existing_names: std::collections::HashSet<String> = existing_collections
+            .iter()
+            .map(|c| c.name.clone())
+            .collect();
+
+        // Check and create _users collection if it doesn't exist
+        if !existing_names.contains("_users") {
+            info!("📋 Creating _users auth collection...");
+            let mut users_schema = oxide_core::CollectionSchema::new(
+                "_users".to_string(), 
+                oxide_core::CollectionType::Auth
+            );
+            users_schema.add_field(
+                "email".to_string(),
+                oxide_core::FieldDefinition::new(oxide_core::FieldType::Email).required().unique(),
+            );
+            users_schema.add_field(
+                "password".to_string(),
+                oxide_core::FieldDefinition::new(oxide_core::FieldType::Password).required(),
+            );
+
+            match database.create_collection_with_schema(users_schema).await {
+                Ok(_) => {
+                    info!("✅ _users auth collection created successfully");
+                }
+                Err(e) if e.to_string().contains("already exists") => {
+                    info!("ℹ️ _users auth collection already exists");
+                }
+                Err(e) => {
+                    warn!("❌ Failed to create _users auth collection: {}", e);
+                }
+            }
+        } else {
+            info!("ℹ️ _users auth collection already exists");
+        }
+
+        // Check and create _superusers collection if it doesn't exist
+        if !existing_names.contains("_superusers") {
+            info!("📋 Creating _superusers auth collection...");
+            let mut superusers_schema = oxide_core::CollectionSchema::new(
+                "_superusers".to_string(), 
+                oxide_core::CollectionType::Auth
+            );
+            superusers_schema.add_field(
+                "email".to_string(),
+                oxide_core::FieldDefinition::new(oxide_core::FieldType::Email).required().unique(),
+            );
+            superusers_schema.add_field(
+                "password".to_string(),
+                oxide_core::FieldDefinition::new(oxide_core::FieldType::Password).required(),
+            );
+
+            match database.create_collection_with_schema(superusers_schema).await {
+                Ok(_) => {
+                    info!("✅ _superusers auth collection created successfully");
+                }
+                Err(e) if e.to_string().contains("already exists") => {
+                    info!("ℹ️ _superusers auth collection already exists");
+                }
+                Err(e) => {
+                    warn!("❌ Failed to create _superusers auth collection: {}", e);
+                }
+            }
+        } else {
+            info!("ℹ️ _superusers auth collection already exists");
+        }
+
+        info!("✅ Auth system collections verification completed");
+        Ok(())
     }
 
     /// Update auth service with discovered collections

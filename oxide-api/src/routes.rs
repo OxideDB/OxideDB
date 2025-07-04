@@ -40,6 +40,10 @@ use crate::{
             analyze_plugin,
         },
         records::{create_record, delete_record, get_record, list_records, update_record},
+        user_preferences::{
+            store_user_preference, get_user_preference, list_user_preferences,
+            delete_user_preference, delete_all_user_preferences,
+        },
         vfs,
     },
 
@@ -144,6 +148,7 @@ pub enum EndpointCategory {
     Collections,
     Records,
     Permissions,
+    UserPreferences,
     Plugins,
     Logging,
     Admin,
@@ -159,6 +164,7 @@ impl std::fmt::Display for EndpointCategory {
             EndpointCategory::Collections => write!(f, "Collections"),
             EndpointCategory::Records => write!(f, "Records"),
             EndpointCategory::Permissions => write!(f, "Permissions"),
+            EndpointCategory::UserPreferences => write!(f, "User Preferences"),
             EndpointCategory::Plugins => write!(f, "Plugins"),
             EndpointCategory::Logging => write!(f, "Logging"),
             EndpointCategory::Admin => write!(f, "Admin UI"),
@@ -492,6 +498,8 @@ fn api_routes() -> Router<AppState> {
         .merge(record_routes())
         // Permission management routes
         .merge(permission_routes())
+        // User preferences routes
+        .merge(user_preferences_routes())
         // Plugin routes
         .merge(plugin_routes())
         // Logging routes
@@ -554,6 +562,22 @@ fn permission_routes() -> Router<AppState> {
         .route(
             "/collections/:collection/permissions/preset",
             axum::routing::post(create_permissions_from_preset),
+        )
+}
+
+/// User preferences routes
+fn user_preferences_routes() -> Router<AppState> {
+    Router::new()
+        // User preferences management
+        .route(
+            "/user/preferences",
+            get(list_user_preferences).delete(delete_all_user_preferences),
+        )
+        .route(
+            "/user/preferences/:key",
+            get(get_user_preference)
+                .put(store_user_preference)
+                .delete(delete_user_preference),
         )
 }
 

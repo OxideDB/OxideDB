@@ -7,30 +7,39 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from '@/components/ui/command';
-import { Check, ChevronsUpDown, X } from 'lucide-react';
+import { Check, ChevronsUpDown, X, GripVertical, Eye, EyeOff } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { FileUpload } from '@/components/ui/file-upload';
 import { apiService } from '../services/api';
 import type { CollectionSchema, FieldDefinition, DbRecord, FileReference, FileFieldConfig } from '../types/api';
+import type { FieldCustomization, FieldSize } from '../types/fieldCustomization';
 
 interface SchemaFormProps {
   schema: CollectionSchema;
-  initialData?: Record<string, any>;
-  onSubmit: (data: Record<string, any>) => Promise<void>;
+  initialData?: Record<string, Record<string, unknown>>;
+  onSubmit: (data: Record<string, unknown>) => Promise<void>;
   onCancel: () => void;
   submitLabel?: string;
   isSubmitting?: boolean;
+  // Field customization props
+  customizationMode?: boolean;
+  fieldCustomizations?: Record<string, FieldCustomization>;
+  onFieldCustomizationChange?: (fieldName: string, customization: Partial<FieldCustomization>) => void;
+  onDragStart?: (fieldName: string) => void;
+  onDragOver?: (e: React.DragEvent) => void;
+  onDrop?: (e: React.DragEvent, targetFieldName: string) => void;
+  draggedField?: string | null;
 }
 
 interface FormData {
-  [key: string]: any;
+  [key: string]: unknown;
 }
 
 interface RelationshipFieldProps {
   fieldName: string;
   relationshipConfig: { target_collection: string; multiple: boolean; display_field?: string };
-  value: any;
-  onChange: (value: any) => void;
+  value: unknown;
+  onChange: (value: unknown) => void;
   error?: string;
   required?: boolean;
 }
@@ -298,6 +307,13 @@ export const SchemaForm: React.FC<SchemaFormProps> = ({
   onCancel,
   submitLabel = 'Submit',
   isSubmitting = false,
+  customizationMode = false,
+  fieldCustomizations = {},
+  onFieldCustomizationChange,
+  onDragStart,
+  onDragOver,
+  onDrop,
+  draggedField,
 }) => {
   const [formData, setFormData] = useState<FormData>({});
   const [errors, setErrors] = useState<Record<string, string>>({});

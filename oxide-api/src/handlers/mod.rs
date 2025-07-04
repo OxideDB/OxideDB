@@ -24,6 +24,7 @@ pub mod logs;
 pub mod permissions;
 pub mod plugins;
 pub mod records;
+pub mod user_preferences;
 pub mod vfs;
 
 // Re-export commonly used types for convenience
