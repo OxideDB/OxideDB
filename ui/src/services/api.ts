@@ -5,8 +5,8 @@ import type {
   LogQueryParams, AuditQueryParams, LogResponse, LogEntry, SecurityAuditEvent,
   DashboardMetrics, RetentionStats, CreateLogRequest, CreateAuditRequest,
   CreateLogResponse, LoggingHealthResponse,
-  FileReference, FileMetadata, FileWriteRequest, FileReadResponse, FileListRequest, 
-  FileListResponse, VfsUsageStats, FileUploadProgress
+   FileMetadata, FileListRequest, 
+  FileListResponse, VfsUsageStats
 } from '../types/api';
 import { capabilityNameToObject } from '../types/api';
 
@@ -725,6 +725,7 @@ class ApiService {
             const response = JSON.parse(xhr.responseText);
             resolve(response.data);
           } catch (error) {
+            console.error('Failed to parse response:', error);
             reject(new Error('Failed to parse response'));
           }
         } else {
