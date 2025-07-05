@@ -7,6 +7,7 @@ import { Badge } from '@/components/ui/badge';
 import type { DbRecord, CollectionSchema, FieldType, FileReference, FieldDefinition } from '../types/api';
 import type { FieldCustomization } from '../types/fieldCustomization';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import { apiService } from '../services/api';
 
 interface RecordTableProps {
   records: DbRecord[];
@@ -72,7 +73,6 @@ export const RecordTable: React.FC<RecordTableProps> = ({
 
   const downloadFile = async (fileRef: FileReference) => {
     try {
-      const { apiService } = await import('../services/api');
       const blob = await apiService.downloadFile(collection, fileRef.file_id);
       
       // Create download link

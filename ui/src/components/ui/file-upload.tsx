@@ -1,13 +1,13 @@
 import React, { useState, useRef, useCallback } from 'react';
-import { Upload, X, File, AlertCircle, CheckCircle, Loader2, Download, Eye } from 'lucide-react';
+import { Upload, X, File, AlertCircle, CheckCircle, Loader2, Download } from 'lucide-react';
 import { Button } from './button';
 import { Progress } from './progress';
 import { Badge } from './badge';
-import { Card, CardContent } from './card';
+import { Card } from './card';
 import { Input } from './input';
-import { Label } from './label';
 import { Alert, AlertDescription } from './alert';
-import type { FileReference, FileFieldConfig, FileMetadata } from '../../types/api';
+import type { FileReference, FileFieldConfig } from '../../types/api';
+import { apiService } from '../../services/api';
 
 interface FileUploadProps {
   value: FileReference | FileReference[] | null;
@@ -116,8 +116,6 @@ export const FileUpload: React.FC<FileUploadProps> = ({
     }
 
     // Start upload process
-    const { apiService } = await import('../../services/api');
-    
     const uploadPromises = fileArray.map(async (file) => {
       const fileId = `${file.name}-${Date.now()}-${Math.random()}`;
       const progress: UploadProgress = {
@@ -225,7 +223,6 @@ export const FileUpload: React.FC<FileUploadProps> = ({
 
   const downloadFile = useCallback(async (fileRef: FileReference) => {
     try {
-      const { apiService } = await import('../../services/api');
       const blob = await apiService.downloadFile(collection, fileRef.file_id);
       
       // Create download link

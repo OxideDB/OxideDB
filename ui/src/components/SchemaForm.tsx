@@ -7,12 +7,12 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from '@/components/ui/command';
-import { Check, ChevronsUpDown, X, GripVertical, Eye, EyeOff } from 'lucide-react';
+import { Check, ChevronsUpDown, X } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { FileUpload } from '@/components/ui/file-upload';
 import { apiService } from '../services/api';
 import type { CollectionSchema, FieldDefinition, DbRecord, FileReference, FileFieldConfig } from '../types/api';
-import type { FieldCustomization, FieldSize } from '../types/fieldCustomization';
+import type { FieldCustomization } from '../types/fieldCustomization';
 
 interface SchemaFormProps {
   schema: CollectionSchema;
@@ -473,7 +473,7 @@ export const SchemaForm: React.FC<SchemaFormProps> = ({
         break;
       case 'json':
         try {
-          processedData[fieldName] = value ? JSON.parse(value) : null;
+          processedData[fieldName] = value && typeof value === 'string' ? JSON.parse(value) : value;
         } catch {
           processedData[fieldName] = value;
         }
@@ -498,6 +498,16 @@ export const SchemaForm: React.FC<SchemaFormProps> = ({
     const error = errors[fieldName];
     const fieldId = `field-${fieldName}`;
 
+    // Helper function to safely convert value to string for form inputs
+    const getStringValue = (val: unknown): string => {
+      if (val === null || val === undefined) return '';
+      if (typeof val === 'string') return val;
+      if (typeof val === 'number') return val.toString();
+      if (typeof val === 'boolean') return val.toString();
+      if (typeof val === 'object') return JSON.stringify(val);
+      return String(val);
+    };
+
     let fieldComponent;
 
     switch (fieldDef.field_type) {
@@ -520,7 +530,7 @@ export const SchemaForm: React.FC<SchemaFormProps> = ({
         fieldComponent = (
           <Textarea
             id={fieldId}
-            value={typeof value === 'object' ? JSON.stringify(value, null, 2) : value}
+            value={getStringValue(value)}
             onChange={(e) => handleFieldChange(fieldName, e.target.value)}
             placeholder="Enter JSON data"
             className="min-h-[100px] font-mono text-sm"
@@ -534,7 +544,7 @@ export const SchemaForm: React.FC<SchemaFormProps> = ({
             id={fieldId}
             type="number"
             step="any"
-            value={value}
+            value={getStringValue(value)}
             onChange={(e) => handleFieldChange(fieldName, e.target.value)}
             placeholder="Enter a number"
           />
@@ -546,7 +556,7 @@ export const SchemaForm: React.FC<SchemaFormProps> = ({
           <Input
             id={fieldId}
             type="email"
-            value={value}
+            value={getStringValue(value)}
             onChange={(e) => handleFieldChange(fieldName, e.target.value)}
             placeholder="Enter email address"
           />
@@ -558,7 +568,7 @@ export const SchemaForm: React.FC<SchemaFormProps> = ({
           <Input
             id={fieldId}
             type="url"
-            value={value}
+            value={getStringValue(value)}
             onChange={(e) => handleFieldChange(fieldName, e.target.value)}
             placeholder="Enter URL (https://...)"
           />
@@ -570,7 +580,7 @@ export const SchemaForm: React.FC<SchemaFormProps> = ({
           <Input
             id={fieldId}
             type="datetime-local"
-            value={value}
+            value={getStringValue(value)}
             onChange={(e) => handleFieldChange(fieldName, e.target.value)}
             placeholder="Select date and time"
           />
@@ -582,7 +592,7 @@ export const SchemaForm: React.FC<SchemaFormProps> = ({
           <Input
             id={fieldId}
             type="password"
-            value={value}
+            value={getStringValue(value)}
             onChange={(e) => handleFieldChange(fieldName, e.target.value)}
             placeholder="Enter password"
           />
@@ -601,7 +611,7 @@ export const SchemaForm: React.FC<SchemaFormProps> = ({
 
           fieldComponent = (
             <FileUpload
-              value={value}
+              value={value as FileReference | FileReference[] | null}
               onChange={(newValue) => handleFieldChange(fieldName, newValue)}
               config={fileConfig}
               collection={schema.name}
@@ -656,7 +666,7 @@ export const SchemaForm: React.FC<SchemaFormProps> = ({
             fieldComponent = (
               <select
                 id={fieldId}
-                value={value || ''}
+                value={getStringValue(value)}
                 onChange={(e) => handleFieldChange(fieldName, e.target.value || null)}
                 className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
               >
@@ -677,7 +687,7 @@ export const SchemaForm: React.FC<SchemaFormProps> = ({
             <Input
               id={fieldId}
               type="text"
-              value={value}
+              value={getStringValue(value)}
               onChange={(e) => handleFieldChange(fieldName, e.target.value)}
               placeholder="Enter text"
             />

@@ -237,10 +237,15 @@ const Collections: React.FC = () => {
                           <span className="font-medium">{stats.record_count.toLocaleString()}</span>
                         </div>
                         <div className="flex items-center justify-between">
-                          <span className="text-muted-foreground">Status</span>
-                          <Badge variant="secondary" className="bg-green-100 text-green-800">
-                            Active
-                          </Badge>
+                          <span className="text-muted-foreground">Size</span>
+                          <span className="font-medium">
+                            {stats.size_kb < 1024 
+                              ? `${stats.size_kb.toFixed(1)} KB` 
+                              : stats.size_kb < 1024 * 1024 
+                                ? `${(stats.size_kb / 1024).toFixed(1)} MB` 
+                                : `${(stats.size_kb / (1024 * 1024)).toFixed(1)} GB`
+                            }
+                          </span>
                         </div>
                       </div>
                       {isSystemCollection && (
