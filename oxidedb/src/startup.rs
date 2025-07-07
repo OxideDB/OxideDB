@@ -12,6 +12,7 @@ use oxide_logging::{LogService, LogServiceBuilder, LogServiceBridge};
 use oxide_vfs;
 use std::sync::Arc;
 use tracing::{info, warn, debug};
+use std::fmt::Write;
 
 /// Application services container
 #[derive(Clone)]
@@ -489,92 +490,110 @@ impl ApplicationBootstrap {
 
     /// Log the current configuration
     fn log_configuration(&self) {
-        info!("Configuration:");
-        info!("  Database path: {:?}", self.config.database.db_path);
-        info!("  Security policy: {:?}", self.config.plugins.security_policy);
-        info!("  Plugin folder: {:?}", self.config.plugins.plugin_folder);
-        info!("  API port: {}", self.config.server.api_port);
-        info!("  Admin path: {}", self.config.server.admin_path);
-        info!("  Admin enabled: {}", self.config.server.enable_admin);
-        info!("  Admin mode: {:?}", self.config.server.admin_mode);
+        use std::fmt::Write;
+
+        // Build a single, multi-line summary string so we emit only one log record.
+        let mut msg = String::from("\n⚙️  Runtime configuration\n");
+
+        // Core configuration
+        let _ = writeln!(msg, "  Database path        : {:?}", self.config.database.db_path);
+        let _ = writeln!(msg, "  Security policy      : {:?}", self.config.plugins.security_policy);
+        let _ = writeln!(msg, "  Plugin folder        : {:?}", self.config.plugins.plugin_folder);
+        let _ = writeln!(msg, "  API port             : {}",  self.config.server.api_port);
+        let _ = writeln!(msg, "  Bind address         : {}",  self.config.server.bind_address);
+
+        // Admin UI
+        let _ = writeln!(msg, "  Admin enabled        : {}",  self.config.server.enable_admin);
+        let _ = writeln!(msg, "  Admin mode           : {:?}", self.config.server.admin_mode);
         if matches!(self.config.server.admin_mode, crate::AdminMode::External) {
-            info!("  Admin UI path: {:?}", self.config.server.admin_ui_path);
+            let _ = writeln!(msg, "  Admin UI path        : {:?}", self.config.server.admin_ui_path);
         }
-        info!("  Auto-populate DB: {}", self.config.database.auto_populate);
-        info!("  Bind address: {}", self.config.server.bind_address);
-        info!("  Log level: {:?}", self.config.logging.log_level);
-        info!("  Request logging: {}", self.config.server.enable_request_logging);
-        info!("  CORS enabled: {}", self.config.server.enable_cors);
-        info!("  Logging system enabled: {}", self.config.logging.enable_logging);
+
+        // Misc.
+        let _ = writeln!(msg, "  Auto-populate DB     : {}",  self.config.database.auto_populate);
+        let _ = writeln!(msg, "  Log level            : {:?}", self.config.logging.log_level);
+        let _ = writeln!(msg, "  Request logging      : {}",  self.config.server.enable_request_logging);
+        let _ = writeln!(msg, "  CORS enabled         : {}",  self.config.server.enable_cors);
+        let _ = writeln!(msg, "  Logging system       : {}",  self.config.logging.enable_logging);
         if self.config.logging.enable_logging {
-            info!("  Logging DB path: {:?}", self.config.logging.logging_db_path);
+            let _ = writeln!(msg, "  Logging DB path      : {:?}", self.config.logging.logging_db_path);
         }
+
+        // Emit as DEBUG to keep INFO channel cleaner; users can opt-in via RUST_LOG=debug.
+        debug!("{}", msg);
     }
 
-    /// Print startup information
+    /// Print a concise startup banner.
     fn print_startup_info(&self) {
-        info!("🎉 OxideDB startup completed successfully!");
-        info!("Architecture summary:");
-        info!("  ✅ Cargo workspace with modular crate architecture");
-        info!("  ✅ Hook-first architecture with EventBus");
-        info!("  ✅ Database abstraction with SQLite implementation");
-        info!("  ✅ Standardized error handling with AppError");
-        info!("  ✅ Full async support with Tokio");
-        info!("  ✅ All operations route through events for extensibility");
-        info!("  ✅ HTTP API server with health check endpoint");
-        info!("  ✅ REST API for collections and records");
-        info!("  ✅ WASM Plugin system with configurable security policies");
-        info!("  ✅ Comprehensive logging and audit system");
-        info!("");
-        info!("🌐 API server is running at: http://{}:{}", 
-              self.config.server.bind_address, self.config.server.api_port);
-        
-        let admin_enabled = self.config.server.enable_admin && 
+        use std::fmt::Write;
+
+        let mut banner = String::new();
+
+        // Header
+        banner.push_str("🎉 OxideDB startup completed successfully!\n\n");
+
+        // Architecture highlights (static content)
+        banner.push_str("Architecture highlights:\n");
+        banner.push_str("  • Modular workspace with strict crate boundaries\n");
+        banner.push_str("  • EventBus-centric, hook-first design\n");
+        banner.push_str("  • Async (Tokio) & SQLite backend\n");
+        banner.push_str("  • WASM plugin runtime & audit logging\n\n");
+
+        // Runtime URLs
+        let _ = writeln!(banner, "🌐 API server : http://{}:{}", self.config.server.bind_address, self.config.server.api_port);
+
+        let admin_enabled = self.config.server.enable_admin &&
             !matches!(self.config.server.admin_mode, crate::AdminMode::Disabled);
+
         if admin_enabled {
-            info!("🎨 Admin UI is available at: http://{}:{}{}", 
-                  self.config.server.bind_address, self.config.server.api_port, self.config.server.admin_path);
+            let _ = writeln!(banner, "🎨 Admin UI   : http://{}:{}{}", self.config.server.bind_address, self.config.server.api_port, self.config.server.admin_path);
             match &self.config.server.admin_mode {
-                crate::AdminMode::Embedded => info!("   Mode: Embedded (built-in UI)"),
-                crate::AdminMode::External => info!("   Mode: External (serving from {:?})", 
-                                                    self.config.server.admin_ui_path),
-                crate::AdminMode::Disabled => {} // This case is handled above
+                crate::AdminMode::Embedded => banner.push_str("   Mode        : Embedded (built-in UI)\n"),
+                crate::AdminMode::External => {
+                    let _ = writeln!(banner, "   Mode        : External (serving from {:?})", self.config.server.admin_ui_path);
+                }
+                crate::AdminMode::Disabled => {}
             }
         } else {
-            info!("🚫 Admin UI is disabled");
+            banner.push_str("🚫 Admin UI   : disabled\n");
         }
-        
+
+        banner.push_str("\nTip: run with RUST_LOG=debug to see full endpoint list and configuration details.\n");
+
+        // Emit banner in a single INFO record.
+        info!("{}", banner);
+
+        // Detailed endpoints (debug level only)
         self.print_available_endpoints();
     }
 
-    /// Print available API endpoints
+    /// Print available API endpoints at DEBUG level.
     fn print_available_endpoints(&self) {
-        info!("📋 Available endpoints:");
-        info!("  - GET  /health                              - Health check");
-        
-        let admin_enabled = self.config.server.enable_admin && 
+        debug!("📋 Available endpoints:");
+        debug!("  • GET  /health                               – Health check");
+
+        let admin_enabled = self.config.server.enable_admin &&
             !matches!(self.config.server.admin_mode, crate::AdminMode::Disabled);
         if admin_enabled {
-            info!("  - GET  {}                               - Admin UI", self.config.server.admin_path);
+            debug!("  • GET  {}                                – Admin UI", self.config.server.admin_path);
         }
-        
-        info!("  - GET  /collections                         - List collections");
-        info!("  - POST /collections                         - Create collection");
-        info!("  - DEL  /collections/{{collection}}            - Delete collection");
-        info!("  - GET  /collections/{{collection}}/stats      - Collection stats");
-        info!("  - GET  /collections/{{collection}}/records    - List records");
-        info!("  - POST /collections/{{collection}}/records    - Create record");
-        info!("  - GET  /collections/{{collection}}/records/{{id}} - Get record");
-        info!("  - PUT  /collections/{{collection}}/records/{{id}} - Update record");
-        info!("  - DEL  /collections/{{collection}}/records/{{id}} - Delete record");
-        
+
+        debug!("  • GET  /collections                          – List collections");
+        debug!("  • POST /collections                          – Create collection");
+        debug!("  • DEL  /collections/{{collection}}             – Delete collection");
+        debug!("  • GET  /collections/{{collection}}/stats       – Collection stats");
+        debug!("  • GET  /collections/{{collection}}/records     – List records");
+        debug!("  • POST /collections/{{collection}}/records     – Create record");
+        debug!("  • GET  /collections/{{collection}}/records/{{id}} – Get record");
+        debug!("  • PUT  /collections/{{collection}}/records/{{id}} – Update record");
+        debug!("  • DEL  /collections/{{collection}}/records/{{id}} – Delete record");
+
         if self.config.logging.enable_logging {
-            info!("  📊 Logging endpoints:");
-            info!("  - GET  /api/logs                            - Query logs");
-            info!("  - GET  /api/audit                           - Query audit events");
-            info!("  - GET  /api/logs/metrics                    - Logging metrics");
-            info!("  - GET  /api/logs/health                     - Logging health");
+            debug!("  📊 Logging endpoints:");
+            debug!("  • GET  /api/logs                             – Query logs");
+            debug!("  • GET  /api/audit                            – Query audit events");
+            debug!("  • GET  /api/logs/metrics                     – Logging metrics");
+            debug!("  • GET  /api/logs/health                      – Logging health");
         }
-        info!("");
     }
 } 

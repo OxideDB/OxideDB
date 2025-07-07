@@ -226,19 +226,23 @@ impl PluginManager {
         let wasm_bytes = std::fs::read(path)
             .map_err(|e| AppError::internal(format!("Failed to read WASM file {:?}: {}", path, e)))?;
 
-        // Verify WASM file hash if available
-        if let Err(e) = self.verify_plugin_hash(plugin_name, &wasm_bytes).await {
-            warn!("Plugin hash verification failed for '{}': {}", plugin_name, e);
-            // For now, continue loading but log the warning
-            // In production, this should be configurable based on security policies
-        }
+        // Determine the expected hash (if any) from the provided configuration
+        let expected_hash: Option<String> = config.and_then(|c| c.wasm_hash.clone());
+
+        // Verify WASM integrity – abort loading on mismatch
+        self.verify_plugin_hash(plugin_name, &wasm_bytes, expected_hash.as_deref()).await?;
         
         let mut runtime_guard = self.runtime.lock().map_err(|_| {
             AppError::internal("Failed to acquire plugin runtime lock")
         })?;
 
-        // Use plugin configuration if provided, otherwise use defaults
+        // Use plugin configuration if provided, otherwise fall back to safe defaults
         let (capabilities, trust_level, resource_limits) = if let Some(plugin_config) = config {
+            if plugin_config.capabilities.is_empty() {
+                warn!("❌ Plugin '{}' has no capabilities granted – skipping load", plugin_name);
+                return Err(AppError::plugin(plugin_name.to_string(), "No capabilities granted".to_string()));
+            }
+
             info!("🔍 Using provided configuration for plugin '{}': {} capabilities", 
                   plugin_name, plugin_config.capabilities.len());
             (plugin_config.capabilities.clone(), plugin_config.trust_level.clone(), plugin_config.resource_limits.clone())
@@ -289,7 +293,7 @@ impl PluginManager {
     }
 
     /// Verify plugin hash for integrity checking
-    async fn verify_plugin_hash(&self, plugin_name: &str, wasm_bytes: &[u8]) -> Result<(), AppError> {
+    async fn verify_plugin_hash(&self, plugin_name: &str, wasm_bytes: &[u8], expected_hash: Option<&str>) -> Result<(), AppError> {
         use sha2::{Sha256, Digest};
         
         // Calculate SHA-256 hash of the WASM file
@@ -297,12 +301,22 @@ impl PluginManager {
         hasher.update(wasm_bytes);
         let calculated_hash = format!("{:x}", hasher.finalize());
         
-        // For now, just log the calculated hash
-        info!("🔒 Plugin '{}' hash: {}", plugin_name, calculated_hash);
-        
-        // TODO: In production, compare against stored/expected hash from database
+        match expected_hash {
+            Some(expected) => {
+                if calculated_hash != expected {
+                    warn!("❌ Hash mismatch for plugin '{}': expected {}, got {}", plugin_name, expected, calculated_hash);
+                    return Err(AppError::plugin(plugin_name.to_string(), "WASM integrity check failed".to_string()));
+                } else {
+                    info!("🔒 Plugin '{}' hash verified successfully", plugin_name);
+                }
+            }
+            None => {
+                info!("ℹ️ No stored hash for plugin '{}' – skipping integrity verification", plugin_name);
+            }
+        }
+
         // TODO: Implement signature verification for code signing
-        
+
         Ok(())
     }
 
