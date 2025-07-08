@@ -24,6 +24,7 @@ pub mod logs;
 pub mod permissions;
 pub mod plugins;
 pub mod records;
+pub mod site_settings;
 pub mod user_preferences;
 pub mod vfs;
 
@@ -32,4 +33,5 @@ pub use auth::{AuthHandlers, LoginRequest, LoginResponse, RegisterRequest, Regis
 pub use collections::{CollectionStats, CollectionHandlers};
 pub use health::{HealthHandlers, HealthStatus};
 pub use permissions::{PermissionHandlers, CollectionPermissionsInfo, PermissionPresetType};
-pub use records::RecordHandlers; 
+pub use records::RecordHandlers;
+pub use site_settings::SiteSettingsHandlers; 

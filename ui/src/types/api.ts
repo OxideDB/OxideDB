@@ -512,4 +512,128 @@ export interface AuthCollectionConfig {
   refreshTokensEnabled: boolean;
   refreshTokensRequired: boolean;
   customClaimFields: string[];
+}
+
+// Site Settings types (matching oxide-core structure)
+export interface SiteSettings {
+  branding: BrandingSettings;
+  email: EmailSettings;
+  system_info: SystemInfoSettings;
+  general: GeneralSettings;
+  security: SecuritySettings;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface BrandingSettings {
+  site_title: string;
+  site_description?: string;
+  logo_url?: string;
+  favicon_url?: string;
+  primary_color?: string;
+  secondary_color?: string;
+  custom_css?: string;
+  footer_text?: string;
+}
+
+export interface EmailSettings {
+  enabled: boolean;
+  smtp_host?: string;
+  smtp_port?: number;
+  smtp_username?: string;
+  smtp_password?: string;
+  smtp_tls: boolean;
+  smtp_starttls: boolean;
+  from_email?: string;
+  from_name?: string;
+  reply_to_email?: string;
+  templates: EmailTemplateSettings;
+}
+
+export interface EmailTemplateSettings {
+  verification_template?: string;
+  password_reset_template?: string;
+  welcome_template?: string;
+  signature?: string;
+}
+
+export interface SystemInfoSettings {
+  oxidedb_version: string;
+  oxidedb_edition: OxideDbEdition;
+  installation_id: string;
+  environment: DeploymentEnvironment;
+  instance_name?: string;
+  license_key?: string;
+  license_expires_at?: number;
+}
+
+export interface GeneralSettings {
+  default_timezone: string;
+  default_locale: string;
+  max_upload_size: number;
+  allow_user_registration: boolean;
+  allow_public_api: boolean;
+  api_rate_limit: number;
+  maintenance: MaintenanceSettings;
+  backup: BackupSettings;
+}
+
+export interface SecuritySettings {
+  require_email_verification: boolean;
+  password_min_length: number;
+  password_require_complexity: boolean;
+  session_timeout_minutes: number;
+  max_login_attempts: number;
+  lockout_duration_minutes: number;
+  enable_2fa: boolean;
+  force_2fa_admin: boolean;
+  enable_audit_logging: boolean;
+}
+
+export interface MaintenanceSettings {
+  enabled: boolean;
+  message?: string;
+  estimated_completion?: number;
+  allow_admin_access: boolean;
+}
+
+export interface BackupSettings {
+  enabled: boolean;
+  frequency_hours: number;
+  retention_count: number;
+  storage_location?: string;
+  enable_compression: boolean;
+  include_user_data: boolean;
+}
+
+export type OxideDbEdition = 'Community' | 'Professional' | 'Enterprise';
+export type DeploymentEnvironment = 'Development' | 'Staging' | 'Production';
+
+export interface UpdateSiteSettingsRequest {
+  branding?: BrandingSettings;
+  email?: EmailSettings;
+  system_info?: SystemInfoUpdateRequest;
+  general?: GeneralSettings;
+  security?: SecuritySettings;
+}
+
+export interface SystemInfoUpdateRequest {
+  oxidedb_edition?: OxideDbEdition;
+  environment?: DeploymentEnvironment;
+  instance_name?: string;
+  license_key?: string;
+}
+
+export interface SiteSettingsResponse {
+  success: boolean;
+  message?: string;
+  settings?: SiteSettings;
+}
+
+export interface SettingsHealthStatus {
+  healthy: boolean;
+  email_config_valid: boolean;
+  license_valid: boolean;
+  warnings: string[];
+  last_validated_at: number;
 } 

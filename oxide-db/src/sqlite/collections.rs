@@ -36,6 +36,13 @@ impl SqliteDb {
             debug!("_plugins system collection already exists");
         }
 
+        // Create _site_settings collection to store site-wide configuration
+        if !self.collection_exists("_site_settings").await? {
+            self.create_site_settings_collection().await?;
+        } else {
+            debug!("_site_settings system collection already exists");
+        }
+
         Ok(())
     }
 

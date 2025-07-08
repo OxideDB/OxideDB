@@ -9,6 +9,7 @@ use oxide_core::{AppError, CollectionSchema, CollectionPermissions};
 use oxide_core::event::types::{RecordData, RecordId};
 use oxide_core::auth::AuthCollectionConfig;
 use oxide_core::user_preferences::UserPreferencesService;
+use oxide_core::site_settings::SiteSettingsService;
 
 /// Parameters for listing records
 #[derive(Debug, Clone, Default, serde::Deserialize)]
@@ -97,7 +98,7 @@ pub trait SchemaAdapter {
 /// must provide. It follows the Hook-First Principle by dispatching events for
 /// all operations, allowing plugins and listeners to hook into the process.
 #[async_trait::async_trait]
-pub trait Db: Send + Sync + UserPreferencesService {
+pub trait Db: Send + Sync + UserPreferencesService + SiteSettingsService {
     /// Initialize the database connection and schema
     ///
     /// This method should establish the database connection, create necessary

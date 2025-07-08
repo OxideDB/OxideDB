@@ -11,6 +11,7 @@ mod permissions;
 mod relationships;
 mod schema_adapter;
 mod user_preferences;
+mod site_settings;
 
 pub use connection::SqliteDb;
 pub use schema_adapter::SqliteSchemaAdapter; 

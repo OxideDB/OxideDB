@@ -24,8 +24,10 @@ impl SqliteDb {
             if let Some(value) = data.get(field_name) {
                 let sql_value = match field_def.field_type.sql_type() {
                     "TEXT" => {
-                        // For File fields, serialize the entire JSON object as string
-                        if matches!(field_def.field_type, FieldType::File(_)) {
+                        // For JSON or File fields, serialize the entire JSON value as a string
+                        if matches!(field_def.field_type, FieldType::File(_))
+                            || matches!(field_def.field_type, FieldType::Json)
+                        {
                             SqlValue::Text(value.to_string())
                         } else {
                             SqlValue::Text(value.as_str().unwrap_or("").to_string())
@@ -47,8 +49,10 @@ impl SqliteDb {
                 // Use default value if field is not provided
                 let sql_value = match field_def.field_type.sql_type() {
                     "TEXT" => {
-                        // For File fields, serialize the entire JSON object as string
-                        if matches!(field_def.field_type, FieldType::File(_)) {
+                        // For JSON or File fields, serialize the entire JSON value as a string
+                        if matches!(field_def.field_type, FieldType::File(_))
+                            || matches!(field_def.field_type, FieldType::Json)
+                        {
                             SqlValue::Text(default.to_string())
                         } else {
                             SqlValue::Text(default.as_str().unwrap_or("").to_string())

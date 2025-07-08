@@ -40,6 +40,11 @@ use crate::{
             analyze_plugin,
         },
         records::{create_record, delete_record, get_record, list_records, update_record},
+        site_settings::{
+            get_site_settings, update_site_settings, reset_site_settings,
+            get_settings_section, update_settings_section, test_email_configuration,
+            get_settings_health,
+        },
         user_preferences::{
             store_user_preference, get_user_preference, list_user_preferences,
             delete_user_preference, delete_all_user_preferences,
@@ -148,6 +153,7 @@ pub enum EndpointCategory {
     Collections,
     Records,
     Permissions,
+    SiteSettings,
     UserPreferences,
     Plugins,
     Logging,
@@ -164,6 +170,7 @@ impl std::fmt::Display for EndpointCategory {
             EndpointCategory::Collections => write!(f, "Collections"),
             EndpointCategory::Records => write!(f, "Records"),
             EndpointCategory::Permissions => write!(f, "Permissions"),
+            EndpointCategory::SiteSettings => write!(f, "Site Settings"),
             EndpointCategory::UserPreferences => write!(f, "User Preferences"),
             EndpointCategory::Plugins => write!(f, "Plugins"),
             EndpointCategory::Logging => write!(f, "Logging"),
@@ -352,6 +359,48 @@ fn get_static_endpoints(config: &RouteConfig) -> Vec<RegisteredEndpoint> {
             description: Some(description.to_string()),
         });
     }
+
+    // Site settings endpoints
+    let site_settings_endpoints = vec![
+        ("GET", "/admin/settings", "site_settings::get_site_settings", true, "Get site settings"),
+        ("PUT", "/admin/settings", "site_settings::update_site_settings", true, "Update site settings"),
+        ("POST", "/admin/settings/reset", "site_settings::reset_site_settings", true, "Reset site settings to defaults"),
+        ("GET", "/admin/settings/health", "site_settings::get_settings_health", true, "Get settings health status"),
+        ("POST", "/admin/settings/email/test", "site_settings::test_email_configuration", true, "Test email configuration"),
+        ("GET", "/admin/settings/:section", "site_settings::get_settings_section", true, "Get specific settings section"),
+        ("PUT", "/admin/settings/:section", "site_settings::update_settings_section", true, "Update specific settings section"),
+    ];
+    
+    for (method, path, handler, auth_required, description) in site_settings_endpoints {
+        endpoints.push(RegisteredEndpoint {
+            method: method.to_string(),
+            path: path.to_string(),
+            handler: handler.to_string(),
+            category: EndpointCategory::SiteSettings,
+            auth_required,
+            description: Some(description.to_string()),
+        });
+    }
+
+    // User preferences endpoints
+    let user_preferences_endpoints = vec![
+        ("GET", "/user/preferences", "user_preferences::list_user_preferences", true, "List user preferences"),
+        ("DELETE", "/user/preferences", "user_preferences::delete_all_user_preferences", true, "Delete all user preferences"),
+        ("GET", "/user/preferences/:key", "user_preferences::get_user_preference", true, "Get user preference"),
+        ("PUT", "/user/preferences/:key", "user_preferences::store_user_preference", true, "Store user preference"),
+        ("DELETE", "/user/preferences/:key", "user_preferences::delete_user_preference", true, "Delete user preference"),
+    ];
+    
+    for (method, path, handler, auth_required, description) in user_preferences_endpoints {
+        endpoints.push(RegisteredEndpoint {
+            method: method.to_string(),
+            path: path.to_string(),
+            handler: handler.to_string(),
+            category: EndpointCategory::UserPreferences,
+            auth_required,
+            description: Some(description.to_string()),
+        });
+    }
     
     // Plugin endpoints
     let plugin_endpoints = vec![
@@ -498,6 +547,8 @@ fn api_routes() -> Router<AppState> {
         .merge(record_routes())
         // Permission management routes
         .merge(permission_routes())
+        // Site settings routes
+        .merge(site_settings_routes())
         // User preferences routes
         .merge(user_preferences_routes())
         // Plugin routes
@@ -562,6 +613,32 @@ fn permission_routes() -> Router<AppState> {
         .route(
             "/collections/:collection/permissions/preset",
             axum::routing::post(create_permissions_from_preset),
+        )
+}
+
+/// Site settings routes
+fn site_settings_routes() -> Router<AppState> {
+    Router::new()
+        // Site settings management (admin only)
+        .route(
+            "/admin/settings",
+            get(get_site_settings).put(update_site_settings),
+        )
+        .route(
+            "/admin/settings/reset",
+            axum::routing::post(reset_site_settings),
+        )
+        .route(
+            "/admin/settings/health",
+            get(get_settings_health),
+        )
+        .route(
+            "/admin/settings/email/test",
+            axum::routing::post(test_email_configuration),
+        )
+        .route(
+            "/admin/settings/:section",
+            get(get_settings_section).put(update_settings_section),
         )
 }
 

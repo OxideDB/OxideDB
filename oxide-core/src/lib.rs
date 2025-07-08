@@ -25,6 +25,7 @@ pub mod plugin_security;
 pub mod plugin_config;
 pub mod hooks;
 pub mod user_preferences;
+pub mod site_settings;
 
 // Re-export commonly used types for convenience
 pub use auth::{
@@ -58,6 +59,12 @@ pub use plugin_api::{PluginError, PluginResult, EventPayload, PluginResponse};
 pub use plugin_security::{
     PluginCapability, PluginSecurityContext, PluginTrustLevel, ResourceLimits,
     ExecutionStats, SecurityViolation, PluginSecurityManager, SecurityPolicies
+};
+pub use site_settings::{
+    SiteSettings, BrandingSettings, EmailSettings, SystemInfoSettings, GeneralSettings,
+    SecuritySettings, MaintenanceSettings, BackupSettings, EmailTemplateSettings,
+    OxideDbEdition, DeploymentEnvironment, UpdateSiteSettingsRequest, SystemInfoUpdateRequest,
+    SiteSettingsResponse, SiteSettingsService, SettingsHealthStatus, settings_sections
 };
 
 // Re-export the main hook registration function

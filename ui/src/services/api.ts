@@ -6,7 +6,8 @@ import type {
   DashboardMetrics, RetentionStats, CreateLogRequest, CreateAuditRequest,
   CreateLogResponse, LoggingHealthResponse,
    FileMetadata, FileListRequest, 
-  FileListResponse, VfsUsageStats
+  FileListResponse, VfsUsageStats,
+  SiteSettings, SiteSettingsResponse, UpdateSiteSettingsRequest, SettingsHealthStatus
 } from '../types/api';
 import { capabilityNameToObject } from '../types/api';
 
@@ -935,6 +936,62 @@ class ApiService {
   async deleteFieldCustomization(collection: string): Promise<void> {
     const key = `field_customization_${collection}`;
     await this.deleteUserPreference(key);
+  }
+
+  // Site Settings Operations
+
+  /**
+   * Get all site settings
+   */
+  async getSiteSettings(includeHealth?: boolean): Promise<SiteSettings> {
+    const params = includeHealth ? '?include_health=true' : '';
+    const response = await this.get<ApiResponse<SiteSettingsResponse>>(`/admin/settings${params}`);
+    return response.data.settings!;
+  }
+
+  /**
+   * Update site settings (partial update)
+   */
+  async updateSiteSettings(request: UpdateSiteSettingsRequest): Promise<void> {
+    await this.put<ApiResponse<SiteSettingsResponse>>('/admin/settings', request);
+  }
+
+  /**
+   * Reset site settings to defaults
+   */
+  async resetSiteSettings(): Promise<void> {
+    await this.post<ApiResponse<SiteSettingsResponse>>('/admin/settings/reset');
+  }
+
+  /**
+   * Get a specific settings section
+   */
+  async getSettingsSection(section: string): Promise<unknown> {
+    const response = await this.get<ApiResponse<unknown>>(`/admin/settings/${encodeURIComponent(section)}`);
+    return response.data;
+  }
+
+  /**
+   * Update a specific settings section
+   */
+  async updateSettingsSection(section: string, data: unknown): Promise<void> {
+    await this.put<ApiResponse<SiteSettingsResponse>>(`/admin/settings/${encodeURIComponent(section)}`, data);
+  }
+
+  /**
+   * Test email configuration
+   */
+  async testEmailConfiguration(): Promise<boolean> {
+    const response = await this.post<ApiResponse<SiteSettingsResponse>>('/admin/settings/email/test');
+    return response.data.success;
+  }
+
+  /**
+   * Get settings health status
+   */
+  async getSettingsHealth(): Promise<SettingsHealthStatus> {
+    const response = await this.get<ApiResponse<SettingsHealthStatus>>('/admin/settings/health');
+    return response.data;
   }
 }
 

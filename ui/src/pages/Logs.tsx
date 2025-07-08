@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Alert, AlertDescription } from '../components/ui/alert';
 import { Button } from '../components/ui/button';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs';
+import PageTabs, { TabsTrigger, TabsContent } from '@/components/PageTabs';
 import { TooltipProvider, Tooltip, TooltipContent, TooltipTrigger } from '../components/ui/tooltip';
 import { 
   AlertTriangle, RefreshCw, Download
@@ -359,15 +359,44 @@ const Logs: React.FC = () => {
           </Alert>
         )}
 
-        <Tabs value={activeTab} onValueChange={setActiveTab}>
-          <TabsList className="grid w-full grid-cols-5">
-            <TabsTrigger value="dashboard">Dashboard</TabsTrigger>
-            <TabsTrigger value="logs">Logs</TabsTrigger>
-            <TabsTrigger value="audit">Audit Events</TabsTrigger>
-            <TabsTrigger value="retention">Retention</TabsTrigger>
-            <TabsTrigger value="search">Search</TabsTrigger>
-          </TabsList>
-
+        <PageTabs
+          value={activeTab}
+          onValueChange={setActiveTab}
+          tabTriggers={
+            <>
+              <TabsTrigger
+                value="dashboard"
+                className="h-12 px-4 sm:px-6 rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:text-primary data-[state=active]:shadow-none bg-transparent transition-all duration-200 text-sm font-medium hover:text-primary/80"
+              >
+                Dashboard
+              </TabsTrigger>
+              <TabsTrigger
+                value="logs"
+                className="h-12 px-4 sm:px-6 rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:text-primary data-[state=active]:shadow-none bg-transparent transition-all duration-200 text-sm font-medium hover:text-primary/80"
+              >
+                Logs
+              </TabsTrigger>
+              <TabsTrigger
+                value="audit"
+                className="h-12 px-4 sm:px-6 rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:text-primary data-[state=active]:shadow-none bg-transparent transition-all duration-200 text-sm font-medium hover:text-primary/80"
+              >
+                Audit Events
+              </TabsTrigger>
+              <TabsTrigger
+                value="retention"
+                className="h-12 px-4 sm:px-6 rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:text-primary data-[state=active]:shadow-none bg-transparent transition-all duration-200 text-sm font-medium hover:text-primary/80"
+              >
+                Retention
+              </TabsTrigger>
+              <TabsTrigger
+                value="search"
+                className="h-12 px-4 sm:px-6 rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:text-primary data-[state=active]:shadow-none bg-transparent transition-all duration-200 text-sm font-medium hover:text-primary/80"
+              >
+                Search
+              </TabsTrigger>
+            </>
+          }
+        >
           <TabsContent value="dashboard">
             <DashboardTab
               dashboardMetrics={dashboardMetrics}
@@ -440,7 +469,7 @@ const Logs: React.FC = () => {
               onQuickSearch={handleQuickSearch}
             />
           </TabsContent>
-        </Tabs>
+        </PageTabs>
       </TooltipProvider>
     </PageLayout>
   );
