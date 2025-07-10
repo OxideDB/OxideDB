@@ -41,6 +41,11 @@ impl ApplicationBootstrap {
     /// Initialize all application services in the correct order
     pub async fn initialize(&self) -> Result<ApplicationServices> {
         info!("🚀 Starting OxideDB application initialization");
+        
+        // Force initialization of the global process start time for accurate uptime tracking
+        let _ = &*oxide_db::dashboard_stats_service::PROCESS_START;
+        debug!("✅ Process start time initialized for uptime tracking");
+        
         self.log_configuration();
 
         // 1. Initialize event bus - the heart of our hook-first architecture
@@ -74,19 +79,22 @@ impl ApplicationBootstrap {
             Arc::clone(&permission_service),
         ).await?;
 
-        // 9. Initialize plugin system (optional)
+        // 9. Initialize VFS service (optional)
+        let vfs_service = self.initialize_vfs_system(Arc::clone(&event_bus)).await?;
+
+        // 10. Register dashboard activity listener
+        self.register_dashboard_activity_listener(&event_bus, &database, &logging_service, &vfs_service).await?;
+
+        // 11. Initialize plugin system (optional)
         let plugin_manager = self.initialize_plugin_system(
             Arc::clone(&event_bus), 
             Arc::clone(&database) as Arc<dyn oxide_db::Db>
         ).await?;
 
-        // 10. Initialize VFS service (optional)
-        let vfs_service = self.initialize_vfs_system(Arc::clone(&event_bus)).await?;
-
-        // 11. Create logging API service if logging is enabled
+        // 12. Create logging API service if logging is enabled
         let logging_api_service = self.create_logging_api_service(&logging_service);
 
-        // 12. Populate sample data if requested
+        // 13. Populate sample data if requested
         if self.config.database.auto_populate {
             self.populate_sample_data(&database, &auth_service, &logging_service).await?;
         }
@@ -335,6 +343,40 @@ impl ApplicationBootstrap {
         Ok(())
     }
 
+    /// Register dashboard activity listener
+    async fn register_dashboard_activity_listener(
+        &self,
+        event_bus: &Arc<dyn EventBus>,
+        database: &Arc<SqliteDb>,
+        logging_service: &Option<Arc<LogServiceBridge>>,
+        vfs_service: &Option<Arc<dyn oxide_core::VirtualFileSystem>>,
+    ) -> Result<()> {
+        use oxide_db::{DatabaseDashboardStatsService, LoggingStatsBridge, VfsStatsBridge, register_dashboard_activity_listener};
+        
+        // Create logging bridge if logging service is available
+        let logging_bridge = logging_service.as_ref().map(|logging| {
+            let log_api_service = oxide_logging::api::LogApiService::new(logging.inner().clone());
+            Arc::new(LoggingStatsBridge::with_service(Arc::new(log_api_service))) as Arc<dyn oxide_db::LoggingStatsProvider>
+        });
+        
+        // Create VFS bridge if VFS service is available
+        let vfs_bridge = vfs_service.as_ref().map(|vfs| {
+            Arc::new(VfsStatsBridge::with_service(Arc::clone(vfs))) as Arc<dyn oxide_db::VfsStatsProvider>
+        });
+        
+        // Create dashboard service with full integration for activity recording
+        let dashboard_service = Arc::new(DatabaseDashboardStatsService::with_full_integration(
+            database.clone() as Arc<dyn oxide_db::Db>,
+            logging_bridge,
+            vfs_bridge,
+        )) as Arc<dyn oxide_core::DashboardStatsService>;
+        
+        // Register the activity listener
+        register_dashboard_activity_listener(event_bus, dashboard_service).await?;
+        info!("✅ Dashboard activity listener registered with full service integration");
+        Ok(())
+    }
+
     /// Initialize the plugin system if enabled
     async fn initialize_plugin_system(
         &self,
@@ -427,6 +469,40 @@ impl ApplicationBootstrap {
         ).await.map_err(|e| AppError::internal(format!("Failed to initialize VFS system: {}", e)))?;
 
         let vfs_service: Arc<dyn oxide_core::VirtualFileSystem> = Arc::new(vfs_service);
+
+        // ---------------------------------------------------------------------------------
+        // Ensure the built-in "default" namespace exists so that health probes succeed.
+        // If it does not exist yet, create it with a permissive configuration.
+        // ---------------------------------------------------------------------------------
+        let default_ns = "default".to_string();
+        match vfs_service.get_namespace_config(&default_ns).await {
+            Ok(_) => {
+                debug!("ℹ️ Default VFS namespace already exists");
+            }
+            Err(oxide_core::vfs::VfsError::AccessDenied { .. }) => {
+                use oxide_core::vfs::VfsNamespaceConfig;
+
+                let config = VfsNamespaceConfig {
+                    namespace: default_ns.clone(),
+                    quota_bytes: None,
+                    enable_compression: true,
+                    allowed_mime_types: None,
+                    max_file_size: None,
+                    enable_deduplication: true,
+                    backup_config: None,
+                };
+
+                match vfs_service.create_namespace(config).await {
+                    Ok(_) => info!("✅ Created default VFS namespace"),
+                    Err(e) => warn!("❌ Failed to create default VFS namespace: {}", e),
+                }
+            }
+            Err(e) => {
+                // Other unexpected error (e.g., IO error). Log and continue startup.
+                warn!("⚠️ Unable to verify default VFS namespace: {}", e);
+            }
+        }
+
         info!("✅ VFS system initialized with file storage and backup support");
         Ok(Some(vfs_service))
     }
@@ -596,4 +672,4 @@ impl ApplicationBootstrap {
             debug!("  • GET  /api/logs/health                      – Logging health");
         }
     }
-} 
+}

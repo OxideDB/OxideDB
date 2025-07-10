@@ -248,6 +248,57 @@ pub trait Db: Send + Sync + UserPreferencesService + SiteSettingsService {
     /// Check if the database connection is healthy
     async fn health_check(&self) -> Result<(), AppError>;
 
+    /// Get dashboard statistics for the admin interface
+    ///
+    /// This method collects comprehensive statistics about the database
+    /// including collection counts, record counts, and system health metrics.
+    ///
+    /// # Returns
+    /// Dashboard statistics or an error if collection fails
+    async fn get_dashboard_statistics(&self) -> Result<oxide_core::DashboardStats, AppError>;
+
+    /// Get basic system statistics
+    ///
+    /// A lighter-weight version that returns only core metrics
+    /// for situations where full statistics are not needed.
+    ///
+    /// # Returns
+    /// Basic system statistics or an error if collection fails
+    async fn get_system_statistics(&self) -> Result<oxide_core::SystemStats, AppError>;
+
+    /// Get statistics for all collections
+    ///
+    /// # Returns
+    /// Vector of collection statistics entries
+    async fn get_collection_statistics(&self) -> Result<Vec<oxide_core::CollectionStatsEntry>, AppError>;
+
+    /// Get storage usage information
+    ///
+    /// # Returns
+    /// Storage usage statistics including database size and disk usage
+    async fn get_storage_usage(&self) -> Result<oxide_core::StorageUsage, AppError>;
+
+    /// Record an activity entry for the dashboard
+    ///
+    /// This method stores user and system activities for display
+    /// in the dashboard activity feed.
+    ///
+    /// # Arguments
+    /// * `activity` - The activity entry to record
+    ///
+    /// # Returns
+    /// Success or an error if recording fails
+    async fn record_dashboard_activity(&self, activity: oxide_core::ActivityEntry) -> Result<(), AppError>;
+
+    /// Get recent activities for the dashboard
+    ///
+    /// # Arguments
+    /// * `limit` - Maximum number of activities to return
+    ///
+    /// # Returns
+    /// Vector of recent activities or an error if retrieval fails
+    async fn get_recent_dashboard_activities(&self, limit: usize) -> Result<Vec<oxide_core::ActivityEntry>, AppError>;
+
     /// Store permissions for a collection
     ///
     /// # Arguments

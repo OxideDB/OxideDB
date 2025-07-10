@@ -2080,7 +2080,10 @@ name = "oxide-db"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "chrono",
+ "once_cell",
  "oxide-core",
+ "oxide-logging",
  "rusqlite",
  "serde",
  "serde_json",

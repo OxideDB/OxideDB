@@ -230,6 +230,11 @@ impl LogApiService {
         }
     }
 
+    /// Get the underlying log service
+    pub fn log_service(&self) -> &Arc<LogService> {
+        &self.log_service
+    }
+
     /// Query logs with parameters
     pub async fn query_logs(&self, params: LogQueryParams) -> LoggingResult<LogResponse<crate::models::LogEntry>> {
         let start_time = std::time::Instant::now();
@@ -510,4 +515,4 @@ pub enum WebSocketMessage {
     Ping,
     /// Heartbeat/pong
     Pong,
-} 
+}

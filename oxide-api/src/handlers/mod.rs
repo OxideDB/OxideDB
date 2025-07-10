@@ -19,6 +19,7 @@
 pub mod admin;
 pub mod auth;
 pub mod collections;
+pub mod dashboard;
 pub mod health;
 pub mod logs;
 pub mod permissions;
@@ -31,6 +32,7 @@ pub mod vfs;
 // Re-export commonly used types for convenience
 pub use auth::{AuthHandlers, LoginRequest, LoginResponse, RegisterRequest, RegisterResponse};
 pub use collections::{CollectionStats, CollectionHandlers};
+pub use dashboard::{get_dashboard_statistics, get_system_statistics};
 pub use health::{HealthHandlers, HealthStatus};
 pub use permissions::{PermissionHandlers, CollectionPermissionsInfo, PermissionPresetType};
 pub use records::RecordHandlers;

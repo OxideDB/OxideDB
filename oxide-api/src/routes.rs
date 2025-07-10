@@ -5,7 +5,7 @@
 //! the server implementation for better maintainability.
 
 use axum::{
-    routing::{delete, get},
+    routing::{delete, get, post},
     Router,
 };
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
@@ -22,6 +22,10 @@ use crate::{
         collections::{
             collection_schema, collection_stats, create_collection, delete_collection,
             list_collections, update_collection_schema,
+        },
+        dashboard::{
+            get_dashboard_statistics, get_system_statistics,
+            record_dashboard_activity, get_recent_dashboard_activities,
         },
         health::health_check,
         logs::{
@@ -541,6 +545,8 @@ fn api_routes() -> Router<AppState> {
     Router::new()
         // Protected auth routes (require authentication)
         .merge(protected_auth_routes())
+        // Dashboard statistics routes
+        .merge(dashboard_routes())
         // Collection management routes
         .merge(collection_routes())
         // Record management routes
@@ -563,6 +569,18 @@ fn api_routes() -> Router<AppState> {
 fn protected_auth_routes() -> Router<AppState> {
     Router::new()
         .route("/auth/me", get(get_current_user))
+}
+
+/// Dashboard statistics routes
+fn dashboard_routes() -> Router<AppState> {
+    Router::new()
+        // Comprehensive dashboard statistics
+        .route("/dashboard/stats", get(get_dashboard_statistics))
+        // Basic system statistics
+        .route("/dashboard/system", get(get_system_statistics))
+        // Activity management
+        .route("/dashboard/activities", 
+               post(record_dashboard_activity).get(get_recent_dashboard_activities))
 }
 
 /// Collection management routes

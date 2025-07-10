@@ -693,4 +693,34 @@ impl Db for SqliteDb {
     ) -> Result<std::collections::HashMap<String, serde_json::Value>, AppError> {
         SqliteDb::get_related_records(self, target_collection, record_ids, display_field).await
     }
-} 
+
+    /// Get comprehensive dashboard statistics
+    async fn get_dashboard_statistics(&self) -> Result<oxide_core::DashboardStats, AppError> {
+        SqliteDb::get_dashboard_statistics(self).await
+    }
+
+    /// Get basic system statistics
+    async fn get_system_statistics(&self) -> Result<oxide_core::SystemStats, AppError> {
+        SqliteDb::get_system_statistics(self).await
+    }
+
+    /// Get statistics for all collections
+    async fn get_collection_statistics(&self) -> Result<Vec<oxide_core::CollectionStatsEntry>, AppError> {
+        SqliteDb::get_collection_statistics(self).await
+    }
+
+    /// Get storage usage information
+    async fn get_storage_usage(&self) -> Result<oxide_core::StorageUsage, AppError> {
+        SqliteDb::get_storage_usage(self).await
+    }
+
+    /// Record an activity entry for the dashboard
+    async fn record_dashboard_activity(&self, activity: oxide_core::ActivityEntry) -> Result<(), AppError> {
+        SqliteDb::record_dashboard_activity(self, activity).await
+    }
+
+    /// Get recent activities for the dashboard
+    async fn get_recent_dashboard_activities(&self, limit: usize) -> Result<Vec<oxide_core::ActivityEntry>, AppError> {
+        SqliteDb::get_recent_dashboard_activities(self, limit).await
+    }
+}

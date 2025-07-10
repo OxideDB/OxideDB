@@ -15,6 +15,7 @@
 
 pub mod auth;
 pub mod collection;
+pub mod dashboard;
 pub mod error;
 pub mod event;
 pub mod field_types;
@@ -33,6 +34,11 @@ pub use auth::{
     OperationRule, CollectionPermissions, PermissionContext
 };
 pub use collection::{CollectionSchema, CollectionType, FieldDefinition};
+pub use dashboard::{
+    DashboardStats, SystemStats, CollectionStatsEntry, UserStats, ApiStats,
+    ActivityEntry, ActivityType, SystemHealth, HealthStatus, StorageUsage,
+    DashboardStatsService, GrowthTrends, UserActivity, EndpointStats
+};
 pub use error::AppError;
 pub use field_types::FieldType;
 pub use event::{

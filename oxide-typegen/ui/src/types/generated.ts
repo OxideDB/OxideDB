@@ -15,6 +15,65 @@
 // ===================================================================
 
 /**
+ * Recent activity entry
+ */
+export type ActivityEntry = { 
+/**
+ * Activity timestamp (ISO 8601 string)
+ */
+timestamp: string, 
+/**
+ * Type of activity
+ */
+activity_type: ActivityType, 
+/**
+ * User who performed the activity
+ */
+user: string, 
+/**
+ * Description of the activity
+ */
+description: string, 
+/**
+ * Related collection (if applicable)
+ */
+collection: string | null, 
+/**
+ * Additional metadata (JSON object as string)
+ */
+metadata: any, };
+
+/**
+ * Types of activities that can be tracked
+ */
+export type ActivityType = "CollectionCreated" | "CollectionDeleted" | "CollectionModified" | "RecordCreated" | "RecordUpdated" | "RecordDeleted" | "UserRegistered" | "UserLogin" | "UserLogout" | "AuthenticationFailed" | "PermissionGranted" | "PermissionRevoked" | "PluginInstalled" | "PluginToggled" | "SystemMaintenance" | { "Other": string };
+
+/**
+ * API usage statistics
+ */
+export type ApiStats = { 
+/**
+ * Total requests in the last 24 hours
+ */
+requests_24h: bigint, 
+/**
+ * Total requests in the last 7 days
+ */
+requests_7d: bigint, 
+/**
+ * Average response time in milliseconds
+ */
+avg_response_time_ms: number, 
+/**
+ * Error rate percentage
+ */
+error_rate_percent: number, 
+/**
+ * Most frequently accessed endpoints
+ */
+top_endpoints: Array<EndpointStats>, };
+
+/**
  * Authentication configuration for a collection
  */
 export type AuthCollectionConfig = { 
@@ -160,6 +219,35 @@ created_at: bigint,
 updated_at: bigint, };
 
 /**
+ * Statistics for a specific collection
+ */
+export type CollectionStatsEntry = { 
+/**
+ * Collection name
+ */
+name: string, 
+/**
+ * Number of records in this collection
+ */
+record_count: bigint, 
+/**
+ * Collection size in bytes
+ */
+size_bytes: bigint, 
+/**
+ * When the collection was created (ISO 8601 string)
+ */
+created_at: string | null, 
+/**
+ * When the collection was last modified (ISO 8601 string)
+ */
+last_modified: string | null, 
+/**
+ * Whether this is a system collection
+ */
+is_system: boolean, };
+
+/**
  * The type of a collection
  */
 export type CollectionType = "base" | "auth";
@@ -185,6 +273,60 @@ permission: PermissionLevel,
  * Optional filter for list operations (like PocketBase filter syntax)
  */
 filter: string | null, };
+
+/**
+ * Comprehensive dashboard statistics
+ */
+export type DashboardStats = { 
+/**
+ * Basic system statistics
+ */
+system_stats: SystemStats, 
+/**
+ * Collection-related statistics
+ */
+collection_stats: Array<CollectionStatsEntry>, 
+/**
+ * User activity statistics
+ */
+user_stats: UserStats, 
+/**
+ * API usage statistics
+ */
+api_stats: ApiStats, 
+/**
+ * Recent activity entries
+ */
+recent_activity: Array<ActivityEntry>, 
+/**
+ * System health indicators
+ */
+system_health: SystemHealth, 
+/**
+ * Timestamp when these stats were generated (ISO 8601 string)
+ */
+generated_at: string, };
+
+/**
+ * Statistics for individual API endpoints
+ */
+export type EndpointStats = { 
+/**
+ * Endpoint path
+ */
+path: string, 
+/**
+ * HTTP method
+ */
+method: string, 
+/**
+ * Number of requests
+ */
+request_count: bigint, 
+/**
+ * Average response time
+ */
+avg_response_time_ms: number, };
 
 /**
  * Field definition within a collection schema
@@ -318,6 +460,32 @@ size: bigint,
  * Virtual path in the VFS
  */
 path: string, };
+
+/**
+ * Growth trends for various metrics
+ */
+export type GrowthTrends = { 
+/**
+ * Collections added this month
+ */
+collections_this_month: number, 
+/**
+ * Records growth percentage from last month
+ */
+records_growth_percent: number, 
+/**
+ * New users added recently
+ */
+new_users_count: number, 
+/**
+ * API requests growth percentage from yesterday
+ */
+api_growth_percent: number, };
+
+/**
+ * Health status enumeration
+ */
+export type HealthStatus = "Healthy" | "Warning" | "Degraded" | "Unhealthy" | "Unknown";
 
 /**
  * Index definition for database optimization
@@ -563,9 +731,134 @@ multiple: boolean,
 allow_empty: boolean, };
 
 /**
+ * Storage usage information
+ */
+export type StorageUsage = { 
+/**
+ * Used storage in bytes
+ */
+used_bytes: bigint, 
+/**
+ * Total available storage in bytes
+ */
+total_bytes: bigint, 
+/**
+ * Usage percentage
+ */
+usage_percent: number, 
+/**
+ * Database file size in bytes
+ */
+database_size_bytes: bigint, 
+/**
+ * Log files size in bytes
+ */
+logs_size_bytes: bigint, 
+/**
+ * VFS files size in bytes
+ */
+vfs_size_bytes: bigint, };
+
+/**
+ * System health indicators
+ */
+export type SystemHealth = { 
+/**
+ * Database connection status
+ */
+database_status: HealthStatus, 
+/**
+ * API endpoints status
+ */
+api_status: HealthStatus, 
+/**
+ * Authentication service status
+ */
+auth_status: HealthStatus, 
+/**
+ * Plugin system status
+ */
+plugin_status: HealthStatus, 
+/**
+ * VFS status
+ */
+vfs_status: HealthStatus, 
+/**
+ * Storage usage information
+ */
+storage_usage: StorageUsage, 
+/**
+ * System uptime in seconds
+ */
+uptime_seconds: bigint, };
+
+/**
+ * Basic system statistics
+ */
+export type SystemStats = { 
+/**
+ * Total number of collections
+ */
+total_collections: number, 
+/**
+ * Total number of records across all collections
+ */
+total_records: bigint, 
+/**
+ * Number of active users (users with recent activity)
+ */
+active_users: number, 
+/**
+ * Number of API requests in the last 24 hours
+ */
+api_requests_24h: bigint, 
+/**
+ * Growth trends
+ */
+trends: GrowthTrends, };
+
+/**
+ * Individual user activity information
+ */
+export type UserActivity = { 
+/**
+ * Username or identifier
+ */
+username: string, 
+/**
+ * Number of actions performed
+ */
+action_count: number, 
+/**
+ * Last activity timestamp (ISO 8601 string)
+ */
+last_activity: string, };
+
+/**
  * User roles in the system
  */
 export type UserRole = "user" | "superuser" | { "custom": string };
+
+/**
+ * User activity statistics
+ */
+export type UserStats = { 
+/**
+ * Total number of registered users
+ */
+total_users: number, 
+/**
+ * Users active in the last 24 hours
+ */
+active_24h: number, 
+/**
+ * Users active in the last 7 days
+ */
+active_7d: number, 
+/**
+ * Most active users
+ */
+top_active_users: Array<UserActivity>, };
 
 /**
  * Validation rules that can be applied to field values
@@ -792,27 +1085,6 @@ export type EmptyResponse = {
  * Success message
  */
 message: string, };
-
-/**
- * Health status response
- */
-export type HealthStatus = { 
-/**
- * Overall system status
- */
-status: string, 
-/**
- * Database connection status
- */
-database: string, 
-/**
- * API version
- */
-version: string | null, 
-/**
- * System uptime in seconds
- */
-uptime: bigint | null, };
 
 /**
  * Paginated response wrapper

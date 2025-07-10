@@ -15,904 +15,1175 @@
 // ===================================================================
 
 /**
+ * Recent activity entry
+ */
+export type ActivityEntry = { 
+/**
+ * Activity timestamp (ISO 8601 string)
+ */
+timestamp: string, 
+/**
+ * Type of activity
+ */
+activity_type: ActivityType, 
+/**
+ * User who performed the activity
+ */
+user: string, 
+/**
+ * Description of the activity
+ */
+description: string, 
+/**
+ * Related collection (if applicable)
+ */
+collection: string | null, 
+/**
+ * Additional metadata (JSON object as string)
+ */
+metadata: any, };
+
+/**
+ * Types of activities that can be tracked
+ */
+export type ActivityType = "CollectionCreated" | "CollectionDeleted" | "CollectionModified" | "RecordCreated" | "RecordUpdated" | "RecordDeleted" | "UserRegistered" | "UserLogin" | "UserLogout" | "AuthenticationFailed" | "PermissionGranted" | "PermissionRevoked" | "PluginInstalled" | "PluginToggled" | "SystemMaintenance" | { "Other": string };
+
+/**
+ * API usage statistics
+ */
+export type ApiStats = { 
+/**
+ * Total requests in the last 24 hours
+ */
+requests_24h: bigint, 
+/**
+ * Total requests in the last 7 days
+ */
+requests_7d: bigint, 
+/**
+ * Average response time in milliseconds
+ */
+avg_response_time_ms: number, 
+/**
+ * Error rate percentage
+ */
+error_rate_percent: number, 
+/**
+ * Most frequently accessed endpoints
+ */
+top_endpoints: Array<EndpointStats>, };
+
+/**
  * Authentication configuration for a collection
  */
 export type AuthCollectionConfig = { 
-  /**
-   * Collection name
-   */
-  collection: string, 
-  /**
-   * Authentication method
-   */
-  auth_method: AuthMethod, 
-  /**
-   * Field name for the identifier (e.g., "email", "username")
-   */
-  identifier_field: string, 
-  /**
-   * Field name for the credential (e.g., "password")
-   */
-  credential_field: string, 
-  /**
-   * Default user role for this collection
-   */
-  default_role: UserRole, 
-  /**
-   * Whether registration is enabled for this collection
-   */
-  registration_enabled: boolean, 
-  /**
-   * Whether email verification is required
-   */
-  email_verification_required: boolean, 
-  /**
-   * Custom fields to include in JWT claims
-   */
-  custom_claim_fields: Array<string>, 
-  /**
-   * Whether refresh tokens are enabled for this collection
-   */
-  refresh_tokens_enabled: boolean, 
-  /**
-   * Whether refresh tokens are required for this collection (enforced for superusers)
-   */
-  refresh_tokens_required: boolean, };
-  
-  /**
-   * Authentication method types
-   */
-  export type AuthMethod = "email_password" | { "o_auth": { provider: string, } } | { "saml": { provider: string, } } | { "ldap": { server: string, } };
-  
-  /**
-   * Auth-specific operation types for permission rules
-   */
-  export type AuthOperation = "login" | "register" | "token_validation" | "token_refresh" | "logout" | "get_current_user" | "list_auth_collections";
-  
-  /**
-   * Permission rule for a specific auth operation on a collection
-   */
-  export type AuthOperationRule = { 
-  /**
-   * The auth operation this rule applies to
-   */
-  operation: AuthOperation, 
-  /**
-   * The permission level for this operation
-   */
-  permission: PermissionLevel, 
-  /**
-   * Optional filter for auth operations
-   */
-  filter: string | null, };
-  
-  /**
-   * Complete permission rules for a collection
-   */
-  export type CollectionPermissions = { 
-  /**
-   * Collection name
-   */
-  collection: string, 
-  /**
-   * Rules for CRUD operations
-   */
-  crud_rules: { [key in CrudOperation]?: CrudOperationRule }, 
-  /**
-   * Rules for auth operations (only for auth collections)
-   */
-  auth_rules: { [key in AuthOperation]?: AuthOperationRule }, 
-  /**
-   * Whether this collection requires authentication by default
-   */
-  auth_required: boolean, 
-  /**
-   * Timestamp when permissions were created
-   */
-  created_at: bigint, 
-  /**
-   * Timestamp when permissions were last updated
-   */
-  updated_at: bigint, };
-  
-  /**
-   * Complete schema definition for a collection
-   */
-  export type CollectionSchema = { 
-  /**
-   * Collection identifier
-   */
-  id: string, 
-  /**
-   * Collection name (must be unique)
-   */
-  name: string, 
-  /**
-   * Type of collection
-   */
-  collection_type: CollectionType, 
-  /**
-   * Schema version (increment on breaking changes)
-   *
-   * Versioning allows the database layer to perform automated migrations
-   * when a collection definition evolves in an incompatible way. The
-   * default version is `1`. The value **MUST** be incremented whenever a
-   * change would require a table rebuild (e.g. field removal or type
-   * change). Adding new optional fields does **not** require a version
-   * bump.
-   */
-  version: number, 
-  /**
-   * Field definitions for this collection
-   */
-  fields: { [key in string]?: FieldDefinition }, 
-  /**
-   * Index definitions for performance optimization
-   */
-  indexes: Array<IndexDefinition>, 
-  /**
-   * Timestamp when collection was created
-   */
-  created_at: bigint, 
-  /**
-   * Timestamp when collection was last updated
-   */
-  updated_at: bigint, };
-  
-  /**
-   * The type of a collection
-   */
-  export type CollectionType = "base" | "auth";
-  
-  /**
-   * CRUD operation types for permission rules
-   */
-  export type CrudOperation = "create" | "read" | "update" | "delete" | "list";
-  
-  /**
-   * Permission rule for a specific CRUD operation on a collection
-   */
-  export type CrudOperationRule = { 
-  /**
-   * The CRUD operation this rule applies to
-   */
-  operation: CrudOperation, 
-  /**
-   * The permission level for this operation
-   */
-  permission: PermissionLevel, 
-  /**
-   * Optional filter for list operations (like PocketBase filter syntax)
-   */
-  filter: string | null, };
-  
-  /**
-   * Field definition within a collection schema
-   */
-  export type FieldDefinition = { 
-  /**
-   * The type of this field
-   */
-  field_type: FieldType, 
-  /**
-   * Whether this field is required
-   */
-  required: boolean, 
-  /**
-   * Whether this field must be unique
-   */
-  unique: boolean, 
-  /**
-   * Whether this field should be indexed for performance
-   */
-  index: boolean, 
-  /**
-   * Default value for this field (optional)
-   */
-  default: any, 
-  /**
-   * Validation rules for this field (regex, min/max, etc.)
-   */
-  validation: ValidationRules | null, };
-  
-  /**
-   * Supported field types in collection schemas
-   */
-  export type FieldType = "text" | "number" | "boolean" | "date" | "json" | "email" | "url" | "password" | "phone" | { "relationship": RelationshipConfig } | { "file": FileFieldConfig } | { "select": SelectConfig };
-  
-  /**
-   * Configuration for File field type
-   */
-  export type FileFieldConfig = { 
-  /**
-   * Whether multiple files can be attached
-   */
-  multiple: boolean, 
-  /**
-   * Allowed MIME types (None = all allowed)
-   */
-  allowed_mime_types: Array<string> | null, 
-  /**
-   * Maximum file size in bytes
-   */
-  max_file_size: bigint | null, 
-  /**
-   * Whether file is required
-   */
-  required: boolean, };
-  
-  /**
-   * File metadata in the virtual file system
-   */
-  export type FileMetadata = { 
-  /**
-   * Unique identifier for the file
-   */
-  id: string, 
-  /**
-   * File name (without path)
-   */
-  name: string, 
-  /**
-   * Virtual path within the namespace
-   */
-  path: string, 
-  /**
-   * MIME type of the file
-   */
-  mime_type: string, 
-  /**
-   * File size in bytes
-   */
-  size: bigint, 
-  /**
-   * SHA256 hash of file content
-   */
-  content_hash: string, 
-  /**
-   * When the file was created (Unix timestamp in seconds)
-   */
-  created_at: bigint, 
-  /**
-   * When the file was last modified (Unix timestamp in seconds)
-   */
-  modified_at: bigint, 
-  /**
-   * Custom metadata as key-value pairs
-   */
-  custom_metadata: { [key in string]?: string }, 
-  /**
-   * Whether the file is compressed
-   */
-  compressed: boolean, 
-  /**
-   * Compression algorithm used (if any)
-   */
-  compression_type: string | null, 
-  /**
-   * Tags for organization and search
-   */
-  tags: Array<string>, };
-  
-  /**
-   * File reference stored in the database
-   */
-  export type FileReference = { 
-  /**
-   * File ID in the VFS
-   */
-  file_id: string, 
-  /**
-   * Original file name
-   */
-  name: string, 
-  /**
-   * MIME type
-   */
-  mime_type: string, 
-  /**
-   * File size in bytes
-   */
-  size: bigint, 
-  /**
-   * Virtual path in the VFS
-   */
-  path: string, };
-  
-  /**
-   * Index definition for database optimization
-   */
-  export type IndexDefinition = { 
-  /**
-   * Name of the index
-   */
-  name: string, 
-  /**
-   * Fields to index (can be multiple for composite indexes)
-   */
-  fields: Array<string>, 
-  /**
-   * Whether this is a unique index
-   */
-  unique: boolean, };
-  
-  /**
-   * Combined operation type that can be either CRUD or Auth
-   */
-  export type Operation = { "crud": CrudOperation } | { "auth": AuthOperation };
-  
-  /**
-   * Permission rule for any operation (CRUD or Auth)
-   */
-  export type OperationRule = { 
-  /**
-   * The operation this rule applies to
-   */
-  operation: Operation, 
-  /**
-   * The permission level for this operation
-   */
-  permission: PermissionLevel, 
-  /**
-   * Optional filter for operations
-   */
-  filter: string | null, };
-  
-  /**
-   * Permission level for accessing resources
-   */
-  export type PermissionLevel = "none" | "superuseronly" | "authenticatedonly" | "public" | { "rule": string };
-  
-  /**
-   * Capability types that can be granted to plugins
-   */
-  export type PluginCapability = "LogInfo" | "LogError" | "ReadEventData" | "ModifyEventData" | "BlockOperations" | { "ReadConfig": { 
-  /**
-   * Specific config keys the plugin can access
-   */
-  keys: Array<string>, } } | { "AccessCollection": { 
-  /**
-   * Collection name
-   */
-  collection: string, 
-  /**
-   * Operations allowed on this collection
-   */
-  operations: Array<CrudOperation>, } } | { "HttpRequest": { 
-  /**
-   * Allowed URL patterns (regex)
-   */
-  allowed_urls: Array<string>, 
-  /**
-   * Maximum requests per minute
-   */
-  rate_limit: number, } } | { "PersistentStorage": { 
-  /**
-   * Maximum storage size in bytes
-   */
-  max_size: bigint, 
-  /**
-   * Allowed key prefixes
-   */
-  key_prefixes: Array<string>, } } | "ScheduleTasks" | { "EmitEvents": { 
-  /**
-   * Allowed event types
-   */
-  event_types: Array<string>, } } | { "RegisterHttpRoutes": { 
-  /**
-   * Allowed path patterns (regex)
-   */
-  path_patterns: Array<string>, 
-  /**
-   * Allowed HTTP methods
-   */
-  methods: Array<string>, } } | { "CreateRecords": { 
-  /**
-   * Collections the plugin can create records in
-   */
-  collections: Array<string>, } } | { "ReadRecords": { 
-  /**
-   * Collections the plugin can read from
-   */
-  collections: Array<string>, } } | { "UpdateRecords": { 
-  /**
-   * Collections the plugin can update
-   */
-  collections: Array<string>, } } | { "DeleteRecords": { 
-  /**
-   * Collections the plugin can delete from
-   */
-  collections: Array<string>, } } | "HandleHttpRequests";
-  
-  /**
-   * Complete plugin configuration that can be persisted to the database
-   */
-  export type PluginConfiguration = { 
-  /**
-   * Plugin name (unique identifier)
-   */
-  name: string, 
-  /**
-   * Plugin version
-   */
-  version: string, 
-  /**
-   * Plugin description
-   */
-  description: string, 
-  /**
-   * Plugin author
-   */
-  author: string, 
-  /**
-   * Current status of the plugin
-   */
-  status: PluginStatus, 
-  /**
-   * Trust level assigned to the plugin
-   */
-  trust_level: PluginTrustLevel, 
-  /**
-   * Capabilities granted to the plugin
-   */
-  capabilities: Array<PluginCapability>, 
-  /**
-   * Resource limits for the plugin
-   */
-  resource_limits: ResourceLimits, 
-  /**
-   * Plugin metadata (configuration, settings, etc.)
-   */
-  metadata: any, 
-  /**
-   * Path to the WASM file on the filesystem (relative to plugins directory)
-   */
-  wasm_path: string | null, 
-  /**
-   * Path to the plugin directory (relative to plugins base directory)
-   */
-  plugin_directory: string | null, 
-  /**
-   * File size of the WASM binary in bytes
-   */
-  wasm_size: bigint | null, 
-  /**
-   * SHA256 hash of the WASM file for integrity verification
-   */
-  wasm_hash: string | null, 
-  /**
-   * Whether the plugin is enabled/disabled
-   */
-  enabled: boolean, 
-  /**
-   * Timestamp when plugin was installed
-   */
-  installed_at: bigint, 
-  /**
-   * Timestamp when plugin was last updated
-   */
-  updated_at: bigint, };
-  
-  /**
-   * Plugin status enumeration
-   */
-  export type PluginStatus = "Enabled" | "Disabled" | "Error" | "Loading" | "Uninstalling";
-  
-  /**
-   * Trust level assigned to plugins
-   */
-  export type PluginTrustLevel = "Untrusted" | "PartiallyTrusted" | "FullyTrusted" | "System";
-  
-  /**
-   * Configuration for relationship fields
-   */
-  export type RelationshipConfig = { 
-  /**
-   * The name of the target collection
-   */
-  target_collection: string, 
-  /**
-   * Whether this is a multiple relationship (array of IDs) or single (single ID)
-   */
-  multiple: boolean, 
-  /**
-   * Whether to cascade delete (delete related records when this record is deleted)
-   */
-  cascade_delete: boolean, 
-  /**
-   * Field name in the target collection to display when populated (optional)
-   */
-  display_field: string | null, };
-  
-  /**
-   * Resource usage limits for plugins
-   */
-  export type ResourceLimits = { 
-  /**
-   * Maximum memory usage in bytes
-   */
-  max_memory: bigint, 
-  /**
-   * Maximum execution time per call in milliseconds
-   */
-  max_execution_time: bigint, 
-  /**
-   * Maximum number of host function calls per execution
-   */
-  max_host_calls: number, 
-  /**
-   * Maximum number of executions per minute
-   */
-  rate_limit: number, };
-  
-  /**
-   * Configuration for select fields
-   */
-  export type SelectConfig = { 
-  /**
-   * Available options for selection
-   */
-  options: Array<string>, 
-  /**
-   * Whether multiple values can be selected
-   */
-  multiple: boolean, 
-  /**
-   * Whether empty/null values are allowed
-   */
-  allow_empty: boolean, };
-  
-  /**
-   * User roles in the system
-   */
-  export type UserRole = "user" | "superuser" | { "custom": string };
-  
-  /**
-   * Validation rules that can be applied to field values
-   */
-  export type ValidationRules = { 
-  /**
-   * Regular expression pattern for string validation
-   */
-  regex: string | null, 
-  /**
-   * Minimum length for strings or minimum value for numbers
-   */
-  min: number | null, 
-  /**
-   * Maximum length for strings or maximum value for numbers
-   */
-  max: number | null, 
-  /**
-   * Custom error message for validation failures
-   */
-  message: string | null, 
-  /**
-   * Whether to allow empty values (overrides field-level required setting)
-   */
-  allow_empty: boolean | null, };
-  
-  /**
-   * Backup configuration for VFS namespaces
-   */
-  export type VfsBackupConfig = { 
-  /**
-   * Whether backups are enabled
-   */
-  enabled: boolean, 
-  /**
-   * Backup retention period in days
-   */
-  retention_days: number, 
-  /**
-   * Automatic backup interval in hours
-   */
-  backup_interval_hours: number, 
-  /**
-   * Whether to compress backups
-   */
-  compress_backups: boolean, };
-  
-  /**
-   * Configuration for a VFS namespace
-   */
-  export type VfsNamespaceConfig = { 
-  /**
-   * Namespace identifier (usually collection name)
-   */
-  namespace: string, 
-  /**
-   * Maximum storage quota in bytes (None = unlimited)
-   */
-  quota_bytes: bigint | null, 
-  /**
-   * Whether to enable compression for new files
-   */
-  enable_compression: boolean, 
-  /**
-   * Allowed MIME types (None = all allowed)
-   */
-  allowed_mime_types: Array<string> | null, 
-  /**
-   * Maximum file size in bytes
-   */
-  max_file_size: bigint | null, 
-  /**
-   * Whether to enable content deduplication
-   */
-  enable_deduplication: boolean, 
-  /**
-   * Backup configuration
-   */
-  backup_config: VfsBackupConfig | null, };
-  
-  /**
-   * Statistics about VFS namespace usage
-   */
-  export type VfsUsageStats = { 
-  /**
-   * Namespace identifier
-   */
-  namespace: string, 
-  /**
-   * Total number of files
-   */
-  file_count: number, 
-  /**
-   * Total storage used in bytes
-   */
-  storage_used: bigint, 
-  /**
-   * Storage quota in bytes (None = unlimited)
-   */
-  storage_quota: bigint | null, 
-  /**
-   * Number of directories
-   */
-  directory_count: number, 
-  /**
-   * Last updated timestamp (Unix timestamp in seconds)
-   */
-  last_updated: bigint, };
-  
-  
-  // ===================================================================
-  // DATABASE TYPES - Data structures from oxide-db
-  // ===================================================================
-  
-  /**
-   * A record in the database
-   *
-   * This represents a single record/document in a collection, containing
-   * an ID, the collection it belongs to, and its JSON data.
-   */
-  export type DbRecord = { 
-  /**
-   * Unique identifier for this record
-   */
-  id: string, 
-  /**
-   * The collection this record belongs to
-   */
-  collection: string, 
-  /**
-   * The record's data as JSON
-   */
-  data: Record<string, any>, 
-  /**
-   * Timestamp when the record was created (Unix timestamp in seconds)
-   */
-  created_at: bigint, 
-  /**
-   * Timestamp when the record was last updated (Unix timestamp in seconds)
-   */
-  updated_at: bigint, };
-  
-  
-  // ===================================================================
-  // API RESPONSE TYPES - HTTP response structures from oxide-api
-  // ===================================================================
-  
-  /**
-   * Standard API response wrapper
-   */
-  export type ApiResponse<T> = { 
-  /**
-   * Response data
-   */
-  data: T, 
-  /**
-   * Response metadata
-   */
-  meta: ResponseMeta | null, 
-  /**
-   * Success indicator
-   */
-  success: boolean, };
-  
-  /**
-   * Collection statistics response
-   */
-  export type CollectionStats = { 
-  /**
-   * Collection name
-   */
-  name: string, 
-  /**
-   * Number of records in the collection
-   */
-  record_count: number, 
-  /**
-   * Whether the collection exists
-   */
-  exists: boolean, 
-  /**
-   * Collection size in kilobytes
-   */
-  size_kb: number, 
-  /**
-   * Collection schema version
-   */
-  schema_version: number | null, 
-  /**
-   * Collection creation timestamp
-   */
-  created_at: string | null, 
-  /**
-   * Last modification timestamp
-   */
-  updated_at: string | null, };
-  
-  /**
-   * Request payload for creating a new collection
-   */
-  export type CreateCollectionRequest = { 
-  /**
-   * Collection name (must be unique)
-   */
-  name: string, 
-  /**
-   * Type of collection
-   */
-  collection_type: CollectionType, 
-  /**
-   * Field definitions for this collection
-   */
-  fields: { [key in string]?: FieldDefinition }, 
-  /**
-   * Index definitions for performance optimization (optional)
-   */
-  indexes: Array<IndexDefinition>, };
-  
-  /**
-   * Empty response for operations that don't return data
-   */
-  export type EmptyResponse = { 
-  /**
-   * Success message
-   */
-  message: string, };
-  
-  /**
-   * Health status response
-   */
-  export type HealthStatus = { 
-  /**
-   * Overall system status
-   */
-  status: string, 
-  /**
-   * Database connection status
-   */
-  database: string, 
-  /**
-   * API version
-   */
-  version: string | null, 
-  /**
-   * System uptime in seconds
-   */
-  uptime: bigint | null, };
-  
-  /**
-   * Paginated response wrapper
-   */
-  export type PaginatedResponse<T> = { 
-  /**
-   * Response data items
-   */
-  data: Array<T>, 
-  /**
-   * Pagination information
-   */
-  pagination: PaginationInfo, 
-  /**
-   * Response metadata
-   */
-  meta: ResponseMeta | null, 
-  /**
-   * Success indicator
-   */
-  success: boolean, };
-  
-  /**
-   * Pagination information
-   */
-  export type PaginationInfo = { 
-  /**
-   * Current page number (1-based)
-   */
-  page: number, 
-  /**
-   * Number of items per page
-   */
-  per_page: number, 
-  /**
-   * Total number of items
-   */
-  total: bigint, 
-  /**
-   * Total number of pages
-   */
-  total_pages: number, 
-  /**
-   * Whether there is a next page
-   */
-  has_next: boolean, 
-  /**
-   * Whether there is a previous page
-   */
-  has_prev: boolean, };
-  
-  /**
-   * Response metadata for additional context
-   */
-  export type ResponseMeta = { 
-  /**
-   * Request processing time in milliseconds
-   */
-  duration_ms: bigint | null, 
-  /**
-   * API version
-   */
-  version: string | null, 
-  /**
-   * Request ID for tracing
-   */
-  request_id: string | null, };
-  
-  
-  // ===================================================================
-  // UTILITY TYPES - Additional helpful types for the frontend
-  // ===================================================================
-  
-  // Type aliases for better developer experience
-  export type RecordData = Record<string, any>;
-  export type RecordId = string;
-  export type Collection = string;
-  
-  export interface ApiError {
-    error: string;
-    message?: string;
-  }
-  
-  // Note: The database Record type from oxide-db is exported as 'DbRecord'
-  // to avoid conflicts with TypeScript's built-in Record<K,V> utility type.
-  // Use: import { DbRecord } from './types/generated';
-  
-  // ===================================================================
-  // EXTENSIBLE FIELD TYPE SYSTEM
-  // ===================================================================
-  // 
-  // OxideDB supports an extensible field type system. New field types
-  // can be added by implementing the FieldTypeDefinition trait in Rust.
-  // When new field types are added, regenerate this file to get the
-  // updated TypeScript definitions.
-  // 
-  // To add new field types:
-  // 1. Add the type variant to FieldType enum in oxide-core/src/field_types/mod.rs
-  // 2. Implement the field type logic in oxide-core/src/field_types/
-  // 3. Add #[derive(TS)] and #[ts(export)] to any new structs
-  // 4. Run: cargo run --bin generate-types
-  // 
-  
+/**
+ * Collection name
+ */
+collection: string, 
+/**
+ * Authentication method
+ */
+auth_method: AuthMethod, 
+/**
+ * Field name for the identifier (e.g., "email", "username")
+ */
+identifier_field: string, 
+/**
+ * Field name for the credential (e.g., "password")
+ */
+credential_field: string, 
+/**
+ * Default user role for this collection
+ */
+default_role: UserRole, 
+/**
+ * Whether registration is enabled for this collection
+ */
+registration_enabled: boolean, 
+/**
+ * Whether email verification is required
+ */
+email_verification_required: boolean, 
+/**
+ * Custom fields to include in JWT claims
+ */
+custom_claim_fields: Array<string>, 
+/**
+ * Whether refresh tokens are enabled for this collection
+ */
+refresh_tokens_enabled: boolean, 
+/**
+ * Whether refresh tokens are required for this collection (enforced for superusers)
+ */
+refresh_tokens_required: boolean, };
+
+/**
+ * Authentication method types
+ */
+export type AuthMethod = "email_password" | { "o_auth": { provider: string, } } | { "saml": { provider: string, } } | { "ldap": { server: string, } };
+
+/**
+ * Auth-specific operation types for permission rules
+ */
+export type AuthOperation = "login" | "register" | "token_validation" | "token_refresh" | "logout" | "get_current_user" | "list_auth_collections";
+
+/**
+ * Permission rule for a specific auth operation on a collection
+ */
+export type AuthOperationRule = { 
+/**
+ * The auth operation this rule applies to
+ */
+operation: AuthOperation, 
+/**
+ * The permission level for this operation
+ */
+permission: PermissionLevel, 
+/**
+ * Optional filter for auth operations
+ */
+filter: string | null, };
+
+/**
+ * Complete permission rules for a collection
+ */
+export type CollectionPermissions = { 
+/**
+ * Collection name
+ */
+collection: string, 
+/**
+ * Rules for CRUD operations
+ */
+crud_rules: { [key in CrudOperation]?: CrudOperationRule }, 
+/**
+ * Rules for auth operations (only for auth collections)
+ */
+auth_rules: { [key in AuthOperation]?: AuthOperationRule }, 
+/**
+ * Whether this collection requires authentication by default
+ */
+auth_required: boolean, 
+/**
+ * Timestamp when permissions were created
+ */
+created_at: bigint, 
+/**
+ * Timestamp when permissions were last updated
+ */
+updated_at: bigint, };
+
+/**
+ * Complete schema definition for a collection
+ */
+export type CollectionSchema = { 
+/**
+ * Collection identifier
+ */
+id: string, 
+/**
+ * Collection name (must be unique)
+ */
+name: string, 
+/**
+ * Type of collection
+ */
+collection_type: CollectionType, 
+/**
+ * Schema version (increment on breaking changes)
+ *
+ * Versioning allows the database layer to perform automated migrations
+ * when a collection definition evolves in an incompatible way. The
+ * default version is `1`. The value **MUST** be incremented whenever a
+ * change would require a table rebuild (e.g. field removal or type
+ * change). Adding new optional fields does **not** require a version
+ * bump.
+ */
+version: number, 
+/**
+ * Field definitions for this collection
+ */
+fields: { [key in string]?: FieldDefinition }, 
+/**
+ * Index definitions for performance optimization
+ */
+indexes: Array<IndexDefinition>, 
+/**
+ * Timestamp when collection was created
+ */
+created_at: bigint, 
+/**
+ * Timestamp when collection was last updated
+ */
+updated_at: bigint, };
+
+/**
+ * Statistics for a specific collection
+ */
+export type CollectionStatsEntry = { 
+/**
+ * Collection name
+ */
+name: string, 
+/**
+ * Number of records in this collection
+ */
+record_count: bigint, 
+/**
+ * Collection size in bytes
+ */
+size_bytes: bigint, 
+/**
+ * When the collection was created (ISO 8601 string)
+ */
+created_at: string | null, 
+/**
+ * When the collection was last modified (ISO 8601 string)
+ */
+last_modified: string | null, 
+/**
+ * Whether this is a system collection
+ */
+is_system: boolean, };
+
+/**
+ * The type of a collection
+ */
+export type CollectionType = "base" | "auth";
+
+/**
+ * CRUD operation types for permission rules
+ */
+export type CrudOperation = "create" | "read" | "update" | "delete" | "list";
+
+/**
+ * Permission rule for a specific CRUD operation on a collection
+ */
+export type CrudOperationRule = { 
+/**
+ * The CRUD operation this rule applies to
+ */
+operation: CrudOperation, 
+/**
+ * The permission level for this operation
+ */
+permission: PermissionLevel, 
+/**
+ * Optional filter for list operations (like PocketBase filter syntax)
+ */
+filter: string | null, };
+
+/**
+ * Comprehensive dashboard statistics
+ */
+export type DashboardStats = { 
+/**
+ * Basic system statistics
+ */
+system_stats: SystemStats, 
+/**
+ * Collection-related statistics
+ */
+collection_stats: Array<CollectionStatsEntry>, 
+/**
+ * User activity statistics
+ */
+user_stats: UserStats, 
+/**
+ * API usage statistics
+ */
+api_stats: ApiStats, 
+/**
+ * Recent activity entries
+ */
+recent_activity: Array<ActivityEntry>, 
+/**
+ * System health indicators
+ */
+system_health: SystemHealth, 
+/**
+ * Timestamp when these stats were generated (ISO 8601 string)
+ */
+generated_at: string, };
+
+/**
+ * Statistics for individual API endpoints
+ */
+export type EndpointStats = { 
+/**
+ * Endpoint path
+ */
+path: string, 
+/**
+ * HTTP method
+ */
+method: string, 
+/**
+ * Number of requests
+ */
+request_count: bigint, 
+/**
+ * Average response time
+ */
+avg_response_time_ms: number, };
+
+/**
+ * Field definition within a collection schema
+ */
+export type FieldDefinition = { 
+/**
+ * The type of this field
+ */
+field_type: FieldType, 
+/**
+ * Whether this field is required
+ */
+required: boolean, 
+/**
+ * Whether this field must be unique
+ */
+unique: boolean, 
+/**
+ * Whether this field should be indexed for performance
+ */
+index: boolean, 
+/**
+ * Default value for this field (optional)
+ */
+default: any, 
+/**
+ * Validation rules for this field (regex, min/max, etc.)
+ */
+validation: ValidationRules | null, };
+
+/**
+ * Supported field types in collection schemas
+ */
+export type FieldType = "text" | "number" | "boolean" | "date" | "json" | "email" | "url" | "password" | "phone" | { "relationship": RelationshipConfig } | { "file": FileFieldConfig } | { "select": SelectConfig };
+
+/**
+ * Configuration for File field type
+ */
+export type FileFieldConfig = { 
+/**
+ * Whether multiple files can be attached
+ */
+multiple: boolean, 
+/**
+ * Allowed MIME types (None = all allowed)
+ */
+allowed_mime_types: Array<string> | null, 
+/**
+ * Maximum file size in bytes
+ */
+max_file_size: bigint | null, 
+/**
+ * Whether file is required
+ */
+required: boolean, };
+
+/**
+ * File metadata in the virtual file system
+ */
+export type FileMetadata = { 
+/**
+ * Unique identifier for the file
+ */
+id: string, 
+/**
+ * File name (without path)
+ */
+name: string, 
+/**
+ * Virtual path within the namespace
+ */
+path: string, 
+/**
+ * MIME type of the file
+ */
+mime_type: string, 
+/**
+ * File size in bytes
+ */
+size: bigint, 
+/**
+ * SHA256 hash of file content
+ */
+content_hash: string, 
+/**
+ * When the file was created (Unix timestamp in seconds)
+ */
+created_at: bigint, 
+/**
+ * When the file was last modified (Unix timestamp in seconds)
+ */
+modified_at: bigint, 
+/**
+ * Custom metadata as key-value pairs
+ */
+custom_metadata: { [key in string]?: string }, 
+/**
+ * Whether the file is compressed
+ */
+compressed: boolean, 
+/**
+ * Compression algorithm used (if any)
+ */
+compression_type: string | null, 
+/**
+ * Tags for organization and search
+ */
+tags: Array<string>, };
+
+/**
+ * File reference stored in the database
+ */
+export type FileReference = { 
+/**
+ * File ID in the VFS
+ */
+file_id: string, 
+/**
+ * Original file name
+ */
+name: string, 
+/**
+ * MIME type
+ */
+mime_type: string, 
+/**
+ * File size in bytes
+ */
+size: bigint, 
+/**
+ * Virtual path in the VFS
+ */
+path: string, };
+
+/**
+ * Growth trends for various metrics
+ */
+export type GrowthTrends = { 
+/**
+ * Collections added this month
+ */
+collections_this_month: number, 
+/**
+ * Records growth percentage from last month
+ */
+records_growth_percent: number, 
+/**
+ * New users added recently
+ */
+new_users_count: number, 
+/**
+ * API requests growth percentage from yesterday
+ */
+api_growth_percent: number, };
+
+/**
+ * Health status enumeration
+ */
+export type HealthStatus = "Healthy" | "Warning" | "Degraded" | "Unhealthy" | "Unknown";
+
+/**
+ * Index definition for database optimization
+ */
+export type IndexDefinition = { 
+/**
+ * Name of the index
+ */
+name: string, 
+/**
+ * Fields to index (can be multiple for composite indexes)
+ */
+fields: Array<string>, 
+/**
+ * Whether this is a unique index
+ */
+unique: boolean, };
+
+/**
+ * Combined operation type that can be either CRUD or Auth
+ */
+export type Operation = { "crud": CrudOperation } | { "auth": AuthOperation };
+
+/**
+ * Permission rule for any operation (CRUD or Auth)
+ */
+export type OperationRule = { 
+/**
+ * The operation this rule applies to
+ */
+operation: Operation, 
+/**
+ * The permission level for this operation
+ */
+permission: PermissionLevel, 
+/**
+ * Optional filter for operations
+ */
+filter: string | null, };
+
+/**
+ * Permission level for accessing resources
+ */
+export type PermissionLevel = "none" | "superuseronly" | "authenticatedonly" | "public" | { "rule": string };
+
+/**
+ * Capability types that can be granted to plugins
+ */
+export type PluginCapability = "LogInfo" | "LogError" | "ReadEventData" | "ModifyEventData" | "BlockOperations" | { "ReadConfig": { 
+/**
+ * Specific config keys the plugin can access
+ */
+keys: Array<string>, } } | { "AccessCollection": { 
+/**
+ * Collection name
+ */
+collection: string, 
+/**
+ * Operations allowed on this collection
+ */
+operations: Array<CrudOperation>, } } | { "HttpRequest": { 
+/**
+ * Allowed URL patterns (regex)
+ */
+allowed_urls: Array<string>, 
+/**
+ * Maximum requests per minute
+ */
+rate_limit: number, } } | { "PersistentStorage": { 
+/**
+ * Maximum storage size in bytes
+ */
+max_size: bigint, 
+/**
+ * Allowed key prefixes
+ */
+key_prefixes: Array<string>, } } | "ScheduleTasks" | { "EmitEvents": { 
+/**
+ * Allowed event types
+ */
+event_types: Array<string>, } } | { "RegisterHttpRoutes": { 
+/**
+ * Allowed path patterns (regex)
+ */
+path_patterns: Array<string>, 
+/**
+ * Allowed HTTP methods
+ */
+methods: Array<string>, } } | { "CreateRecords": { 
+/**
+ * Collections the plugin can create records in
+ */
+collections: Array<string>, } } | { "ReadRecords": { 
+/**
+ * Collections the plugin can read from
+ */
+collections: Array<string>, } } | { "UpdateRecords": { 
+/**
+ * Collections the plugin can update
+ */
+collections: Array<string>, } } | { "DeleteRecords": { 
+/**
+ * Collections the plugin can delete from
+ */
+collections: Array<string>, } } | "HandleHttpRequests";
+
+/**
+ * Complete plugin configuration that can be persisted to the database
+ */
+export type PluginConfiguration = { 
+/**
+ * Plugin name (unique identifier)
+ */
+name: string, 
+/**
+ * Plugin version
+ */
+version: string, 
+/**
+ * Plugin description
+ */
+description: string, 
+/**
+ * Plugin author
+ */
+author: string, 
+/**
+ * Current status of the plugin
+ */
+status: PluginStatus, 
+/**
+ * Trust level assigned to the plugin
+ */
+trust_level: PluginTrustLevel, 
+/**
+ * Capabilities granted to the plugin
+ */
+capabilities: Array<PluginCapability>, 
+/**
+ * Resource limits for the plugin
+ */
+resource_limits: ResourceLimits, 
+/**
+ * Plugin metadata (configuration, settings, etc.)
+ */
+metadata: any, 
+/**
+ * Path to the WASM file on the filesystem (relative to plugins directory)
+ */
+wasm_path: string | null, 
+/**
+ * Path to the plugin directory (relative to plugins base directory)
+ */
+plugin_directory: string | null, 
+/**
+ * File size of the WASM binary in bytes
+ */
+wasm_size: bigint | null, 
+/**
+ * SHA256 hash of the WASM file for integrity verification
+ */
+wasm_hash: string | null, 
+/**
+ * Whether the plugin is enabled/disabled
+ */
+enabled: boolean, 
+/**
+ * Timestamp when plugin was installed
+ */
+installed_at: bigint, 
+/**
+ * Timestamp when plugin was last updated
+ */
+updated_at: bigint, };
+
+/**
+ * Plugin status enumeration
+ */
+export type PluginStatus = "Enabled" | "Disabled" | "Error" | "Loading" | "Uninstalling";
+
+/**
+ * Trust level assigned to plugins
+ */
+export type PluginTrustLevel = "Untrusted" | "PartiallyTrusted" | "FullyTrusted" | "System";
+
+/**
+ * Configuration for relationship fields
+ */
+export type RelationshipConfig = { 
+/**
+ * The name of the target collection
+ */
+target_collection: string, 
+/**
+ * Whether this is a multiple relationship (array of IDs) or single (single ID)
+ */
+multiple: boolean, 
+/**
+ * Whether to cascade delete (delete related records when this record is deleted)
+ */
+cascade_delete: boolean, 
+/**
+ * Field name in the target collection to display when populated (optional)
+ */
+display_field: string | null, };
+
+/**
+ * Resource usage limits for plugins
+ */
+export type ResourceLimits = { 
+/**
+ * Maximum memory usage in bytes
+ */
+max_memory: bigint, 
+/**
+ * Maximum execution time per call in milliseconds
+ */
+max_execution_time: bigint, 
+/**
+ * Maximum number of host function calls per execution
+ */
+max_host_calls: number, 
+/**
+ * Maximum number of executions per minute
+ */
+rate_limit: number, };
+
+/**
+ * Configuration for select fields
+ */
+export type SelectConfig = { 
+/**
+ * Available options for selection
+ */
+options: Array<string>, 
+/**
+ * Whether multiple values can be selected
+ */
+multiple: boolean, 
+/**
+ * Whether empty/null values are allowed
+ */
+allow_empty: boolean, };
+
+/**
+ * Storage usage information
+ */
+export type StorageUsage = { 
+/**
+ * Used storage in bytes
+ */
+used_bytes: bigint, 
+/**
+ * Total available storage in bytes
+ */
+total_bytes: bigint, 
+/**
+ * Usage percentage
+ */
+usage_percent: number, 
+/**
+ * Database file size in bytes
+ */
+database_size_bytes: bigint, 
+/**
+ * Log files size in bytes
+ */
+logs_size_bytes: bigint, 
+/**
+ * VFS files size in bytes
+ */
+vfs_size_bytes: bigint, };
+
+/**
+ * System health indicators
+ */
+export type SystemHealth = { 
+/**
+ * Database connection status
+ */
+database_status: HealthStatus, 
+/**
+ * API endpoints status
+ */
+api_status: HealthStatus, 
+/**
+ * Authentication service status
+ */
+auth_status: HealthStatus, 
+/**
+ * Plugin system status
+ */
+plugin_status: HealthStatus, 
+/**
+ * VFS status
+ */
+vfs_status: HealthStatus, 
+/**
+ * Storage usage information
+ */
+storage_usage: StorageUsage, 
+/**
+ * System uptime in seconds
+ */
+uptime_seconds: bigint, };
+
+/**
+ * Basic system statistics
+ */
+export type SystemStats = { 
+/**
+ * Total number of collections
+ */
+total_collections: number, 
+/**
+ * Total number of records across all collections
+ */
+total_records: bigint, 
+/**
+ * Number of active users (users with recent activity)
+ */
+active_users: number, 
+/**
+ * Number of API requests in the last 24 hours
+ */
+api_requests_24h: bigint, 
+/**
+ * Growth trends
+ */
+trends: GrowthTrends, };
+
+/**
+ * Individual user activity information
+ */
+export type UserActivity = { 
+/**
+ * Username or identifier
+ */
+username: string, 
+/**
+ * Number of actions performed
+ */
+action_count: number, 
+/**
+ * Last activity timestamp (ISO 8601 string)
+ */
+last_activity: string, };
+
+/**
+ * User roles in the system
+ */
+export type UserRole = "user" | "superuser" | { "custom": string };
+
+/**
+ * User activity statistics
+ */
+export type UserStats = { 
+/**
+ * Total number of registered users
+ */
+total_users: number, 
+/**
+ * Users active in the last 24 hours
+ */
+active_24h: number, 
+/**
+ * Users active in the last 7 days
+ */
+active_7d: number, 
+/**
+ * Most active users
+ */
+top_active_users: Array<UserActivity>, };
+
+/**
+ * Validation rules that can be applied to field values
+ */
+export type ValidationRules = { 
+/**
+ * Regular expression pattern for string validation
+ */
+regex: string | null, 
+/**
+ * Minimum length for strings or minimum value for numbers
+ */
+min: number | null, 
+/**
+ * Maximum length for strings or maximum value for numbers
+ */
+max: number | null, 
+/**
+ * Custom error message for validation failures
+ */
+message: string | null, 
+/**
+ * Whether to allow empty values (overrides field-level required setting)
+ */
+allow_empty: boolean | null, };
+
+/**
+ * Backup configuration for VFS namespaces
+ */
+export type VfsBackupConfig = { 
+/**
+ * Whether backups are enabled
+ */
+enabled: boolean, 
+/**
+ * Backup retention period in days
+ */
+retention_days: number, 
+/**
+ * Automatic backup interval in hours
+ */
+backup_interval_hours: number, 
+/**
+ * Whether to compress backups
+ */
+compress_backups: boolean, };
+
+/**
+ * Configuration for a VFS namespace
+ */
+export type VfsNamespaceConfig = { 
+/**
+ * Namespace identifier (usually collection name)
+ */
+namespace: string, 
+/**
+ * Maximum storage quota in bytes (None = unlimited)
+ */
+quota_bytes: bigint | null, 
+/**
+ * Whether to enable compression for new files
+ */
+enable_compression: boolean, 
+/**
+ * Allowed MIME types (None = all allowed)
+ */
+allowed_mime_types: Array<string> | null, 
+/**
+ * Maximum file size in bytes
+ */
+max_file_size: bigint | null, 
+/**
+ * Whether to enable content deduplication
+ */
+enable_deduplication: boolean, 
+/**
+ * Backup configuration
+ */
+backup_config: VfsBackupConfig | null, };
+
+/**
+ * Statistics about VFS namespace usage
+ */
+export type VfsUsageStats = { 
+/**
+ * Namespace identifier
+ */
+namespace: string, 
+/**
+ * Total number of files
+ */
+file_count: number, 
+/**
+ * Total storage used in bytes
+ */
+storage_used: bigint, 
+/**
+ * Storage quota in bytes (None = unlimited)
+ */
+storage_quota: bigint | null, 
+/**
+ * Number of directories
+ */
+directory_count: number, 
+/**
+ * Last updated timestamp (Unix timestamp in seconds)
+ */
+last_updated: bigint, };
+
+
+// ===================================================================
+// DATABASE TYPES - Data structures from oxide-db
+// ===================================================================
+
+/**
+ * A record in the database
+ *
+ * This represents a single record/document in a collection, containing
+ * an ID, the collection it belongs to, and its JSON data.
+ */
+export type DbRecord = { 
+/**
+ * Unique identifier for this record
+ */
+id: string, 
+/**
+ * The collection this record belongs to
+ */
+collection: string, 
+/**
+ * The record's data as JSON
+ */
+data: Record<string, any>, 
+/**
+ * Timestamp when the record was created (Unix timestamp in seconds)
+ */
+created_at: bigint, 
+/**
+ * Timestamp when the record was last updated (Unix timestamp in seconds)
+ */
+updated_at: bigint, };
+
+
+// ===================================================================
+// API RESPONSE TYPES - HTTP response structures from oxide-api
+// ===================================================================
+
+/**
+ * Standard API response wrapper
+ */
+export type ApiResponse<T> = { 
+/**
+ * Response data
+ */
+data: T, 
+/**
+ * Response metadata
+ */
+meta: ResponseMeta | null, 
+/**
+ * Success indicator
+ */
+success: boolean, };
+
+/**
+ * Collection statistics response
+ */
+export type CollectionStats = { 
+/**
+ * Collection name
+ */
+name: string, 
+/**
+ * Number of records in the collection
+ */
+record_count: number, 
+/**
+ * Whether the collection exists
+ */
+exists: boolean, 
+/**
+ * Collection size in kilobytes
+ */
+size_kb: number, 
+/**
+ * Collection schema version
+ */
+schema_version: number | null, 
+/**
+ * Collection creation timestamp
+ */
+created_at: string | null, 
+/**
+ * Last modification timestamp
+ */
+updated_at: string | null, };
+
+/**
+ * Request payload for creating a new collection
+ */
+export type CreateCollectionRequest = { 
+/**
+ * Collection name (must be unique)
+ */
+name: string, 
+/**
+ * Type of collection
+ */
+collection_type: CollectionType, 
+/**
+ * Field definitions for this collection
+ */
+fields: { [key in string]?: FieldDefinition }, 
+/**
+ * Index definitions for performance optimization (optional)
+ */
+indexes: Array<IndexDefinition>, };
+
+/**
+ * Empty response for operations that don't return data
+ */
+export type EmptyResponse = { 
+/**
+ * Success message
+ */
+message: string, };
+
+/**
+ * Paginated response wrapper
+ */
+export type PaginatedResponse<T> = { 
+/**
+ * Response data items
+ */
+data: Array<T>, 
+/**
+ * Pagination information
+ */
+pagination: PaginationInfo, 
+/**
+ * Response metadata
+ */
+meta: ResponseMeta | null, 
+/**
+ * Success indicator
+ */
+success: boolean, };
+
+/**
+ * Pagination information
+ */
+export type PaginationInfo = { 
+/**
+ * Current page number (1-based)
+ */
+page: number, 
+/**
+ * Number of items per page
+ */
+per_page: number, 
+/**
+ * Total number of items
+ */
+total: bigint, 
+/**
+ * Total number of pages
+ */
+total_pages: number, 
+/**
+ * Whether there is a next page
+ */
+has_next: boolean, 
+/**
+ * Whether there is a previous page
+ */
+has_prev: boolean, };
+
+/**
+ * Response metadata for additional context
+ */
+export type ResponseMeta = { 
+/**
+ * Request processing time in milliseconds
+ */
+duration_ms: bigint | null, 
+/**
+ * API version
+ */
+version: string | null, 
+/**
+ * Request ID for tracing
+ */
+request_id: string | null, };
+
+
+// ===================================================================
+// UTILITY TYPES - Additional helpful types for the frontend
+// ===================================================================
+
+// Type aliases for better developer experience
+export type RecordData = Record<string, any>;
+export type RecordId = string;
+export type Collection = string;
+
+export interface ApiError {
+  error: string;
+  message?: string;
+}
+
+// Note: The database Record type from oxide-db is exported as 'DbRecord'
+// to avoid conflicts with TypeScript's built-in Record<K,V> utility type.
+// Use: import { DbRecord } from './types/generated';
+
+// ===================================================================
+// EXTENSIBLE FIELD TYPE SYSTEM
+// ===================================================================
+// 
+// OxideDB supports an extensible field type system. New field types
+// can be added by implementing the FieldTypeDefinition trait in Rust.
+// When new field types are added, regenerate this file to get the
+// updated TypeScript definitions.
+// 
+// To add new field types:
+// 1. Add the type variant to FieldType enum in oxide-core/src/field_types/mod.rs
+// 2. Implement the field type logic in oxide-core/src/field_types/
+// 3. Add #[derive(TS)] and #[ts(export)] to any new structs
+// 4. Run: cargo run --bin generate-types
+// 

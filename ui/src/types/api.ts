@@ -6,7 +6,14 @@ import type {
   CollectionStats,
   HealthStatus,
   ApiError,
-  CollectionSchema
+  CollectionSchema,
+  DashboardStats,
+  SystemStats,
+  ActivityEntry,
+  SystemHealth,
+  StorageUsage,
+  UserStats,
+  ApiStats
 } from './generated';
 
 // Import auto-generated types from the generated types file
@@ -19,7 +26,14 @@ export type {
   FieldType,
   FieldDefinition,
   IndexDefinition,
-  CollectionSchema
+  CollectionSchema,
+  DashboardStats,
+  SystemStats,
+  ActivityEntry,
+  SystemHealth,
+  StorageUsage,
+  UserStats,
+  ApiStats
 } from './generated';
 
 // Additional request types that are not auto-generated from Rust
@@ -624,16 +638,39 @@ export interface SystemInfoUpdateRequest {
   license_key?: string;
 }
 
-export interface SiteSettingsResponse {
-  success: boolean;
-  message?: string;
-  settings?: SiteSettings;
-}
+// Dashboard API functions
+export const dashboardApi = {
+  // Get comprehensive dashboard statistics
+  getDashboardStats: async (): Promise<DashboardStats> => {
+    const response = await fetch('/api/dashboard/stats', {
+      headers: {
+        'Authorization': `Bearer ${localStorage.getItem('authToken')}`,
+        'Content-Type': 'application/json',
+      },
+    });
+    
+    if (!response.ok) {
+      throw new Error(`Failed to fetch dashboard stats: ${response.statusText}`);
+    }
+    
+    const result = await response.json();
+    return result.data;
+  },
 
-export interface SettingsHealthStatus {
-  healthy: boolean;
-  email_config_valid: boolean;
-  license_valid: boolean;
-  warnings: string[];
-  last_validated_at: number;
-} 
+  // Get basic system statistics
+  getSystemStats: async (): Promise<SystemStats> => {
+    const response = await fetch('/api/dashboard/system', {
+      headers: {
+        'Authorization': `Bearer ${localStorage.getItem('authToken')}`,
+        'Content-Type': 'application/json',
+      },
+    });
+    
+    if (!response.ok) {
+      throw new Error(`Failed to fetch system stats: ${response.statusText}`);
+    }
+    
+    const result = await response.json();
+    return result.data;
+  },
+};

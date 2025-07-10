@@ -1,6 +1,8 @@
 import React, { useState, useEffect } from 'react';
-import { CheckCircle, XCircle, RefreshCw } from 'lucide-react';
+import { CheckCircle, XCircle, RefreshCw, Database, Server, Activity, AlertTriangle } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Badge } from '@/components/ui/badge';
 import PageLayout from '@/components/PageLayout';
 import { apiService } from '../services/api';
 import type { HealthStatus } from '../types/api';
@@ -31,6 +33,30 @@ const Health: React.FC = () => {
 
   const isHealthy = health?.status === 'healthy' && health?.database === 'healthy';
 
+  const healthMetrics = [
+    {
+      title: "API Server",
+      status: health?.status || 'unknown',
+      description: "REST API endpoint status",
+      icon: Server,
+      isHealthy: health?.status === 'healthy'
+    },
+    {
+      title: "Database",
+      status: health?.database || 'unknown', 
+      description: "Database connectivity",
+      icon: Database,
+      isHealthy: health?.database === 'healthy'
+    },
+    {
+      title: "Overall Status",
+      status: isHealthy ? 'healthy' : 'unhealthy',
+      description: "System-wide health check",
+      icon: Activity,
+      isHealthy: isHealthy
+    }
+  ];
+
   const headerActions = (
     <Button
       onClick={fetchHealth}
@@ -49,111 +75,136 @@ const Health: React.FC = () => {
       description="Monitor the status of OxideDB components"
       headerActions={headerActions}
     >
-
       {error && (
-        <div className="bg-red-50 border border-red-200 rounded-lg p-4 mb-6">
-          <div className="flex items-center">
-            <XCircle className="h-5 w-5 text-red-500 mr-2" />
-            <div className="text-red-800">{error}</div>
+        <div className="bg-destructive/15 border border-destructive/20 rounded-lg p-4">
+          <div className="flex items-center gap-2">
+            <AlertTriangle className="h-4 w-4 text-destructive" />
+            <div className="text-destructive text-sm font-medium">{error}</div>
           </div>
-          <button
+          <Button
             onClick={() => setError(null)}
-            className="text-red-600 text-sm mt-2 hover:text-red-800"
+            variant="ghost"
+            size="sm"
+            className="text-destructive hover:text-destructive mt-2 h-auto p-0"
           >
             Dismiss
-          </button>
+          </Button>
         </div>
       )}
 
       {loading && !health ? (
         <div className="flex items-center justify-center h-64">
-          <div className="text-gray-500">Loading health status...</div>
+          <div className="text-muted-foreground">Loading health status...</div>
         </div>
       ) : health ? (
         <div className="space-y-6">
-          {/* Overall Status */}
-          <div className="card">
-            <div className="flex items-center justify-between">
-              <div>
-                <h3 className="text-lg font-medium text-gray-900">Overall Status</h3>
-                <p className="text-sm text-gray-600 mt-1">System-wide health check</p>
-              </div>
-              <div className="flex items-center">
-                {isHealthy ? (
-                  <CheckCircle className="h-8 w-8 text-green-500" />
-                ) : (
-                  <XCircle className="h-8 w-8 text-red-500" />
-                )}
-                <span className={`ml-2 text-lg font-medium ${
-                  isHealthy ? 'text-green-700' : 'text-red-700'
-                }`}>
-                  {isHealthy ? 'Healthy' : 'Unhealthy'}
-                </span>
-              </div>
-            </div>
-          </div>
-
-          {/* Component Status */}
-          <div className="grid gap-6 md:grid-cols-2">
-            {/* API Status */}
-            <div className="card">
-              <div className="flex items-center justify-between mb-4">
-                <h3 className="text-lg font-medium text-gray-900">API Server</h3>
-                {health.status === 'healthy' ? (
-                  <CheckCircle className="h-6 w-6 text-green-500" />
-                ) : (
-                  <XCircle className="h-6 w-6 text-red-500" />
-                )}
-              </div>
-              <div className="space-y-2 text-sm">
-                <div className="flex justify-between">
-                  <span className="text-gray-600">Status:</span>
-                  <span className={`font-medium ${
-                    health.status === 'healthy' ? 'text-green-700' : 'text-red-700'
-                  }`}>
-                    {health.status}
-                  </span>
-                </div>
-                {health.version && (
-                  <div className="flex justify-between">
-                    <span className="text-gray-600">Version:</span>
-                    <span className="font-medium text-gray-900">{health.version}</span>
+          {/* Health Metrics Grid */}
+          <div className="grid gap-3 md:gap-4 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3">
+            {healthMetrics.map((metric) => (
+              <Card key={metric.title}>
+                <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                  <CardTitle className="text-sm font-medium">
+                    {metric.title}
+                  </CardTitle>
+                  <metric.icon className="h-4 w-4 text-muted-foreground" />
+                </CardHeader>
+                <CardContent>
+                  <div className="flex items-center gap-2 mb-1">
+                    <div className={`h-2 w-2 rounded-full ${
+                      metric.isHealthy ? 'bg-green-500' : 'bg-red-500'
+                    }`}></div>
+                    <Badge variant={metric.isHealthy ? 'default' : 'destructive'} className="text-xs">
+                      {metric.status}
+                    </Badge>
                   </div>
-                )}
-              </div>
-            </div>
-
-            {/* Database Status */}
-            <div className="card">
-              <div className="flex items-center justify-between mb-4">
-                <h3 className="text-lg font-medium text-gray-900">Database</h3>
-                {health.database === 'healthy' ? (
-                  <CheckCircle className="h-6 w-6 text-green-500" />
-                ) : (
-                  <XCircle className="h-6 w-6 text-red-500" />
-                )}
-              </div>
-              <div className="space-y-2 text-sm">
-                <div className="flex justify-between">
-                  <span className="text-gray-600">Status:</span>
-                  <span className={`font-medium ${
-                    health.database === 'healthy' ? 'text-green-700' : 'text-red-700'
-                  }`}>
-                    {health.database}
-                  </span>
-                </div>
-              </div>
-            </div>
+                  <p className="text-xs text-muted-foreground">
+                    {metric.description}
+                  </p>
+                  {health.version && metric.title === 'API Server' && (
+                    <p className="text-xs text-muted-foreground mt-1">
+                      Version: {health.version}
+                    </p>
+                  )}
+                </CardContent>
+              </Card>
+            ))}
           </div>
 
-          {/* Health Details */}
-          <div className="card">
-            <h3 className="text-lg font-medium text-gray-900 mb-4">Health Details</h3>
-            <div className="bg-gray-50 rounded-lg p-4">
-              <pre className="text-sm text-gray-800 whitespace-pre-wrap">
-                {JSON.stringify(health, null, 2)}
-              </pre>
-            </div>
+          <div className="grid gap-4 md:gap-6 grid-cols-1 lg:grid-cols-2">
+            {/* Overall System Status */}
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  {isHealthy ? (
+                    <CheckCircle className="h-5 w-5 text-green-500" />
+                  ) : (
+                    <XCircle className="h-5 w-5 text-red-500" />
+                  )}
+                  System Status
+                </CardTitle>
+                <CardDescription>
+                  Current operational status of all components
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <span className="text-sm">Database Connection</span>
+                  <div className="flex items-center gap-2">
+                    <div className={`h-2 w-2 rounded-full ${
+                      health.database === 'healthy' ? 'bg-green-500' : 'bg-red-500'
+                    }`}></div>
+                    <span className={`text-sm ${
+                      health.database === 'healthy' ? 'text-green-600' : 'text-red-600'
+                    }`}>
+                      {health.database === 'healthy' ? 'Connected' : 'Disconnected'}
+                    </span>
+                  </div>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-sm">API Endpoints</span>
+                  <div className="flex items-center gap-2">
+                    <div className={`h-2 w-2 rounded-full ${
+                      health.status === 'healthy' ? 'bg-green-500' : 'bg-red-500'
+                    }`}></div>
+                    <span className={`text-sm ${
+                      health.status === 'healthy' ? 'text-green-600' : 'text-red-600'
+                    }`}>
+                      {health.status === 'healthy' ? 'Online' : 'Offline'}
+                    </span>
+                  </div>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-sm">Overall Status</span>
+                  <div className="flex items-center gap-2">
+                    <div className={`h-2 w-2 rounded-full ${
+                      isHealthy ? 'bg-green-500' : 'bg-red-500'
+                    }`}></div>
+                    <span className={`text-sm font-medium ${
+                      isHealthy ? 'text-green-600' : 'text-red-600'
+                    }`}>
+                      {isHealthy ? 'Healthy' : 'Unhealthy'}
+                    </span>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+
+            {/* Health Details */}
+            <Card>
+              <CardHeader>
+                <CardTitle>System Details</CardTitle>
+                <CardDescription>
+                  Raw health check response data
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div className="bg-muted rounded-lg p-4">
+                  <pre className="text-sm text-foreground whitespace-pre-wrap overflow-x-auto">
+                    {JSON.stringify(health, null, 2)}
+                  </pre>
+                </div>
+              </CardContent>
+            </Card>
           </div>
         </div>
       ) : null}
