@@ -5,21 +5,19 @@
 
 use axum::{
     extract::{State, Path, Query},
-    http::StatusCode,
     Json,
 };
 use oxide_core::{
     site_settings::{
-        SiteSettingsService, SiteSettings, UpdateSiteSettingsRequest, SiteSettingsResponse,
+        UpdateSiteSettingsRequest, SiteSettingsResponse,
         SettingsHealthStatus, settings_sections
     },
-    auth::{UserRole, PermissionLevel},
     AppError,
 };
 use oxide_db::Db;
 use std::sync::Arc;
 use tracing::{debug, info, warn};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::Value;
 
 use crate::{

@@ -5,20 +5,18 @@
 
 use axum::{
     extract::{State, Path, Query},
-    http::StatusCode,
     Json,
 };
 use oxide_core::{
     user_preferences::{
-        UserPreferencesService, UpdateUserPreferenceRequest, UserPreferenceResponse,
-        UserPreferencesListResponse, preference_keys,
+        UpdateUserPreferenceRequest, UserPreferenceResponse,
+        UserPreferencesListResponse,
     },
-    AppError,
 };
 use oxide_db::Db;
 use std::sync::Arc;
 use tracing::{debug, info, warn};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
 use crate::{
     errors::ApiError,

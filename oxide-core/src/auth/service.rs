@@ -213,7 +213,6 @@ mod tests {
     use super::*;
     use crate::collection::{CollectionSchema, CollectionType, FieldDefinition};
     use crate::field_types::FieldType;
-    use std::collections::HashMap;
 
     #[test]
     fn test_update_auth_collections_sets_correct_roles() {

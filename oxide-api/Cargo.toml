@@ -9,6 +9,7 @@ license.workspace = true
 oxide-core = { path = "../oxide-core" }
 oxide-db = { path = "../oxide-db" }
 oxide-logging = { path = "../oxide-logging" }
+oxide-vfs = { path = "../oxide-vfs" }
 oxide-plugin-runtime = { path = "../oxide-plugin-runtime" }
 oxide-plugin-sdk = { path = "../oxide-plugin-sdk" }
 axum = {version = "0.7", features = ["multipart"]}

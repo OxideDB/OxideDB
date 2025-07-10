@@ -151,11 +151,11 @@ impl CollectionHandlers {
             exists,
             size_kb,
             schema_version: Some(schema.version),
-            created_at: Some(chrono::NaiveDateTime::from_timestamp_opt(schema.created_at, 0)
+            created_at: Some(chrono::DateTime::from_timestamp(schema.created_at, 0)
                 .unwrap_or_default()
                 .format("%Y-%m-%d %H:%M:%S")
                 .to_string()),
-            updated_at: Some(chrono::NaiveDateTime::from_timestamp_opt(schema.updated_at, 0)
+            updated_at: Some(chrono::DateTime::from_timestamp(schema.updated_at, 0)
                 .unwrap_or_default()
                 .format("%Y-%m-%d %H:%M:%S")
                 .to_string()),

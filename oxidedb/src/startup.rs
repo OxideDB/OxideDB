@@ -12,7 +12,6 @@ use oxide_logging::{LogService, LogServiceBuilder, LogServiceBridge};
 use oxide_vfs;
 use std::sync::Arc;
 use tracing::{info, warn, debug};
-use std::fmt::Write;
 
 /// Application services container
 #[derive(Clone)]

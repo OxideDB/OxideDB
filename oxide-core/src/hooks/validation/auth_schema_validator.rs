@@ -4,7 +4,7 @@
 //! default fields and proper configurations. It enforces the auth collection
 //! requirements at the schema level.
 
-use crate::{AppError, CollectionSchema, CollectionType, FieldDefinition, FieldType, BeforeEventContext};
+use crate::{AppError, CollectionSchema, CollectionType, FieldDefinition, FieldType};
 use crate::field_types::{ValidationRules, SelectConfig};
 use std::collections::HashMap;
 use tracing::{debug, warn, info};

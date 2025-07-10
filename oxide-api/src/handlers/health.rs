@@ -12,7 +12,7 @@ use ts_rs::TS;
 
 use crate::{errors::ApiError, responses::ApiResponse, server::AppState};
 
-/// Health status response
+/// Health status response with comprehensive version information
 #[derive(Debug, Serialize, TS)]
 #[ts(export)]
 pub struct HealthStatus {
@@ -26,6 +26,23 @@ pub struct HealthStatus {
     /// System uptime in seconds
     #[serde(skip_serializing_if = "Option::is_none")]
     pub uptime: Option<u64>,
+    /// Component version information
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub versions: Option<ComponentVersions>,
+}
+
+/// Version information for all system components
+#[derive(Debug, Serialize, TS)]
+#[ts(export)]
+pub struct ComponentVersions {
+    /// API server version
+    pub api: String,
+    /// Database layer version
+    pub database: String,
+    /// VFS version
+    pub vfs: String,
+    /// Plugin runtime version
+    pub plugin_runtime: String,
 }
 
 /// Handlers for health-related operations
@@ -54,11 +71,20 @@ impl HealthHandlers {
             "unhealthy"
         };
 
+        // Collect version information from all system components
+        let component_versions = ComponentVersions {
+            api: env!("CARGO_PKG_VERSION").to_string(),
+            database: oxide_db::VERSION.to_string(),
+            vfs: oxide_vfs::VERSION.to_string(),
+            plugin_runtime: oxide_plugin_runtime::VERSION.to_string(),
+        };
+
         let health_status = HealthStatus {
             status: overall_status.to_string(),
             database: database_status,
             version: Some(env!("CARGO_PKG_VERSION").to_string()),
             uptime: None, // TODO: Track server uptime
+            versions: Some(component_versions),
         };
 
         debug!("Health check completed: {}", overall_status);

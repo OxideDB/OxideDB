@@ -2035,6 +2035,7 @@ dependencies = [
  "oxide-logging",
  "oxide-plugin-runtime",
  "oxide-plugin-sdk",
+ "oxide-vfs",
  "serde",
  "serde_json",
  "sha2",

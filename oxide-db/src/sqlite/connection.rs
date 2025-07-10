@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 use tokio::task::spawn_blocking;
 use tracing::{info, debug};
 use uuid::Uuid;
-use chrono::{Utc, Duration};
+use chrono::Utc;
 
 /// SQLite implementation of the Db trait
 ///

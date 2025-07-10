@@ -636,7 +636,6 @@ impl VirtualFileSystem for VfsService {
 mod tests {
     use super::*;
     use tempfile::TempDir;
-    use tokio_test;
 
     async fn create_test_service() -> (VfsService, TempDir) {
         let temp_dir = TempDir::new().unwrap();

@@ -13,7 +13,7 @@ use chrono::Utc;
 
 use oxide_core::{
     DashboardStats, DashboardStatsService, SystemStats, 
-    UserStats, UserActivity, ApiStats, EndpointStats, ActivityEntry, ActivityType,
+    UserStats, UserActivity, ApiStats, EndpointStats, ActivityEntry,
     SystemHealth, HealthStatus, AppError
 };
 use crate::Db;

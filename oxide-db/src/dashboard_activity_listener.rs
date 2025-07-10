@@ -289,7 +289,7 @@ pub async fn register_dashboard_activity_listener(
 ) -> Result<(), AppError> {
     let listener = Arc::new(DashboardActivityListener::new(dashboard_service));
     let handler = listener.create_handler();
-    let base_metadata = DashboardActivityListener::create_metadata();
+    let _base_metadata = DashboardActivityListener::create_metadata();
 
     // Register for specific after events that we want to track
     // (instead of wildcard "*" which isn't supported by the event bus)

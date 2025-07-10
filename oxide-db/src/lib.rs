@@ -23,3 +23,6 @@ pub use dashboard_activity_listener::{DashboardActivityListener, register_dashbo
 
 /// Simple alias for SqliteDb using in-memory database
 pub type SimpleDb = SqliteDb;
+
+/// Database layer version information
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");

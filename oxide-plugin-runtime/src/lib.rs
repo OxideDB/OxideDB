@@ -13,4 +13,7 @@ pub mod utils;
 
 pub use factory::*;
 pub use runtime::*;
-pub use manager::*; 
+pub use manager::*;
+
+/// Plugin runtime version information
+pub const VERSION: &str = env!("CARGO_PKG_VERSION"); 

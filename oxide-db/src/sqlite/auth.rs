@@ -7,7 +7,7 @@ use oxide_core::{
     BeforeEventContext, AfterEventContext, BeforeEventType, AfterEventType,
     auth::{AuthCollectionConfig, AuthTokens},
 };
-use tracing::{info, debug, warn};
+use tracing::{info, warn};
 use uuid::Uuid;
 
 impl SqliteDb {

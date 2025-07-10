@@ -188,7 +188,7 @@ impl SqliteDb {
             let rows = stmt.query_map([&user_id], |row| {
                 let preference_value_str: String = row.get(2)?;
                 let preference_value: Value = serde_json::from_str(&preference_value_str)
-                    .map_err(|e| rusqlite::Error::InvalidColumnType(2, "Invalid JSON".to_string(), rusqlite::types::Type::Text))?;
+                    .map_err(|_| rusqlite::Error::InvalidColumnType(2, "Invalid JSON".to_string(), rusqlite::types::Type::Text))?;
 
                 Ok(UserPreferences {
                     user_id: row.get(0)?,
