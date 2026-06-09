@@ -4,7 +4,7 @@
 //! providing plugin loading, execution, and security management.
 
 use crate::host_functions::{
-    define_database_functions, define_event_functions, 
+    define_database_functions, define_event_functions,
     define_http_functions, define_logging_functions, register_vfs_functions
 };
 use crate::host_state::{HostState, ExecutionContext};
@@ -19,6 +19,7 @@ use oxide_core::{
 use oxide_db::Db;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 use tracing::{debug, info};
 use wasmtime::{Engine, Instance, Linker, Module, Store};
 
@@ -88,20 +89,20 @@ impl WasmtimePluginRuntime {
     fn define_host_functions(&mut self) -> PluginResult<()> {
         // Define event-related host functions
         define_event_functions(&mut self.linker)?;
-        
-        // Define logging-related host functions  
+
+        // Define logging-related host functions
         define_logging_functions(&mut self.linker)?;
-        
+
         // Define HTTP-related host functions
         define_http_functions(&mut self.linker)?;
-        
+
         // Define database-related host functions
         define_database_functions(&mut self.linker, self.database.clone())?;
-        
+
         // Define VFS-related host functions
         register_vfs_functions(&mut self.linker)
             .map_err(|e| PluginError::InitializationFailed(format!("Failed to register VFS functions: {}", e)))?;
-        
+
         Ok(())
     }
 
@@ -274,10 +275,48 @@ impl WasmtimePluginRuntime {
     }
 
     /// Get plugin execution statistics
-    pub fn get_plugin_stats(&self, _plugin_name: &str) -> Option<ExecutionStats> {
-        // TODO: Implement execution statistics tracking
-        // For now, return None as statistics are not yet implemented
-        None
+    pub fn get_plugin_stats(&self, plugin_name: &str) -> Option<ExecutionStats> {
+        self.security_manager.get_execution_stats(plugin_name)
+    }
+
+    /// Check whether a plugin has been suspended by the security manager.
+    pub fn is_plugin_suspended(&self, plugin_name: &str) -> bool {
+        self.security_manager
+            .get_context(plugin_name)
+            .map(|context| context.suspended)
+            .unwrap_or(false)
+    }
+
+    /// Reset per-execution telemetry before entering plugin code.
+    fn reset_execution_metrics(&mut self) {
+        let mut state = self.store.data().lock().unwrap();
+        state.current_execution_host_calls = 0;
+    }
+
+    /// Record elapsed execution telemetry after a plugin call completes.
+    fn record_execution_metrics(&mut self, plugin_name: &str, started_at: Instant, failed: bool) {
+        let execution_time_ms = started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
+        let host_function_calls = self.store.data().lock().unwrap().current_execution_host_calls;
+        let peak_memory_usage = self.get_plugin_memory_usage(plugin_name);
+
+        if let Err(e) = self.security_manager.record_execution(
+            plugin_name,
+            execution_time_ms,
+            failed,
+            host_function_calls,
+            peak_memory_usage,
+        ) {
+            debug!("Failed to record execution metrics for plugin '{}': {}", plugin_name, e);
+        }
+    }
+
+    /// Return the current WebAssembly memory size for a plugin.
+    fn get_plugin_memory_usage(&mut self, plugin_name: &str) -> u64 {
+        self.instances
+            .get(plugin_name)
+            .and_then(|instance| instance.get_memory(&mut self.store, "memory"))
+            .map(|memory| memory.data_size(&self.store) as u64)
+            .unwrap_or(0)
     }
 
     /// Get all registered HTTP routes from plugins
@@ -290,6 +329,18 @@ impl WasmtimePluginRuntime {
         &mut self,
         plugin_name: &str,
         _handler_function: &str, // Not used anymore, kept for backward compatibility
+        request: &oxide_core::plugin_api::HttpRequestContext,
+    ) -> PluginResult<oxide_core::plugin_api::HttpResponse> {
+        let started_at = Instant::now();
+        self.reset_execution_metrics();
+        let result = self.handle_http_request_inner(plugin_name, request);
+        self.record_execution_metrics(plugin_name, started_at, result.is_err());
+        result
+    }
+
+    fn handle_http_request_inner(
+        &mut self,
+        plugin_name: &str,
         request: &oxide_core::plugin_api::HttpRequestContext,
     ) -> PluginResult<oxide_core::plugin_api::HttpResponse> {
         debug!("Handling HTTP request: {}::{}", plugin_name, "handle_http_request");
@@ -353,7 +404,7 @@ impl WasmtimePluginRuntime {
                 state.result_buffer[6],
                 state.result_buffer[7],
             ]) as usize;
-            
+
             if len > 0 {
                 // Note: This is a simplified version. In practice, we'd need to access
                 // the plugin memory at the stored pointer, but for testing purposes
@@ -430,91 +481,99 @@ impl PluginRuntime for WasmtimePluginRuntime {
         function_name: &str,
         payload: &EventPayload,
     ) -> PluginResult<PluginResponse> {
-        debug!(
-            "Calling plugin function: {}::{}",
-            plugin_name, function_name
-        );
+        let started_at = Instant::now();
+        self.reset_execution_metrics();
 
-        // Validate function call capability
-        let required_capability = match function_name {
-            "on_before_create" | "on_after_create" | "on_before_update" | "on_after_update" |
-            "on_before_delete" | "on_after_delete" => PluginCapability::AccessCollection {
-                collection: "*".to_string(),
-                operations: vec![CrudOperation::Create, CrudOperation::Read, CrudOperation::Update, CrudOperation::Delete],
-            },
-            _ => PluginCapability::LogInfo, // Default capability for unknown functions
-        };
+        let result = (|| {
+            debug!(
+                "Calling plugin function: {}::{}",
+                plugin_name, function_name
+            );
 
-        if !self.security_manager.has_capability(plugin_name, &required_capability)
-            .map_err(|e| PluginError::SecurityViolation(e.to_string()))? {
-            let violation = SecurityViolation::UnauthorizedHostFunction {
-                function_name: function_name.to_string(),
-                required_capability: required_capability.clone(),
+            // Validate function call capability
+            let required_capability = match function_name {
+                "on_before_create" | "on_after_create" | "on_before_update" | "on_after_update" |
+                "on_before_delete" | "on_after_delete" => PluginCapability::AccessCollection {
+                    collection: "*".to_string(),
+                    operations: vec![CrudOperation::Create, CrudOperation::Read, CrudOperation::Update, CrudOperation::Delete],
+                },
+                _ => PluginCapability::LogInfo, // Default capability for unknown functions
             };
-            let _ = self.security_manager.record_violation(plugin_name, violation);
-            return Err(PluginError::SecurityViolation(
-                format!("Plugin '{}' lacks required capability for function '{}'", plugin_name, function_name)
-            ));
-        }
 
-        // Set the current payload for the plugin to access
-        self.set_current_payload(payload)?;
-
-        // Clear previous state and set current plugin context
-        {
-            let mut state = self.store.data().lock().unwrap();
-            state.log_messages.clear();
-            state.error_message = None;
-            state.current_plugin = Some(plugin_name.to_string());
-            
-            // Preserve HTTP request context when switching to event handler
-            // This allows database operations during HTTP request event handling
-            if state.current_http_request.is_some() {
-                // We're in an HTTP request context, so keep that context active
-                // even when handling events triggered by the HTTP handler
-                debug!("Preserving HTTP context during event handling for plugin: {}", plugin_name);
-            } else {
-                // Only set to EventHandler if we're not in an HTTP request
-                debug!("Setting execution context to EventHandler for plugin: {}", plugin_name);
-                state.set_execution_context(ExecutionContext::EventHandler);
+            if !self.security_manager.has_capability(plugin_name, &required_capability)
+                .map_err(|e| PluginError::SecurityViolation(e.to_string()))? {
+                let violation = SecurityViolation::UnauthorizedHostFunction {
+                    function_name: function_name.to_string(),
+                    required_capability: required_capability.clone(),
+                };
+                let _ = self.security_manager.record_violation(plugin_name, violation);
+                return Err(PluginError::SecurityViolation(
+                    format!("Plugin '{}' lacks required capability for function '{}'", plugin_name, function_name)
+                ));
             }
-        }
 
-        debug!("About to get plugin instance and call function: {}::{}", plugin_name, function_name);
+            // Set the current payload for the plugin to access
+            self.set_current_payload(payload)?;
 
-        // Get the instance and call the function
-        let instance = self
-            .instances
-            .get(plugin_name)
-            .ok_or_else(|| PluginError::PluginNotFound(plugin_name.to_string()))?;
+            // Clear previous state and set current plugin context
+            {
+                let mut state = self.store.data().lock().unwrap();
+                state.log_messages.clear();
+                state.error_message = None;
+                state.current_plugin = Some(plugin_name.to_string());
 
-        debug!("Got plugin instance, about to get typed function: {}", function_name);
+                // Preserve HTTP request context when switching to event handler
+                // This allows database operations during HTTP request event handling
+                if state.current_http_request.is_some() {
+                    // We're in an HTTP request context, so keep that context active
+                    // even when handling events triggered by the HTTP handler
+                    debug!("Preserving HTTP context during event handling for plugin: {}", plugin_name);
+                } else {
+                    // Only set to EventHandler if we're not in an HTTP request
+                    debug!("Setting execution context to EventHandler for plugin: {}", plugin_name);
+                    state.set_execution_context(ExecutionContext::EventHandler);
+                }
+            }
 
-        // Call the plugin function
-        let func = instance
-            .get_typed_func::<(), i32>(&mut self.store, function_name)
-            .map_err(|e| PluginError::FunctionNotExported(format!("{}: {}", function_name, e)))?;
+            debug!("About to get plugin instance and call function: {}::{}", plugin_name, function_name);
 
-        debug!("Got typed function, about to call plugin function: {}::{}", plugin_name, function_name);
+            // Get the instance and call the function
+            let instance = self
+                .instances
+                .get(plugin_name)
+                .ok_or_else(|| PluginError::PluginNotFound(plugin_name.to_string()))?;
 
-        let result = func
-            .call(&mut self.store, ())
-            .map_err(|e| PluginError::ExecutionFailed(format!("Function call failed: {}", e)))?;
+            debug!("Got plugin instance, about to get typed function: {}", function_name);
 
-        debug!("Plugin function call completed with result: {} for {}::{}", result, plugin_name, function_name);
+            // Call the plugin function
+            let func = instance
+                .get_typed_func::<(), i32>(&mut self.store, function_name)
+                .map_err(|e| PluginError::FunctionNotExported(format!("{}: {}", function_name, e)))?;
 
-        // Check if plugin set an error
-        let state = self.store.data().lock().unwrap();
-        if let Some(error_msg) = &state.error_message {
-            debug!("Plugin set error: {}", error_msg);
-        }
+            debug!("Got typed function, about to call plugin function: {}::{}", plugin_name, function_name);
 
-        drop(state);
+            let result = func
+                .call(&mut self.store, ())
+                .map_err(|e| PluginError::ExecutionFailed(format!("Function call failed: {}", e)))?;
 
-        // Get the plugin response
-        let response = self.get_plugin_response(plugin_name)?;
+            debug!("Plugin function call completed with result: {} for {}::{}", result, plugin_name, function_name);
 
-        Ok(response)
+            // Check if plugin set an error
+            let state = self.store.data().lock().unwrap();
+            if let Some(error_msg) = &state.error_message {
+                debug!("Plugin set error: {}", error_msg);
+            }
+
+            drop(state);
+
+            // Get the plugin response
+            let response = self.get_plugin_response(plugin_name)?;
+
+            Ok(response)
+        })();
+
+        self.record_execution_metrics(plugin_name, started_at, result.is_err());
+        result
     }
 
     fn has_function(&self, plugin_name: &str, _function_name: &str) -> bool {
@@ -526,11 +585,11 @@ impl PluginRuntime for WasmtimePluginRuntime {
     fn unload_plugin(&mut self, plugin_name: &str) -> PluginResult<()> {
         // Remove from security manager
         self.security_manager.unregister_plugin(plugin_name);
-        
+
         // Remove module and instance
         self.modules.remove(plugin_name);
         self.instances.remove(plugin_name);
-        
+
         // Clean up registered routes for this plugin
         {
             let mut state = self.store.data().lock().unwrap();
@@ -541,7 +600,7 @@ impl PluginRuntime for WasmtimePluginRuntime {
                 info!("Cleaned up {} registered routes for plugin '{}'", removed_count, plugin_name);
             }
         }
-        
+
         info!("Plugin '{}' unloaded and security context cleared", plugin_name);
         Ok(())
     }
@@ -557,4 +616,4 @@ impl PluginRuntime for WasmtimePluginRuntime {
     fn runtime_version(&self) -> &'static str {
         env!("CARGO_PKG_VERSION")
     }
-} 
+}

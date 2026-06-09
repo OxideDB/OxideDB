@@ -2,20 +2,42 @@ import React, { useState } from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
+import { toast } from '@/components/ui/use-toast';
 import { Shield } from 'lucide-react';
-import type { 
-  CollectionPermissionsInfo, 
-  CollectionPermissions 
+import type {
+  CollectionPermissionsInfo,
+  CollectionPermissions,
+  CrudOperation,
+  AuthOperation
 } from '@/types/api';
 import { PermissionRuleEditor } from './PermissionRuleEditor';
-import { AddRuleDialog } from './AddRuleDialog';
-import { 
-  getPermissionLevelDisplay, 
-  sortCrudOperations, 
+import { AddRuleDialog, type CreateRuleInput } from './AddRuleDialog';
+import {
+  getPermissionLevelDisplay,
+  sortCrudOperations,
   sortAuthOperations,
   getCrudOperationIcon,
   getAuthOperationIcon
 } from '@/utils/permissions/permissionUtils';
+
+const crudOperations: CrudOperation[] = ['create', 'read', 'update', 'delete', 'list'];
+const authOperations: AuthOperation[] = [
+  'login',
+  'register',
+  'token_validation',
+  'token_refresh',
+  'logout',
+  'get_current_user',
+  'list_auth_collections',
+];
+
+const isCrudOperation = (operation: string): operation is CrudOperation => {
+  return crudOperations.includes(operation as CrudOperation);
+};
+
+const isAuthOperation = (operation: string): operation is AuthOperation => {
+  return authOperations.includes(operation as AuthOperation);
+};
 
 interface AccessRulesTabProps {
   permissionsData: CollectionPermissionsInfo[];
@@ -34,9 +56,62 @@ export const AccessRulesTab: React.FC<AccessRulesTabProps> = ({
     setEditingPermissions(null);
   };
 
-  const handleCreateRule = (rule: any) => {
-    // TODO: Implement rule creation logic
-    console.log('Creating rule:', rule);
+  const handleCreateRule = async (rule: CreateRuleInput) => {
+    const collectionInfo = permissionsData.find(
+      (info) => info.collection_name === rule.collection
+    );
+
+    if (!collectionInfo) {
+      toast({
+        title: 'Collection not found',
+        description: `Could not find permissions for ${rule.collection}.`,
+        variant: 'destructive',
+      });
+      throw new Error(`Collection not found: ${rule.collection}`);
+    }
+
+    const now = Math.floor(Date.now() / 1000);
+    const updatedPermissions: CollectionPermissions = {
+      ...collectionInfo.permissions,
+      crud_rules: { ...collectionInfo.permissions.crud_rules },
+      auth_rules: { ...collectionInfo.permissions.auth_rules },
+      updated_at: now,
+    };
+
+    if (isCrudOperation(rule.operation)) {
+      updatedPermissions.crud_rules[rule.operation] = {
+        operation: rule.operation,
+        permission: { rule: rule.rule },
+      };
+    } else if (isAuthOperation(rule.operation) && collectionInfo.collection_type === 'auth') {
+      updatedPermissions.auth_rules[rule.operation] = {
+        operation: rule.operation,
+        permission: { rule: rule.rule },
+      };
+    } else {
+      toast({
+        title: 'Invalid operation',
+        description: `${rule.operation} is not available for ${rule.collection}.`,
+        variant: 'destructive',
+      });
+      throw new Error(`Invalid operation for collection: ${rule.operation}`);
+    }
+
+    try {
+      await onUpdatePermissions(rule.collection, updatedPermissions);
+      toast({
+        title: 'Rule saved',
+        description: `${rule.operation.replace(/_/g, ' ')} now uses a custom access rule.`,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to save rule';
+      toast({
+        title: 'Rule save failed',
+        description: message,
+        variant: 'destructive',
+      });
+      throw error;
+    }
   };
 
   if (editingPermissions) {
@@ -44,8 +119,8 @@ export const AccessRulesTab: React.FC<AccessRulesTabProps> = ({
       <div className="space-y-8">
         {/* Enhanced Back navigation */}
         <div className="flex items-center justify-between">
-          <Button 
-            variant="ghost" 
+          <Button
+            variant="ghost"
             size="sm"
             onClick={() => setEditingPermissions(null)}
             className="flex items-center space-x-2 text-muted-foreground hover:text-foreground transition-colors"
@@ -58,7 +133,7 @@ export const AccessRulesTab: React.FC<AccessRulesTabProps> = ({
             <span>Editing Mode</span>
           </div>
         </div>
-        
+
         {/* Simplified editing card */}
         <Card className="border-2 shadow-lg">
           <CardHeader className="pb-6 border-b border-border/50">
@@ -85,10 +160,10 @@ export const AccessRulesTab: React.FC<AccessRulesTabProps> = ({
                 permissionsData={permissionsData}
                 onChange={setEditingPermissions}
               />
-              
+
               {/* Enhanced action buttons */}
               <div className="flex flex-col sm:flex-row gap-4 pt-6 border-t border-border/50">
-                <Button 
+                <Button
                   onClick={() => handleUpdatePermissions(editingPermissions.collection, editingPermissions)}
                   className="flex-1 sm:flex-none min-w-[140px] h-11 font-medium"
                   size="lg"
@@ -96,8 +171,8 @@ export const AccessRulesTab: React.FC<AccessRulesTabProps> = ({
                   <Shield className="w-4 h-4 mr-2" />
                   Save Changes
                 </Button>
-                <Button 
-                  variant="outline" 
+                <Button
+                  variant="outline"
                   onClick={() => setEditingPermissions(null)}
                   className="flex-1 sm:flex-none min-w-[120px] h-11"
                   size="lg"
@@ -190,15 +265,15 @@ export const AccessRulesTab: React.FC<AccessRulesTabProps> = ({
                         <div className="flex items-center gap-3 flex-wrap">
                           <h3 className="text-xl font-bold">{info.collection_name}</h3>
                           <div className="flex gap-2">
-                            <Badge 
-                              variant={info.collection_type === 'auth' ? 'secondary' : 'default'} 
+                            <Badge
+                              variant={info.collection_type === 'auth' ? 'secondary' : 'default'}
                               className="text-xs font-medium px-2.5 py-1"
                             >
                               {info.collection_type === 'auth' ? '🔐 Auth' : '📊 Data'}
                             </Badge>
                             {info.has_custom_rules && (
-                              <Badge 
-                                variant="outline" 
+                              <Badge
+                                variant="outline"
                                 className="text-xs border-orange-300 text-orange-700 bg-orange-50 font-medium px-2.5 py-1"
                               >
                                 ⚙️ Custom Rules
@@ -207,15 +282,15 @@ export const AccessRulesTab: React.FC<AccessRulesTabProps> = ({
                           </div>
                         </div>
                         <p className="text-sm text-muted-foreground leading-relaxed">
-                          {info.has_custom_rules 
-                            ? 'This collection has custom permission rules configured for enhanced security' 
+                          {info.has_custom_rules
+                            ? 'This collection has custom permission rules configured for enhanced security'
                             : 'Using default permission settings for all operations - consider customizing for better security'
                           }
                         </p>
                       </div>
                       <div className="flex-shrink-0">
-                        <Button 
-                          size="sm" 
+                        <Button
+                          size="sm"
                           onClick={() => setEditingPermissions(info.permissions)}
                           className="w-full lg:w-auto min-w-[120px] font-medium"
                         >
@@ -250,8 +325,8 @@ export const AccessRulesTab: React.FC<AccessRulesTabProps> = ({
                                   </div>
                                   <div className="min-w-0 flex-1">
                                     <div className="text-sm font-medium capitalize truncate mb-1">{operation}</div>
-                                    <Badge 
-                                      variant="outline" 
+                                    <Badge
+                                      variant="outline"
                                       className={`text-xs font-medium ${display.color}`}
                                     >
                                       {display.text}
@@ -287,8 +362,8 @@ export const AccessRulesTab: React.FC<AccessRulesTabProps> = ({
                                     </div>
                                     <div className="min-w-0 flex-1">
                                       <div className="text-sm font-medium capitalize truncate mb-1">{operation}</div>
-                                      <Badge 
-                                        variant="outline" 
+                                      <Badge
+                                        variant="outline"
                                         className={`text-xs font-medium ${display.color}`}
                                       >
                                         {display.text}

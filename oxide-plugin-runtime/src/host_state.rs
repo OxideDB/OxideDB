@@ -71,7 +71,10 @@ pub struct HostState {
 
     /// Error storage for host function calls
     pub function_errors: std::collections::HashMap<String, String>,
-    
+
+    /// Host functions called during the current plugin execution
+    pub current_execution_host_calls: u64,
+
     // NOTE: Removed plugin_metadata field - using TOML-only metadata approach
     // Plugin metadata is now sourced exclusively from plugin.toml during installation
 }
@@ -94,6 +97,7 @@ impl Default for HostState {
             logging_bridge: None,
             function_results: std::collections::HashMap::new(),
             function_errors: std::collections::HashMap::new(),
+            current_execution_host_calls: 0,
         }
     }
 }
@@ -156,7 +160,12 @@ impl HostState {
         self.function_results.clear();
         self.function_errors.clear();
     }
-    
+
+    /// Increment host function calls for the active plugin execution.
+    pub fn record_host_call(&mut self) {
+        self.current_execution_host_calls = self.current_execution_host_calls.saturating_add(1);
+    }
+
     // NOTE: Plugin metadata methods removed - using TOML-only metadata approach
     // Metadata is now sourced exclusively from plugin.toml during installation
     // and stored in the PluginConfiguration in the database

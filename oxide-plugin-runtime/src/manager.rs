@@ -32,7 +32,7 @@ impl PluginManager {
     pub fn new(database: Arc<dyn Db>, security_policies: SecurityPolicies) -> Result<Self, AppError> {
         let runtime = WasmtimePluginRuntime::new_with_security_policies(database, security_policies)
             .map_err(|e| AppError::internal(format!("Failed to create plugin runtime: {}", e)))?;
-        
+
         let runtime = Arc::new(Mutex::new(runtime));
         let bridge = PluginEventBridge::new(Arc::clone(&runtime));
 
@@ -46,7 +46,7 @@ impl PluginManager {
         _event_bus: &Arc<dyn EventBus>,
     ) -> Result<(), AppError> {
         info!("Loading plugins from folder: {:?}", plugin_folder);
-        
+
         let entries = std::fs::read_dir(plugin_folder)
             .map_err(|e| AppError::internal(format!("Failed to read plugin folder: {}", e)))?;
 
@@ -55,17 +55,17 @@ impl PluginManager {
         for entry in entries {
             let entry = entry.map_err(|e| AppError::internal(format!("Failed to read directory entry: {}", e)))?;
             let path = entry.path();
-            
+
             if path.extension().and_then(|s| s.to_str()) == Some("wasm") {
                 let plugin_name = path.file_stem()
                     .and_then(|s| s.to_str())
                     .unwrap_or("unknown");
-                
+
                 self.load_single_plugin(plugin_name, &path, None).await?;
                 loaded_plugins.push(plugin_name.to_string());
             }
         }
-        
+
         info!("✅ Loaded {} plugins from folder", loaded_plugins.len());
         Ok(())
     }
@@ -78,14 +78,14 @@ impl PluginManager {
             })?;
             runtime_guard.list_plugins()
         };
-        
+
         for plugin_name in loaded_plugins {
             let plugin_handler = self.bridge.create_before_create_handler(plugin_name.clone());
             let metadata = oxide_core::event::handlers::HandlerMetadata::new(
                 format!("plugin_{}", plugin_name),
                 format!("Plugin: {}", plugin_name)
             ).with_description(format!("WASM plugin handler for {}", plugin_name));
-            
+
             event_bus.subscribe_before(
                 BeforeEventType::RecordCreate.name(),
                 plugin_handler,
@@ -100,7 +100,7 @@ impl PluginManager {
                 "demo_hook".to_string(),
                 "Demo Hook".to_string()
             ).with_description("Demo event listener for showcasing event system".to_string());
-            
+
             event_bus.subscribe_before(
                 BeforeEventType::RecordCreate.name(),
                 Arc::new(|context: &mut BeforeEventContext| {
@@ -133,17 +133,32 @@ impl PluginManager {
         let runtime_guard = self.runtime.lock().map_err(|_| {
             AppError::internal("Failed to acquire plugin runtime lock")
         })?;
-        
+
         let mut stats = Vec::new();
         for plugin_name in runtime_guard.list_plugins() {
+            let execution_stats = runtime_guard.get_plugin_stats(&plugin_name).unwrap_or_default();
+            let status = if runtime_guard.is_plugin_suspended(&plugin_name) {
+                PluginStatus::Suspended
+            } else if execution_stats.failed_executions > 0
+                && execution_stats.failed_executions == execution_stats.total_executions
+            {
+                PluginStatus::Error
+            } else {
+                PluginStatus::Active
+            };
+
             stats.push(PluginStatistics {
                 name: plugin_name,
-                status: PluginStatus::Active, // TODO: Implement real status tracking
-                executions: 0, // TODO: Implement execution counting
-                errors: 0, // TODO: Implement error tracking
+                status,
+                executions: execution_stats.total_executions,
+                errors: execution_stats.failed_executions,
+                last_execution: execution_stats.last_execution,
+                total_execution_time_ms: execution_stats.total_execution_time,
+                host_function_calls: execution_stats.host_function_calls,
+                peak_memory_usage: execution_stats.peak_memory_usage,
             });
         }
-        
+
         Ok(stats)
     }
 
@@ -163,7 +178,7 @@ impl PluginManager {
     ) -> Result<oxide_core::plugin_api::HttpResponse, AppError> {
         let mut runtime_guard = self.runtime.lock()
             .map_err(|_| AppError::internal("Failed to acquire plugin runtime lock".to_string()))?;
-        
+
         runtime_guard.handle_http_request(plugin_name, handler_function, request)
             .map_err(|e| AppError::internal(format!("Plugin HTTP request failed: {}", e)))
     }
@@ -171,7 +186,7 @@ impl PluginManager {
     /// Find plugin handler for a given route
     pub fn find_route_handler(&self, method: &str, path: &str) -> Result<Option<(String, String)>, AppError> {
         let routes = self.get_registered_routes()?;
-        
+
         for route in routes {
             if route.method.to_uppercase() == method.to_uppercase() {
                 if self.path_matches_pattern(&route.path, path) {
@@ -179,7 +194,7 @@ impl PluginManager {
                 }
             }
         }
-        
+
         Ok(None)
     }
 
@@ -222,7 +237,7 @@ impl PluginManager {
     /// Load a single plugin from the specified path with optional configuration
     async fn load_single_plugin(&self, plugin_name: &str, path: &PathBuf, config: Option<&oxide_core::plugin_config::PluginConfiguration>) -> Result<(), AppError> {
         info!("Loading plugin: {} from {:?}", plugin_name, path);
-        
+
         let wasm_bytes = std::fs::read(path)
             .map_err(|e| AppError::internal(format!("Failed to read WASM file {:?}: {}", path, e)))?;
 
@@ -231,7 +246,7 @@ impl PluginManager {
 
         // Verify WASM integrity – abort loading on mismatch
         self.verify_plugin_hash(plugin_name, &wasm_bytes, expected_hash.as_deref()).await?;
-        
+
         let mut runtime_guard = self.runtime.lock().map_err(|_| {
             AppError::internal("Failed to acquire plugin runtime lock")
         })?;
@@ -243,14 +258,14 @@ impl PluginManager {
                 return Err(AppError::plugin(plugin_name.to_string(), "No capabilities granted".to_string()));
             }
 
-            info!("🔍 Using provided configuration for plugin '{}': {} capabilities", 
+            info!("🔍 Using provided configuration for plugin '{}': {} capabilities",
                   plugin_name, plugin_config.capabilities.len());
             (plugin_config.capabilities.clone(), plugin_config.trust_level.clone(), plugin_config.resource_limits.clone())
         } else {
             info!("🔄 No configuration provided, using default capabilities for plugin '{}'", plugin_name);
             (Self::get_default_capabilities(), PluginTrustLevel::FullyTrusted, ResourceLimits::default())
         };
-        
+
         runtime_guard.load_plugin_with_trust(
             plugin_name,
             &wasm_bytes,
@@ -258,7 +273,7 @@ impl PluginManager {
             capabilities,
             resource_limits,
         ).map_err(|e| AppError::internal(format!("Failed to load plugin: {}", e)))?;
-        
+
         info!("✅ Plugin '{}' loaded successfully", plugin_name);
         Ok(())
     }
@@ -295,12 +310,12 @@ impl PluginManager {
     /// Verify plugin hash for integrity checking
     async fn verify_plugin_hash(&self, plugin_name: &str, wasm_bytes: &[u8], expected_hash: Option<&str>) -> Result<(), AppError> {
         use sha2::{Sha256, Digest};
-        
+
         // Calculate SHA-256 hash of the WASM file
         let mut hasher = Sha256::new();
         hasher.update(wasm_bytes);
         let calculated_hash = format!("{:x}", hasher.finalize());
-        
+
         match expected_hash {
             Some(expected) => {
                 if calculated_hash != expected {
@@ -337,13 +352,13 @@ impl PluginEventBridge {
     /// Create an event handler that calls the plugin for BeforeRecordCreate events
     pub fn create_before_create_handler(&self, plugin_name: String) -> BeforeCreateHandler {
         let runtime = Arc::clone(&self.plugin_runtime);
-        
+
         Arc::new(move |context: &mut BeforeEventContext| {
             let runtime = Arc::clone(&runtime);
             let plugin_name = plugin_name.clone();
             Box::pin(async move {
                 info!("🔌 Calling plugin '{}' for BeforeRecordCreate event", plugin_name);
-                
+
                 // Check if we can acquire the runtime lock without blocking
                 // If we can't, it means the same plugin is already executing (likely an HTTP request)
                 // and we should skip this event to avoid deadlock
@@ -354,7 +369,7 @@ impl PluginEventBridge {
                         return Ok(());
                     }
                 };
-                
+
                 // Check if this plugin is currently handling an HTTP request
                 // If so, skip the event handler to prevent recursive calls
                 {
@@ -367,7 +382,7 @@ impl PluginEventBridge {
                         }
                     }
                 }
-                
+
                 // Convert BeforeEventContext to EventPayload
                 let payload = EventPayload {
                     event_type: "BeforeRecordCreate".to_string(),
@@ -379,9 +394,9 @@ impl PluginEventBridge {
                 // Call the plugin
                 match runtime_guard.call_plugin_function(&plugin_name, plugin_exports::ON_BEFORE_CREATE, &payload) {
                     Ok(response) => {
-                        info!("🔌 Plugin '{}' response: allow={}, error={:?}", 
+                        info!("🔌 Plugin '{}' response: allow={}, error={:?}",
                               plugin_name, response.allow, response.error_message);
-                        
+
                         // If plugin modified the data, update the context
                         if let Some(ref modified_data) = response.modified_data {
                             match serde_json::from_str(modified_data) {
@@ -394,15 +409,15 @@ impl PluginEventBridge {
                                 }
                             }
                         }
-                        
+
                         // If plugin doesn't allow the operation, return an error
                         if !response.allow {
-                            let error_msg = response.error_message.unwrap_or_else(|| 
+                            let error_msg = response.error_message.unwrap_or_else(||
                                 "Plugin rejected the operation".to_string()
                             );
                             return Err(AppError::plugin(&plugin_name, &error_msg));
                         }
-                        
+
                         Ok(())
                     }
                     Err(e) => {
@@ -422,6 +437,10 @@ pub struct PluginStatistics {
     pub status: PluginStatus,
     pub executions: u64,
     pub errors: u64,
+    pub last_execution: Option<u64>,
+    pub total_execution_time_ms: u64,
+    pub host_function_calls: u64,
+    pub peak_memory_usage: u64,
 }
 
 /// Plugin status enumeration
@@ -463,8 +482,8 @@ mod tests {
         let runtime = WasmtimePluginRuntime::new_with_security_policies(Arc::new(db), policies).unwrap();
         let runtime = Arc::new(Mutex::new(runtime));
         let bridge = PluginEventBridge::new(runtime);
-        
+
         // Bridge should be created successfully
         assert!(std::ptr::addr_of!(bridge) as usize > 0);
     }
-} 
+}

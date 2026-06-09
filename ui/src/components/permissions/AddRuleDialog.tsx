@@ -3,12 +3,12 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
-import { 
-  Select, 
-  SelectContent, 
-  SelectItem, 
-  SelectTrigger, 
-  SelectValue 
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue
 } from '@/components/ui/select';
 import {
   Dialog,
@@ -20,14 +20,39 @@ import {
   DialogTrigger,
 } from '@/components/ui/dialog';
 import { Plus } from 'lucide-react';
-import type { CollectionPermissionsInfo } from '@/types/api';
+import type { AuthOperation, CollectionPermissionsInfo, CrudOperation } from '@/types/api';
+
+export interface CreateRuleInput {
+  collection: string;
+  operation: CrudOperation | AuthOperation;
+  rule: string;
+  description?: string;
+}
 
 interface AddRuleDialogProps {
   permissionsData: CollectionPermissionsInfo[];
   isOpen: boolean;
   onOpenChange: (open: boolean) => void;
-  onCreateRule?: (rule: any) => void;
+  onCreateRule?: (rule: CreateRuleInput) => Promise<void> | void;
 }
+
+const crudOperations: Array<{ value: CrudOperation; label: string }> = [
+  { value: 'create', label: 'Create' },
+  { value: 'read', label: 'Read' },
+  { value: 'update', label: 'Update' },
+  { value: 'delete', label: 'Delete' },
+  { value: 'list', label: 'List' },
+];
+
+const authOperations: Array<{ value: AuthOperation; label: string }> = [
+  { value: 'login', label: 'Login' },
+  { value: 'register', label: 'Register' },
+  { value: 'token_validation', label: 'Token Validation' },
+  { value: 'token_refresh', label: 'Token Refresh' },
+  { value: 'logout', label: 'Logout' },
+  { value: 'get_current_user', label: 'Get Current User' },
+  { value: 'list_auth_collections', label: 'List Auth Collections' },
+];
 
 export const AddRuleDialog: React.FC<AddRuleDialogProps> = ({
   permissionsData,
@@ -39,30 +64,54 @@ export const AddRuleDialog: React.FC<AddRuleDialogProps> = ({
   const [selectedOperation, setSelectedOperation] = useState("");
   const [ruleExpression, setRuleExpression] = useState("");
   const [description, setDescription] = useState("");
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
-  const handleCreateRule = () => {
-    if (onCreateRule) {
-      onCreateRule({
-        collection: selectedCollection,
-        operation: selectedOperation,
-        rule: ruleExpression,
-        description: description
-      });
-    }
-    
-    // Reset form
+  const resetForm = () => {
     setSelectedCollection("");
     setSelectedOperation("");
     setRuleExpression("");
     setDescription("");
-    onOpenChange(false);
+  };
+
+  const handleOpenChange = (open: boolean) => {
+    if (!open) {
+      resetForm();
+    }
+    onOpenChange(open);
+  };
+
+  const handleCollectionChange = (collection: string) => {
+    setSelectedCollection(collection);
+    setSelectedOperation("");
+  };
+
+  const handleCreateRule = async () => {
+    if (onCreateRule) {
+      setIsSubmitting(true);
+      try {
+        await onCreateRule({
+          collection: selectedCollection,
+          operation: selectedOperation as CrudOperation | AuthOperation,
+          rule: ruleExpression.trim(),
+          description: description.trim() || undefined,
+        });
+        resetForm();
+        onOpenChange(false);
+      } finally {
+        setIsSubmitting(false);
+      }
+    }
   };
 
   const selectedCollectionInfo = permissionsData.find(info => info.collection_name === selectedCollection);
   const isAuthCollection = selectedCollectionInfo?.collection_type === 'auth';
+  const availableOperations = isAuthCollection
+    ? [...crudOperations, ...authOperations]
+    : crudOperations;
+  const canCreateRule = Boolean(selectedCollection && selectedOperation && ruleExpression.trim());
 
   return (
-    <Dialog open={isOpen} onOpenChange={onOpenChange}>
+    <Dialog open={isOpen} onOpenChange={handleOpenChange}>
       <DialogTrigger asChild>
         <Button className="w-full sm:w-auto">
           <Plus className="h-4 w-4 mr-2" />
@@ -78,7 +127,7 @@ export const AddRuleDialog: React.FC<AddRuleDialogProps> = ({
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
               <Label htmlFor="rule-collection">Collection</Label>
-              <Select value={selectedCollection} onValueChange={setSelectedCollection}>
+              <Select value={selectedCollection} onValueChange={handleCollectionChange}>
                 <SelectTrigger>
                   <SelectValue placeholder="Select collection" />
                 </SelectTrigger>
@@ -98,25 +147,11 @@ export const AddRuleDialog: React.FC<AddRuleDialogProps> = ({
                   <SelectValue placeholder="Select operation" />
                 </SelectTrigger>
                 <SelectContent>
-                  {/* CRUD Operations */}
-                  <SelectItem value="create">Create</SelectItem>
-                  <SelectItem value="read">Read</SelectItem>
-                  <SelectItem value="update">Update</SelectItem>
-                  <SelectItem value="delete">Delete</SelectItem>
-                  <SelectItem value="list">List</SelectItem>
-                  
-                  {/* Auth Operations - Only show for auth collections */}
-                  {isAuthCollection && (
-                    <>
-                      <SelectItem value="login">Login</SelectItem>
-                      <SelectItem value="register">Register</SelectItem>
-                      <SelectItem value="token_validation">Token Validation</SelectItem>
-                      <SelectItem value="token_refresh">Token Refresh</SelectItem>
-                      <SelectItem value="logout">Logout</SelectItem>
-                      <SelectItem value="get_current_user">Get Current User</SelectItem>
-                      <SelectItem value="list_auth_collections">List Auth Collections</SelectItem>
-                    </>
-                  )}
+                  {availableOperations.map((operation) => (
+                    <SelectItem key={operation.value} value={operation.value}>
+                      {operation.label}
+                    </SelectItem>
+                  ))}
                 </SelectContent>
               </Select>
             </div>
@@ -136,23 +171,23 @@ export const AddRuleDialog: React.FC<AddRuleDialogProps> = ({
           </div>
           <div>
             <Label htmlFor="rule-description">Description</Label>
-            <Input 
-              id="rule-description" 
-              placeholder="Describe what this rule does..." 
+            <Input
+              id="rule-description"
+              placeholder="Describe what this rule does..."
               value={description}
               onChange={(e) => setDescription(e.target.value)}
             />
           </div>
         </div>
         <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)}>
+          <Button variant="outline" onClick={() => handleOpenChange(false)}>
             Cancel
           </Button>
-          <Button 
+          <Button
             onClick={handleCreateRule}
-            disabled={!selectedCollection || !selectedOperation || !ruleExpression}
+            disabled={!canCreateRule || isSubmitting}
           >
-            Create Rule
+            {isSubmitting ? 'Saving...' : 'Create Rule'}
           </Button>
         </DialogFooter>
       </DialogContent>

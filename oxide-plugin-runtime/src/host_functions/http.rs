@@ -25,20 +25,22 @@ pub fn define_http_functions(
         .func_wrap(
             "env",
             host_functions::REGISTER_HTTP_ROUTE,
-            |mut caller: Caller<'_, Arc<Mutex<HostState>>>, 
+            |mut caller: Caller<'_, Arc<Mutex<HostState>>>,
              method_ptr: i32, method_len: i32,
              path_ptr: i32, path_len: i32,
              handler_ptr: i32, handler_len: i32| -> i32 {
+                caller.data().lock().unwrap().record_host_call();
+
                 let method = match read_string_from_plugin_memory(&mut caller, method_ptr, method_len) {
                     Ok(s) => s,
                     Err(_) => return -1,
                 };
-                
+
                 let path = match read_string_from_plugin_memory(&mut caller, path_ptr, path_len) {
                     Ok(s) => s,
                     Err(_) => return -1,
                 };
-                
+
                 let handler_function = match read_string_from_plugin_memory(&mut caller, handler_ptr, handler_len) {
                     Ok(s) => s,
                     Err(_) => return -1,
@@ -78,6 +80,8 @@ pub fn define_http_functions(
             "env",
             host_functions::GET_HTTP_REQUEST,
             |mut caller: Caller<'_, Arc<Mutex<HostState>>>| -> i32 {
+                caller.data().lock().unwrap().record_host_call();
+
                 let state = caller.data().lock().unwrap();
                 if let Some(request) = &state.current_http_request {
                     if let Ok(request_json) = serde_json::to_string(request) {
@@ -124,10 +128,12 @@ pub fn define_http_functions(
         .func_wrap(
             "env",
             host_functions::SET_HTTP_RESPONSE,
-            |mut caller: Caller<'_, Arc<Mutex<HostState>>>, 
+            |mut caller: Caller<'_, Arc<Mutex<HostState>>>,
              status_code: i32,
              headers_ptr: i32, headers_len: i32,
              body_ptr: i32, body_len: i32| -> i32 {
+                caller.data().lock().unwrap().record_host_call();
+
                 let headers_json = if headers_len > 0 {
                     match read_string_from_plugin_memory(&mut caller, headers_ptr, headers_len) {
                         Ok(s) => s,
@@ -136,7 +142,7 @@ pub fn define_http_functions(
                 } else {
                     "{}".to_string()
                 };
-                
+
                 let body = if body_len > 0 {
                     match read_string_from_plugin_memory(&mut caller, body_ptr, body_len) {
                         Ok(s) => s,
@@ -146,7 +152,7 @@ pub fn define_http_functions(
                     String::new()
                 };
 
-                let headers: HashMap<String, String> = 
+                let headers: HashMap<String, String> =
                     serde_json::from_str(&headers_json).unwrap_or_default();
 
                 let response = HttpResponse {
@@ -170,4 +176,4 @@ pub fn define_http_functions(
         })?;
 
     Ok(())
-} 
+}

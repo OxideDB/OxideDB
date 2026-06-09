@@ -323,7 +323,7 @@ impl PluginSecurityManager {
         trust_level: Option<PluginTrustLevel>,
     ) -> Result<(), AppError> {
         let trust_level = trust_level.unwrap_or_else(|| self.policies.default_trust_level.clone());
-        
+
         // Check if untrusted plugins are allowed
         if trust_level == PluginTrustLevel::Untrusted && !self.policies.allow_untrusted_plugins {
             return Err(AppError::Security {
@@ -443,7 +443,7 @@ impl PluginSecurityManager {
         function_name: &str,
     ) -> Result<(), AppError> {
         let required_capability = self.get_required_capability_for_function(function_name)?;
-        
+
         if !self.has_capability(plugin_name, &required_capability)? {
             self.record_violation(
                 plugin_name,
@@ -452,7 +452,7 @@ impl PluginSecurityManager {
                     required_capability: required_capability.clone(),
                 },
             )?;
-            
+
             return Err(AppError::Security {
                 message: format!(
                     "Plugin {} does not have capability {:?} required for function {}",
@@ -467,6 +467,45 @@ impl PluginSecurityManager {
         }
 
         Ok(())
+    }
+
+    /// Record the result of a plugin execution.
+    pub fn record_execution(
+        &mut self,
+        plugin_name: &str,
+        execution_time_ms: u64,
+        failed: bool,
+        host_function_calls: u64,
+        peak_memory_usage: u64,
+    ) -> Result<(), AppError> {
+        let context = self.contexts.get_mut(plugin_name)
+            .ok_or_else(|| AppError::Plugin {
+                plugin_name: plugin_name.to_string(),
+                message: "Plugin not registered".to_string(),
+            })?;
+
+        context.stats.total_executions = context.stats.total_executions.saturating_add(1);
+        context.stats.total_execution_time = context
+            .stats
+            .total_execution_time
+            .saturating_add(execution_time_ms);
+        context.stats.host_function_calls = context
+            .stats
+            .host_function_calls
+            .saturating_add(host_function_calls);
+        context.stats.peak_memory_usage = context.stats.peak_memory_usage.max(peak_memory_usage);
+        context.stats.last_execution = Some(Self::current_timestamp());
+
+        if failed {
+            context.stats.failed_executions = context.stats.failed_executions.saturating_add(1);
+        }
+
+        Ok(())
+    }
+
+    /// Get execution statistics for a plugin.
+    pub fn get_execution_stats(&self, plugin_name: &str) -> Option<ExecutionStats> {
+        self.contexts.get(plugin_name).map(|context| context.stats.clone())
     }
 
     /// Record a security violation
@@ -487,7 +526,7 @@ impl PluginSecurityManager {
             context.violations += 1;
             context.violations >= self.policies.max_violations_before_suspension
         };
-        
+
         self.audit_event(
             plugin_name.to_string(),
             SecurityEventType::SecurityViolation,
@@ -514,7 +553,7 @@ impl PluginSecurityManager {
             context.suspended = true;
             context.violations
         };
-        
+
         self.audit_event(
             plugin_name.to_string(),
             SecurityEventType::PluginSuspended,
@@ -535,7 +574,7 @@ impl PluginSecurityManager {
 
         context.suspended = false;
         context.violations = 0; // Reset violation count
-        
+
         self.audit_event(
             plugin_name.to_string(),
             SecurityEventType::PluginResumed,
@@ -674,13 +713,8 @@ impl PluginSecurityManager {
         event_type: SecurityEventType,
         details: serde_json::Value,
     ) {
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-
         let entry = SecurityAuditEntry {
-            timestamp,
+            timestamp: Self::current_timestamp(),
             plugin_name,
             event_type,
             details,
@@ -693,6 +727,13 @@ impl PluginSecurityManager {
             self.audit_log.drain(0..1000); // Remove oldest 1000 entries
         }
     }
+
+    fn current_timestamp() -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs()
+    }
 }
 
 #[cfg(test)]
@@ -702,13 +743,13 @@ mod tests {
     #[test]
     fn test_plugin_registration() {
         let mut manager = PluginSecurityManager::new();
-        
+
         // Test registering a plugin
         assert!(manager.register_plugin(
             "test_plugin".to_string(),
             Some(PluginTrustLevel::PartiallyTrusted)
         ).is_ok());
-        
+
         // Test plugin context exists
         assert!(manager.get_context("test_plugin").is_some());
     }
@@ -720,25 +761,25 @@ mod tests {
             "test_plugin".to_string(),
             Some(PluginTrustLevel::PartiallyTrusted)
         ).unwrap();
-        
+
         // Grant capability
         assert!(manager.grant_capability(
             "test_plugin",
             PluginCapability::LogInfo
         ).is_ok());
-        
+
         // Check capability
         assert!(manager.has_capability(
             "test_plugin",
             &PluginCapability::LogInfo
         ).unwrap());
-        
+
         // Revoke capability
         assert!(manager.revoke_capability(
             "test_plugin",
             &PluginCapability::LogInfo
         ).is_ok());
-        
+
         // Check capability is gone
         assert!(!manager.has_capability(
             "test_plugin",
@@ -755,13 +796,13 @@ mod tests {
             "untrusted_plugin".to_string(),
             Some(PluginTrustLevel::Untrusted)
         ).unwrap();
-        
+
         // Should be able to grant basic capabilities
         assert!(manager.grant_capability(
             "untrusted_plugin",
             PluginCapability::LogInfo
         ).is_ok());
-        
+
         // Should not be able to grant advanced capabilities
         assert!(manager.grant_capability(
             "untrusted_plugin",
@@ -778,7 +819,7 @@ mod tests {
             "bad_plugin".to_string(),
             Some(PluginTrustLevel::Untrusted)
         ).unwrap();
-        
+
         // Record multiple violations
         for _ in 0..5 {
             manager.record_violation(
@@ -789,7 +830,7 @@ mod tests {
                 }
             ).unwrap();
         }
-        
+
         // Plugin should be suspended
         let context = manager.get_context("bad_plugin").unwrap();
         assert!(context.suspended);

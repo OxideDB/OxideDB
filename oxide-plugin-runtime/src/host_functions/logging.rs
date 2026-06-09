@@ -25,6 +25,8 @@ pub fn define_logging_functions(
             "env",
             host_functions::LOG_INFO,
             |mut caller: Caller<'_, Arc<Mutex<HostState>>>, ptr: i32, len: i32| {
+                caller.data().lock().unwrap().record_host_call();
+
                 let plugin_name = {
                     let state = caller.data().lock().unwrap();
                     state.current_plugin.clone()
@@ -57,6 +59,8 @@ pub fn define_logging_functions(
             "env",
             host_functions::LOG_ERROR,
             |mut caller: Caller<'_, Arc<Mutex<HostState>>>, ptr: i32, len: i32| {
+                caller.data().lock().unwrap().record_host_call();
+
                 let plugin_name = {
                     let state = caller.data().lock().unwrap();
                     state.current_plugin.clone()
@@ -89,6 +93,8 @@ pub fn define_logging_functions(
             "env",
             host_functions::SET_ERROR,
             |mut caller: Caller<'_, Arc<Mutex<HostState>>>, ptr: i32, len: i32| {
+                caller.data().lock().unwrap().record_host_call();
+
                 if let Ok(message) = read_string_from_plugin_memory(&mut caller, ptr, len) {
                     warn!("[PLUGIN ERROR] {}", message);
                     caller.data().lock().unwrap().error_message = Some(message);
@@ -102,4 +108,4 @@ pub fn define_logging_functions(
         })?;
 
     Ok(())
-} 
+}

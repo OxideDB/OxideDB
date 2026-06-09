@@ -23,6 +23,8 @@ pub fn define_event_functions(
             "env",
             host_functions::GET_EVENT_PAYLOAD,
             |mut caller: Caller<'_, Arc<Mutex<HostState>>>| -> i32 {
+                caller.data().lock().unwrap().record_host_call();
+
                 let state = caller.data().lock().unwrap();
                 if let Some(payload) = &state.current_payload {
                     let payload_bytes = payload.as_bytes().to_vec();
@@ -83,6 +85,8 @@ pub fn define_event_functions(
             "env",
             "get_result_ptr",
             |caller: Caller<'_, Arc<Mutex<HostState>>>| -> i32 {
+                caller.data().lock().unwrap().record_host_call();
+
                 let state = caller.data().lock().unwrap();
                 if state.result_buffer.len() >= 4 {
                     // Read pointer from first 4 bytes (works for all operations)
@@ -107,6 +111,8 @@ pub fn define_event_functions(
             "env",
             "get_result_len",
             |caller: Caller<'_, Arc<Mutex<HostState>>>| -> i32 {
+                caller.data().lock().unwrap().record_host_call();
+
                 let state = caller.data().lock().unwrap();
                 if state.result_buffer.len() >= 8 {
                     // Read length from bytes 4-7 (works for all operations)
@@ -126,4 +132,4 @@ pub fn define_event_functions(
         })?;
 
     Ok(())
-} 
+}

@@ -30,7 +30,7 @@ pub fn define_database_functions(
             .func_wrap(
                 "env",
                 host_functions::CREATE_RECORD,
-                move |mut caller: Caller<'_, Arc<Mutex<HostState>>>, 
+                move |mut caller: Caller<'_, Arc<Mutex<HostState>>>,
                       collection_ptr: i32, collection_len: i32,
                       data_ptr: i32, data_len: i32| -> i32 {
                     handle_create_record(&mut caller, &db, collection_ptr, collection_len, data_ptr, data_len)
@@ -48,7 +48,7 @@ pub fn define_database_functions(
             .func_wrap(
                 "env",
                 host_functions::READ_RECORDS,
-                move |mut caller: Caller<'_, Arc<Mutex<HostState>>>, 
+                move |mut caller: Caller<'_, Arc<Mutex<HostState>>>,
                       collection_ptr: i32, collection_len: i32,
                       filter_ptr: i32, filter_len: i32| -> i32 {
                     handle_read_records(&mut caller, &db, collection_ptr, collection_len, filter_ptr, filter_len)
@@ -66,7 +66,7 @@ pub fn define_database_functions(
             .func_wrap(
                 "env",
                 host_functions::UPDATE_RECORD,
-                move |mut caller: Caller<'_, Arc<Mutex<HostState>>>, 
+                move |mut caller: Caller<'_, Arc<Mutex<HostState>>>,
                       collection_ptr: i32, collection_len: i32,
                       record_id_ptr: i32, record_id_len: i32,
                       data_ptr: i32, data_len: i32| -> i32 {
@@ -85,7 +85,7 @@ pub fn define_database_functions(
             .func_wrap(
                 "env",
                 host_functions::DELETE_RECORD,
-                move |mut caller: Caller<'_, Arc<Mutex<HostState>>>, 
+                move |mut caller: Caller<'_, Arc<Mutex<HostState>>>,
                       collection_ptr: i32, collection_len: i32,
                       record_id_ptr: i32, record_id_len: i32| -> i32 {
                     handle_delete_record(&mut caller, &db, collection_ptr, collection_len, record_id_ptr, record_id_len)
@@ -108,19 +108,21 @@ fn handle_create_record(
     data_ptr: i32,
     data_len: i32,
 ) -> i32 {
+    caller.data().lock().unwrap().record_host_call();
+
     let db = db.clone();
-    
+
     // Clear HTTP result buffer before database operation
     {
         let mut state = caller.data().lock().unwrap();
         state.result_buffer.clear();
     }
-    
+
     let collection = match read_string_from_plugin_memory(caller, collection_ptr, collection_len) {
         Ok(s) => s,
         Err(_) => return -1,
     };
-    
+
     let record_data_str = match read_string_from_plugin_memory(caller, data_ptr, data_len) {
         Ok(s) => s,
         Err(_) => return -1,
@@ -139,15 +141,15 @@ fn handle_create_record(
     let can_perform_db_ops = {
         let state = caller.data().lock().unwrap();
         let can_perform = state.can_perform_database_operations();
-        debug!("Database operation check: can_perform={}, execution_context={:?}, has_http_request={}", 
+        debug!("Database operation check: can_perform={}, execution_context={:?}, has_http_request={}",
                can_perform, state.execution_context, state.current_http_request.is_some());
         can_perform
     };
-    
+
     if !can_perform_db_ops {
         error!("Database operation blocked - plugin is in event handler context (prevents circular dependency)");
         let result_bytes = create_error_response("Database operations not allowed during event handling to prevent circular dependencies");
-        
+
         if let Some((ptr, len)) = allocate_plugin_memory_and_copy(caller, &result_bytes) {
             let mut state = caller.data().lock().unwrap();
             state.result_buffer = [
@@ -197,7 +199,7 @@ fn handle_create_record(
             });
 
             let result_bytes = create_success_response(response_data);
-            
+
             // Allocate plugin memory and copy data
             if let Some((ptr, len)) = allocate_plugin_memory_and_copy(caller, &result_bytes) {
                 let mut state = caller.data().lock().unwrap();
@@ -215,7 +217,7 @@ fn handle_create_record(
         Ok(Err(e)) => {
             error!("Failed to create record: {}", e);
             let result_bytes = create_error_response(&e.to_string());
-            
+
             // Allocate plugin memory and copy error data
             if let Some((ptr, len)) = allocate_plugin_memory_and_copy(caller, &result_bytes) {
                 let mut state = caller.data().lock().unwrap();
@@ -229,7 +231,7 @@ fn handle_create_record(
         Err(_) => {
             error!("Database operation timed out");
             let result_bytes = create_error_response("Database operation timed out");
-            
+
             // Allocate plugin memory and copy timeout error data
             if let Some((ptr, len)) = allocate_plugin_memory_and_copy(caller, &result_bytes) {
                 let mut state = caller.data().lock().unwrap();
@@ -252,19 +254,21 @@ fn handle_read_records(
     filter_ptr: i32,
     filter_len: i32,
 ) -> i32 {
+    caller.data().lock().unwrap().record_host_call();
+
     let db = db.clone();
-    
+
     // Clear HTTP result buffer before database operation
     {
         let mut state = caller.data().lock().unwrap();
         state.result_buffer.clear();
     }
-    
+
     let collection = match read_string_from_plugin_memory(caller, collection_ptr, collection_len) {
         Ok(s) => s,
         Err(_) => return -1,
     };
-    
+
     let filter_str = if filter_len > 0 {
         match read_string_from_plugin_memory(caller, filter_ptr, filter_len) {
             Ok(s) => Some(s),
@@ -321,7 +325,7 @@ fn handle_read_records(
             );
 
             let result_bytes = create_success_response(response_data);
-            
+
             // Allocate plugin memory and copy data
             if let Some((ptr, len)) = allocate_plugin_memory_and_copy(caller, &result_bytes) {
                 let mut state = caller.data().lock().unwrap();
@@ -339,7 +343,7 @@ fn handle_read_records(
         Ok(Err(e)) => {
             error!("Failed to read records: {}", e);
             let result_bytes = create_error_response(&e.to_string());
-            
+
             // Allocate plugin memory and copy error data
             if let Some((ptr, len)) = allocate_plugin_memory_and_copy(caller, &result_bytes) {
                 let mut state = caller.data().lock().unwrap();
@@ -353,7 +357,7 @@ fn handle_read_records(
         Err(_) => {
             error!("Database operation thread panicked or failed");
             let result_bytes = create_error_response("Database operation failed");
-            
+
             // Allocate plugin memory and copy error data
             if let Some((ptr, len)) = allocate_plugin_memory_and_copy(caller, &result_bytes) {
                 let mut state = caller.data().lock().unwrap();
@@ -378,18 +382,20 @@ fn handle_update_record(
     data_ptr: i32,
     data_len: i32,
 ) -> i32 {
+    caller.data().lock().unwrap().record_host_call();
+
     let db = db.clone();
-    
+
     let collection = match read_string_from_plugin_memory(caller, collection_ptr, collection_len) {
         Ok(s) => s,
         Err(_) => return -1,
     };
-    
+
     let record_id = match read_string_from_plugin_memory(caller, record_id_ptr, record_id_len) {
         Ok(s) => s,
         Err(_) => return -1,
     };
-    
+
     let record_data_str = match read_string_from_plugin_memory(caller, data_ptr, data_len) {
         Ok(s) => s,
         Err(_) => return -1,
@@ -409,11 +415,11 @@ fn handle_update_record(
         let state = caller.data().lock().unwrap();
         state.can_perform_database_operations()
     };
-    
+
     if !can_perform_db_ops {
         error!("Database operation blocked - plugin is in event handler context (prevents circular dependency)");
         let result_bytes = create_error_response("Database operations not allowed during event handling to prevent circular dependencies");
-        
+
         if let Some((ptr, len)) = allocate_plugin_memory_and_copy(caller, &result_bytes) {
             let mut state = caller.data().lock().unwrap();
             state.result_buffer = [
@@ -464,7 +470,7 @@ fn handle_update_record(
             });
 
             let result_bytes = create_success_response(response_data);
-            
+
             // Allocate plugin memory and copy data
             if let Some((ptr, len)) = allocate_plugin_memory_and_copy(caller, &result_bytes) {
                 let mut state = caller.data().lock().unwrap();
@@ -482,7 +488,7 @@ fn handle_update_record(
         Ok(Err(e)) => {
             error!("Failed to update record: {}", e);
             let result_bytes = create_error_response(&e.to_string());
-            
+
             // Allocate plugin memory and copy error data
             if let Some((ptr, len)) = allocate_plugin_memory_and_copy(caller, &result_bytes) {
                 let mut state = caller.data().lock().unwrap();
@@ -496,7 +502,7 @@ fn handle_update_record(
         Err(_) => {
             error!("Database operation timed out");
             let result_bytes = create_error_response("Database operation timed out");
-            
+
             // Allocate plugin memory and copy timeout error data
             if let Some((ptr, len)) = allocate_plugin_memory_and_copy(caller, &result_bytes) {
                 let mut state = caller.data().lock().unwrap();
@@ -519,13 +525,15 @@ fn handle_delete_record(
     record_id_ptr: i32,
     record_id_len: i32,
 ) -> i32 {
+    caller.data().lock().unwrap().record_host_call();
+
     let db = db.clone();
-    
+
     let collection = match read_string_from_plugin_memory(caller, collection_ptr, collection_len) {
         Ok(s) => s,
         Err(_) => return -1,
     };
-    
+
     let record_id = match read_string_from_plugin_memory(caller, record_id_ptr, record_id_len) {
         Ok(s) => s,
         Err(_) => return -1,
@@ -536,11 +544,11 @@ fn handle_delete_record(
         let state = caller.data().lock().unwrap();
         state.can_perform_database_operations()
     };
-    
+
     if !can_perform_db_ops {
         error!("Database operation blocked - plugin is in event handler context (prevents circular dependency)");
         let result_bytes = create_error_response("Database operations not allowed during event handling to prevent circular dependencies");
-        
+
         if let Some((ptr, len)) = allocate_plugin_memory_and_copy(caller, &result_bytes) {
             let mut state = caller.data().lock().unwrap();
             state.result_buffer = [
@@ -591,7 +599,7 @@ fn handle_delete_record(
             });
 
             let result_bytes = create_success_response(response_data);
-            
+
             // Allocate plugin memory and copy data
             if let Some((ptr, len)) = allocate_plugin_memory_and_copy(caller, &result_bytes) {
                 let mut state = caller.data().lock().unwrap();
@@ -609,7 +617,7 @@ fn handle_delete_record(
         Ok(Err(e)) => {
             error!("Failed to delete record: {}", e);
             let result_bytes = create_error_response(&e.to_string());
-            
+
             // Allocate plugin memory and copy error data
             if let Some((ptr, len)) = allocate_plugin_memory_and_copy(caller, &result_bytes) {
                 let mut state = caller.data().lock().unwrap();
@@ -623,7 +631,7 @@ fn handle_delete_record(
         Err(_) => {
             error!("Database operation timed out");
             let result_bytes = create_error_response("Database operation timed out");
-            
+
             // Allocate plugin memory and copy timeout error data
             if let Some((ptr, len)) = allocate_plugin_memory_and_copy(caller, &result_bytes) {
                 let mut state = caller.data().lock().unwrap();

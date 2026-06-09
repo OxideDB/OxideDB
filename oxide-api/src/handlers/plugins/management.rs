@@ -30,60 +30,34 @@ pub async fn list_plugins(
         .map_err(|e| ApiError::internal(format!("Failed to get plugin configurations: {}", e)))?;
 
     let mut plugins = Vec::new();
-    
+    let runtime_statistics = state.plugin_manager.as_ref()
+        .and_then(|plugin_manager| plugin_manager.get_plugin_statistics().ok());
+
     for config in plugin_configs {
-        // Check if plugin is actually loaded in runtime
-        let is_loaded_in_runtime = if let Some(plugin_manager) = &state.plugin_manager {
-            if let Ok(stats) = plugin_manager.get_plugin_statistics() {
-                stats.iter().any(|s| s.name == config.name)
-            } else {
-                false
-            }
-        } else {
-            false
-        };
+        let runtime_stat = runtime_statistics
+            .as_ref()
+            .and_then(|stats| stats.iter().find(|s| s.name == config.name));
+        let is_loaded_in_runtime = runtime_stat.is_some();
 
         // Get runtime statistics if available
-        let (executions, errors, last_execution, resource_usage) = if let Some(plugin_manager) = &state.plugin_manager {
-            if let Ok(stats) = plugin_manager.get_plugin_statistics() {
-                if let Some(plugin_stat) = stats.iter().find(|s| s.name == config.name) {
-                    (
-                        plugin_stat.executions,
-                        plugin_stat.errors,
-                        None, // Runtime doesn't track last execution time yet
-                        ResourceUsageInfo {
-                            memory_bytes: 0, // Runtime doesn't track these yet
-                            cpu_time_ms: 0,
-                            api_calls: 0,
-                            storage_bytes: 0,
-                        }
-                    )
-                } else {
-                    (0, 0, None, ResourceUsageInfo::default())
-                }
-            } else {
-                (0, 0, None, ResourceUsageInfo::default())
-            }
+        let (executions, errors, last_execution, resource_usage) = if let Some(plugin_stat) = runtime_stat {
+            (
+                plugin_stat.executions,
+                plugin_stat.errors,
+                timestamp_to_datetime(plugin_stat.last_execution),
+                runtime_resource_usage(plugin_stat),
+            )
         } else {
             (0, 0, None, ResourceUsageInfo::default())
         };
 
         // Determine actual status based on database status and runtime state
-        let actual_status = match config.status {
-            oxide_core::plugin_config::PluginStatus::Enabled => {
-                if is_loaded_in_runtime {
-                    PluginStatus::Enabled
-                } else {
-                    // Plugin is marked as enabled in DB but not loaded in runtime
-                    warn!("Plugin '{}' is marked as enabled in database but not loaded in runtime", config.name);
-                    PluginStatus::Error
-                }
-            },
-            oxide_core::plugin_config::PluginStatus::Disabled => PluginStatus::Disabled,
-            oxide_core::plugin_config::PluginStatus::Error => PluginStatus::Error,
-            oxide_core::plugin_config::PluginStatus::Loading => PluginStatus::Loading,
-            oxide_core::plugin_config::PluginStatus::Uninstalling => PluginStatus::Uninstalling,
-        };
+        let actual_status = resolve_plugin_status(
+            &config.name,
+            &config.status,
+            runtime_stat.map(|stat| &stat.status),
+            is_loaded_in_runtime,
+        );
 
         let plugin_info = PluginInfo {
             name: config.name.clone(),
@@ -116,7 +90,7 @@ pub async fn get_plugin_details(
     // Verify plugin exists
     let stats = plugin_manager.get_plugin_statistics()
         .map_err(|e| ApiError::internal(format!("Failed to get plugin statistics: {}", e)))?;
-    
+
     let plugin_stat = stats.iter()
         .find(|s| s.name == plugin_name)
         .ok_or_else(|| ApiError::not_found(format!("Plugin '{}' not found", plugin_name)))?;
@@ -129,22 +103,16 @@ pub async fn get_plugin_details(
     let trust_level = plugin_config.trust_level.clone();
     let routes = get_plugin_routes(&state, &plugin_name).await?;
     let audit_log = get_plugin_audit_log(&state, &plugin_name).await?;
-    let resource_usage = ResourceUsageInfo {
-        memory_bytes: 0, // Runtime doesn't track these yet
-        cpu_time_ms: 0,
-        api_calls: 0,
-        storage_bytes: 0,
-    };
+    let resource_usage = runtime_resource_usage(plugin_stat);
 
     let details = PluginDetails {
         name: plugin_name.clone(),
-        status: match plugin_config.status {
-            oxide_core::plugin_config::PluginStatus::Enabled => PluginStatus::Enabled,
-            oxide_core::plugin_config::PluginStatus::Disabled => PluginStatus::Disabled,
-            oxide_core::plugin_config::PluginStatus::Error => PluginStatus::Error,
-            oxide_core::plugin_config::PluginStatus::Loading => PluginStatus::Loading,
-            oxide_core::plugin_config::PluginStatus::Uninstalling => PluginStatus::Uninstalling,
-        },
+        status: resolve_plugin_status(
+            &plugin_name,
+            &plugin_config.status,
+            Some(&plugin_stat.status),
+            true,
+        ),
         version: plugin_config.version,
         description: plugin_config.description,
         author: plugin_config.author,
@@ -153,7 +121,7 @@ pub async fn get_plugin_details(
         routes,
         executions: plugin_stat.executions,
         errors: plugin_stat.errors,
-        last_execution: None, // Runtime doesn't track last execution time yet
+        last_execution: timestamp_to_datetime(plugin_stat.last_execution),
         resource_usage,
         audit_log,
         permissions: get_plugin_permissions_info(&state, &plugin_name).await?,
@@ -178,7 +146,7 @@ pub async fn enable_plugin(
     {
         let mut runtime_guard = plugin_manager.runtime.lock()
             .map_err(|_| ApiError::internal("Failed to acquire plugin runtime lock".to_string()))?;
-        
+
         runtime_guard.resume_plugin(&plugin_name)
             .map_err(|e| ApiError::internal(format!("Failed to enable plugin: {}", e)))?;
     }
@@ -203,7 +171,7 @@ pub async fn disable_plugin(
     {
         let mut runtime_guard = plugin_manager.runtime.lock()
             .map_err(|_| ApiError::internal("Failed to acquire plugin runtime lock".to_string()))?;
-        
+
         runtime_guard.suspend_plugin(&plugin_name, "Manually disabled".to_string())
             .map_err(|e| ApiError::internal(format!("Failed to disable plugin: {}", e)))?;
     }
@@ -223,10 +191,10 @@ pub async fn unregister_plugin(
     // Remove from runtime first
     {
         use oxide_core::plugin_api::PluginRuntime;
-        
+
         let mut runtime_guard = plugin_manager.runtime.lock()
             .map_err(|_| ApiError::internal("Failed to acquire plugin runtime lock".to_string()))?;
-        
+
         runtime_guard.unload_plugin(&plugin_name)
             .map_err(|e| ApiError::internal(format!("Failed to unregister plugin: {}", e)))?;
     }
@@ -320,6 +288,47 @@ pub async fn load_plugins_from_database(state: &AppState) -> Result<(), ApiError
 
 // Helper functions
 
+fn timestamp_to_datetime(timestamp: Option<u64>) -> Option<chrono::DateTime<chrono::Utc>> {
+    timestamp
+        .and_then(|timestamp| i64::try_from(timestamp).ok())
+        .and_then(|timestamp| chrono::DateTime::<chrono::Utc>::from_timestamp(timestamp, 0))
+}
+
+fn runtime_resource_usage(plugin_stat: &oxide_plugin_runtime::manager::PluginStatistics) -> ResourceUsageInfo {
+    ResourceUsageInfo {
+        memory_bytes: plugin_stat.peak_memory_usage,
+        cpu_time_ms: plugin_stat.total_execution_time_ms,
+        api_calls: plugin_stat.host_function_calls,
+        storage_bytes: 0,
+    }
+}
+
+fn resolve_plugin_status(
+    plugin_name: &str,
+    config_status: &oxide_core::plugin_config::PluginStatus,
+    runtime_status: Option<&oxide_plugin_runtime::manager::PluginStatus>,
+    is_loaded_in_runtime: bool,
+) -> PluginStatus {
+    match config_status {
+        oxide_core::plugin_config::PluginStatus::Enabled => {
+            if !is_loaded_in_runtime {
+                warn!("Plugin '{}' is marked as enabled in database but not loaded in runtime", plugin_name);
+                return PluginStatus::Error;
+            }
+
+            match runtime_status {
+                Some(oxide_plugin_runtime::manager::PluginStatus::Suspended)
+                | Some(oxide_plugin_runtime::manager::PluginStatus::Error) => PluginStatus::Error,
+                _ => PluginStatus::Enabled,
+            }
+        },
+        oxide_core::plugin_config::PluginStatus::Disabled => PluginStatus::Disabled,
+        oxide_core::plugin_config::PluginStatus::Error => PluginStatus::Error,
+        oxide_core::plugin_config::PluginStatus::Loading => PluginStatus::Loading,
+        oxide_core::plugin_config::PluginStatus::Uninstalling => PluginStatus::Uninstalling,
+    }
+}
+
 async fn get_plugin_routes(state: &AppState, plugin_name: &str) -> Result<Vec<PluginRouteInfo>, ApiError> {
     let plugin_manager = state.plugin_manager.as_ref()
         .ok_or_else(|| ApiError::internal("Plugin system not available".to_string()))?;
@@ -335,9 +344,9 @@ async fn get_plugin_routes(state: &AppState, plugin_name: &str) -> Result<Vec<Pl
         let permissions = state.database_permission_service
             .get_permissions(&plugin_collection)
             .await?;
-        
+
         let has_custom_permissions = permissions.is_some();
-        
+
         let route_info = PluginRouteInfo {
             plugin_name: route.plugin_name,
             method: route.method,
@@ -346,9 +355,9 @@ async fn get_plugin_routes(state: &AppState, plugin_name: &str) -> Result<Vec<Pl
             permissions,
             has_custom_permissions,
         };
-        
+
         plugin_routes.push(route_info);
     }
 
     Ok(plugin_routes)
-} 
+}

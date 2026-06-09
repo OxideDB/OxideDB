@@ -18,6 +18,8 @@ pub fn vfs_write_file(
     request_ptr: i32,
     request_len: i32,
 ) -> wasmtime::Result<i64> {
+    caller.data().lock().unwrap().record_host_call();
+
     let memory = caller.get_export("memory")
         .and_then(|e| e.into_memory())
         .ok_or_else(|| wasmtime::Error::msg("failed to find host memory"))?;
@@ -61,7 +63,7 @@ pub fn vfs_write_file(
             // Store result in plugin state for retrieval
             let result_json = serde_json::to_string(&metadata)
                 .map_err(|e| wasmtime::Error::msg(format!("failed to serialize result: {}", e)))?;
-            
+
             let mut state_guard = state.lock().unwrap();
             state_guard.store_result("vfs_write_file", result_json);
             Ok(0) // Success
@@ -82,6 +84,8 @@ pub fn vfs_read_file(
     request_ptr: i32,
     request_len: i32,
 ) -> wasmtime::Result<i64> {
+    caller.data().lock().unwrap().record_host_call();
+
     let memory = caller.get_export("memory")
         .and_then(|e| e.into_memory())
         .ok_or_else(|| wasmtime::Error::msg("failed to find host memory"))?;
@@ -125,7 +129,7 @@ pub fn vfs_read_file(
             // Store result in plugin state for retrieval
             let result_json = serde_json::to_string(&response)
                 .map_err(|e| wasmtime::Error::msg(format!("failed to serialize result: {}", e)))?;
-            
+
             let mut state_guard = state.lock().unwrap();
             state_guard.store_result("vfs_read_file", result_json);
             Ok(0) // Success
@@ -146,6 +150,8 @@ pub fn vfs_delete_file(
     identifier_ptr: i32,
     identifier_len: i32,
 ) -> wasmtime::Result<i64> {
+    caller.data().lock().unwrap().record_host_call();
+
     let memory = caller.get_export("memory")
         .and_then(|e| e.into_memory())
         .ok_or_else(|| wasmtime::Error::msg("failed to find host memory"))?;
@@ -206,6 +212,8 @@ pub fn vfs_list_files(
     request_ptr: i32,
     request_len: i32,
 ) -> wasmtime::Result<i64> {
+    caller.data().lock().unwrap().record_host_call();
+
     let memory = caller.get_export("memory")
         .and_then(|e| e.into_memory())
         .ok_or_else(|| wasmtime::Error::msg("failed to find host memory"))?;
@@ -249,7 +257,7 @@ pub fn vfs_list_files(
             // Store result in plugin state for retrieval
             let result_json = serde_json::to_string(&response)
                 .map_err(|e| wasmtime::Error::msg(format!("failed to serialize result: {}", e)))?;
-            
+
             let mut state_guard = state.lock().unwrap();
             state_guard.store_result("vfs_list_files", result_json);
             Ok(0) // Success
@@ -268,6 +276,8 @@ pub fn vfs_get_usage_stats(
     namespace_ptr: i32,
     namespace_len: i32,
 ) -> wasmtime::Result<i64> {
+    caller.data().lock().unwrap().record_host_call();
+
     let memory = caller.get_export("memory")
         .and_then(|e| e.into_memory())
         .ok_or_else(|| wasmtime::Error::msg("failed to find host memory"))?;
@@ -301,7 +311,7 @@ pub fn vfs_get_usage_stats(
             // Store result in plugin state for retrieval
             let result_json = serde_json::to_string(&stats)
                 .map_err(|e| wasmtime::Error::msg(format!("failed to serialize result: {}", e)))?;
-            
+
             let mut state_guard = state.lock().unwrap();
             state_guard.store_result("vfs_get_usage_stats", result_json);
             Ok(0) // Success
@@ -322,4 +332,4 @@ pub fn register_vfs_functions(linker: &mut Linker<HostStateRef>) -> wasmtime::Re
     linker.func_wrap("env", "vfs_list_files", vfs_list_files)?;
     linker.func_wrap("env", "vfs_get_usage_stats", vfs_get_usage_stats)?;
     Ok(())
-} 
+}
