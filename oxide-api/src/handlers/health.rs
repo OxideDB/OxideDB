@@ -53,7 +53,10 @@ impl HealthHandlers {
     ///
     /// This checks the database connection and other critical system components
     /// to determine if the API is ready to serve requests.
-    pub async fn health_check(db: Arc<dyn Db>) -> Result<HealthStatus, ApiError> {
+    pub async fn health_check(
+        db: Arc<dyn Db>,
+        uptime: Option<u64>,
+    ) -> Result<HealthStatus, ApiError> {
         debug!("Performing health check");
 
         // Check database connectivity
@@ -83,7 +86,7 @@ impl HealthHandlers {
             status: overall_status.to_string(),
             database: database_status,
             version: Some(env!("CARGO_PKG_VERSION").to_string()),
-            uptime: None, // TODO: Track server uptime
+            uptime,
             versions: Some(component_versions),
         };
 
@@ -108,7 +111,8 @@ impl HealthHandlers {
 pub async fn health_check(
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<HealthStatus>>, ApiError> {
-    let health_status = HealthHandlers::health_check(state.db).await?;
+    let uptime = Some(state.started_at.elapsed().as_secs());
+    let health_status = HealthHandlers::health_check(state.db, uptime).await?;
 
     // Return 503 if unhealthy
     if health_status.status != "healthy" {
@@ -116,4 +120,4 @@ pub async fn health_check(
     }
 
     Ok(Json(ApiResponse::success(health_status)))
-} 
+}

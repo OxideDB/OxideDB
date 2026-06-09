@@ -3,13 +3,14 @@
 //! This module contains the core HTTP server implementation for the OxideDB API.
 //! The server is built on top of Axum and provides a REST API interface.
 
-use oxide_core::{event::EventBus, AppError, AuthService};
+use oxide_core::{event::EventBus, logging::ApplicationLogger, AppError, AuthService};
 use oxide_db::Db;
 use oxide_logging::LogServiceBridge;
 use crate::services::{LoggingApiService, DatabasePermissionService, plugin_config_service::PluginConfigService};
 use std::sync::Arc;
+use std::time::Instant;
 use tokio::net::TcpListener;
-use tracing::{info, debug};
+use tracing::{info, debug, warn};
 
 use crate::routes::{build_router_with_config, build_router_with_config_and_middleware, RouteConfig};
 
@@ -25,6 +26,7 @@ pub struct AppState {
     pub database_permission_service: Arc<DatabasePermissionService>,
     pub plugin_config_service: Arc<PluginConfigService>,
     pub vfs_service: Option<Arc<dyn oxide_core::VirtualFileSystem>>,
+    pub started_at: Instant,
 }
 
 /// The API server that handles HTTP requests
@@ -195,6 +197,7 @@ impl ApiServer {
             database_permission_service,
             plugin_config_service,
             vfs_service: vfs_service,
+            started_at: Instant::now(),
         };
 
         let app = build_router_with_config_and_middleware(config.clone(), state.clone());
@@ -208,23 +211,33 @@ impl ApiServer {
 
         info!("✅ API server listening on {}", self.address());
 
-        axum::serve(listener, app)
-            .await
-            .map_err(|e| AppError::internal(format!("Server error: {}", e)))?;
+        let server_result = axum::serve(listener, app)
+            .with_graceful_shutdown(shutdown_signal())
+            .await;
+
+        if let Err(e) = server_result {
+            return Err(AppError::internal(format!("Server error: {}", e)));
+        }
+
+        self.stop().await?;
 
         Ok(())
     }
 
     /// Stop the API server gracefully
     pub async fn stop(&self) -> Result<(), AppError> {
-        info!("Stopping API server");
+        info!("Stopping API server gracefully");
 
-        // TODO: Implement graceful shutdown
-        // In a real implementation, this would:
-        // 1. Stop accepting new connections
-        // 2. Wait for existing requests to complete
-        // 3. Close the database connection
-        // 4. Shutdown the event bus
+        if let Some(logging_service) = &self.logging_service {
+            if let Err(e) = logging_service.flush().await {
+                warn!("Failed to flush logs during API server shutdown: {}", e);
+            }
+        }
+
+        self.db.close().await?;
+        self.event_bus.shutdown().await?;
+
+        info!("API server shutdown complete");
 
         Ok(())
     }
@@ -279,6 +292,13 @@ pub fn create_app(state: AppState) -> axum::Router {
 /// Create an Axum app with custom configuration
 pub fn create_app_with_config(state: AppState, config: RouteConfig) -> axum::Router {
     build_router_with_config(config).with_state(state)
+}
+
+async fn shutdown_signal() {
+    match tokio::signal::ctrl_c().await {
+        Ok(()) => info!("Shutdown signal received"),
+        Err(e) => warn!("Failed to listen for shutdown signal: {}", e),
+    }
 }
 
 

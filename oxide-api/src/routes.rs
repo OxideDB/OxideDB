@@ -468,7 +468,8 @@ fn get_static_endpoints(config: &RouteConfig) -> Vec<RegisteredEndpoint> {
         ("GET", "/collections/:collection/files", "vfs::list_files", true, "List files in collection"),
         ("GET", "/collections/:collection/files/:file_id", "vfs::download_file", true, "Download file from collection"),
         ("DELETE", "/collections/:collection/files/:file_id", "vfs::delete_file", true, "Delete file from collection"),
-        ("GET", "/vfs/usage", "vfs::get_usage_stats", true, "Get VFS usage statistics"),
+        ("GET", "/collections/:collection/vfs/usage", "vfs::get_collection_usage_stats", true, "Get collection VFS usage statistics"),
+        ("GET", "/vfs/usage", "vfs::get_usage_stats", true, "Get aggregate VFS usage statistics"),
     ];
     
     for (method, path, handler, auth_required, description) in vfs_endpoints {
@@ -736,6 +737,7 @@ fn vfs_routes() -> Router<AppState> {
         .route("/collections/:collection/files", axum::routing::get(vfs::list_files))
         .route("/collections/:collection/files/:file_id", axum::routing::get(vfs::download_file))
         .route("/collections/:collection/files/:file_id", axum::routing::delete(vfs::delete_file))
+        .route("/collections/:collection/vfs/usage", axum::routing::get(vfs::get_collection_usage_stats))
         .route("/vfs/usage", axum::routing::get(vfs::get_usage_stats))
 }
 

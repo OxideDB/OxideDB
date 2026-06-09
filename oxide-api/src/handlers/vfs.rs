@@ -9,6 +9,8 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::{debug, error, info, warn};
 
 use crate::{
@@ -20,7 +22,7 @@ use crate::{
 
 use oxide_core::{
     VfsError, VfsNamespaceConfig, FileWriteRequest,
-    FileReadRequest, FileListRequest, FileIdentifier
+    FileReadRequest, FileListRequest, FileIdentifier, VfsUsageStats
 };
 
 /// Result type for API handlers
@@ -48,13 +50,23 @@ pub struct FileListQuery {
     pub offset: Option<usize>,
 }
 
-/// File usage statistics
+/// File usage query parameters
+#[derive(Debug, Deserialize)]
+pub struct VfsUsageQuery {
+    pub namespace: Option<String>,
+    pub include_default: Option<bool>,
+}
+
+/// Aggregate file usage statistics
 #[derive(Debug, Serialize)]
-pub struct VfsUsageResponse {
+pub struct VfsUsageSummaryResponse {
+    pub namespace: String,
     pub file_count: usize,
     pub storage_used: u64,
     pub storage_quota: Option<u64>,
     pub directory_count: usize,
+    pub last_updated: u64,
+    pub namespaces: Vec<VfsUsageStats>,
 }
 
 /// Ensure a VFS namespace exists for the given collection
@@ -92,6 +104,71 @@ async fn ensure_namespace_exists(
             // Some other error occurred
             Err(e)
         }
+    }
+}
+
+fn now_unix_seconds() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
+fn empty_usage_stats(namespace: String) -> VfsUsageStats {
+    VfsUsageStats {
+        namespace,
+        file_count: 0,
+        storage_used: 0,
+        storage_quota: None,
+        directory_count: 0,
+        last_updated: now_unix_seconds(),
+    }
+}
+
+async fn usage_stats_for_namespace(
+    vfs_service: &dyn oxide_core::VirtualFileSystem,
+    namespace: &str,
+) -> AppResult<VfsUsageStats> {
+    let namespace = namespace.to_string();
+    vfs_service.get_usage_stats(&namespace).await.map_err(|e| {
+        error!("Failed to get VFS usage stats for namespace '{}': {:?}", namespace, e);
+        match e {
+            VfsError::InvalidPath { .. } => ApiError::bad_request("Invalid namespace".to_string()),
+            VfsError::AccessDenied { .. } => ApiError::not_found(format!("VFS namespace '{}'", namespace)),
+            VfsError::IoError { .. } => ApiError::internal("Storage error".to_string()),
+            _ => ApiError::internal("Failed to retrieve usage statistics".to_string()),
+        }
+    })
+}
+
+fn summarize_usage(namespace: String, namespaces: Vec<VfsUsageStats>) -> VfsUsageSummaryResponse {
+    let mut file_count = 0;
+    let mut storage_used = 0;
+    let mut directory_count = 0;
+    let mut quota_sum = 0;
+    let mut has_unlimited_quota = false;
+    let mut last_updated = 0;
+
+    for stats in &namespaces {
+        file_count += stats.file_count;
+        storage_used += stats.storage_used;
+        directory_count += stats.directory_count;
+        last_updated = last_updated.max(stats.last_updated);
+
+        match stats.storage_quota {
+            Some(quota) => quota_sum += quota,
+            None => has_unlimited_quota = true,
+        }
+    }
+
+    VfsUsageSummaryResponse {
+        namespace,
+        file_count,
+        storage_used,
+        storage_quota: if has_unlimited_quota { None } else { Some(quota_sum) },
+        directory_count,
+        last_updated: if last_updated == 0 { now_unix_seconds() } else { last_updated },
+        namespaces,
     }
 }
 
@@ -359,6 +436,7 @@ pub async fn delete_file(
 pub async fn get_usage_stats(
     State(state): State<AppState>,
     _auth: AuthenticatedUser,
+    Query(query): Query<VfsUsageQuery>,
 ) -> AppResult<impl IntoResponse> {
     debug!("📁 Get VFS usage statistics request");
 
@@ -367,21 +445,60 @@ pub async fn get_usage_stats(
         .as_ref()
         .ok_or_else(|| ApiError::internal("VFS service not available".to_string()))?;
 
-    // For now, get stats for the default namespace
-    // TODO: Allow querying specific namespaces or aggregate across all
-    let namespace = "default".to_string();
+    if let Some(namespace) = query.namespace {
+        if namespace.trim().is_empty() {
+            return Err(ApiError::bad_request("Namespace cannot be empty".to_string()));
+        }
 
-    let usage_stats = vfs_service.get_usage_stats(&namespace).await.map_err(|e| {
-        error!("Failed to get VFS usage stats: {:?}", e);
-        ApiError::internal("Failed to retrieve usage statistics".to_string())
+        let stats = usage_stats_for_namespace(vfs_service.as_ref(), &namespace).await?;
+        return Ok(ApiResponse::success(summarize_usage(namespace, vec![stats])));
+    }
+
+    let include_default = query.include_default.unwrap_or(true);
+    let mut namespaces = BTreeSet::new();
+    if include_default {
+        namespaces.insert("default".to_string());
+    }
+
+    for collection in state.db.list_collections().await? {
+        namespaces.insert(collection.name);
+    }
+
+    let mut usage_by_namespace = Vec::new();
+    for namespace in namespaces {
+        match vfs_service.get_usage_stats(&namespace).await {
+            Ok(stats) => usage_by_namespace.push(stats),
+            Err(VfsError::AccessDenied { .. }) => usage_by_namespace.push(empty_usage_stats(namespace)),
+            Err(e) => {
+                error!("Failed to get VFS usage stats for namespace '{}': {:?}", namespace, e);
+                return Err(ApiError::internal("Failed to retrieve usage statistics".to_string()));
+            }
+        }
+    }
+
+    Ok(ApiResponse::success(summarize_usage("all".to_string(), usage_by_namespace)))
+}
+
+/// Get VFS usage statistics for a collection namespace
+pub async fn get_collection_usage_stats(
+    State(state): State<AppState>,
+    _auth: AuthenticatedUser,
+    Path(collection): Path<String>,
+) -> AppResult<impl IntoResponse> {
+    debug!("📁 Get VFS usage statistics request for collection: {}", collection);
+
+    let vfs_service = state.vfs_service
+        .as_ref()
+        .ok_or_else(|| ApiError::internal("VFS service not available".to_string()))?;
+
+    ensure_namespace_exists(vfs_service.as_ref(), &collection).await.map_err(|e| {
+        error!("Failed to ensure VFS namespace exists for collection '{}': {:?}", collection, e);
+        match e {
+            VfsError::InvalidPath { .. } => ApiError::bad_request("Invalid collection name".to_string()),
+            _ => ApiError::internal("Failed to access collection file storage".to_string()),
+        }
     })?;
 
-    let response = VfsUsageResponse {
-        file_count: usage_stats.file_count,
-        storage_used: usage_stats.storage_used,
-        storage_quota: usage_stats.storage_quota,
-        directory_count: usage_stats.directory_count,
-    };
-
-    Ok(ApiResponse::success(response))
-} 
+    let usage_stats = usage_stats_for_namespace(vfs_service.as_ref(), &collection).await?;
+    Ok(ApiResponse::success(usage_stats))
+}

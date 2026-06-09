@@ -40,19 +40,18 @@ pub async fn handle_plugin_route(
     // Check authorization for the plugin route
     check_plugin_route_authorization(&state, &route, user_claims.as_ref(), &method, &route_path).await?;
 
+    let path_params = extract_path_params(&route.path, &format!("/{}", route_path));
+
     // Build HTTP request context
-    let mut request_context = build_request_context(
+    let request_context = build_request_context(
         method,
         route_path.clone(),
         query_params,
         headers,
         body,
         user_claims.as_ref(),
+        path_params,
     )?;
-
-    // Extract path parameters from the matched route
-    let path_params = extract_path_params(&route.path, &format!("/{}", route_path));
-    request_context.path_params = path_params;
 
     // Execute plugin handler
     let plugin_response = execute_plugin_handler(&plugin_manager, &route, &request_context).await?;
@@ -214,6 +213,7 @@ fn build_request_context(
     headers: HeaderMap,
     body: Option<String>,
     user_claims: Option<&AuthenticatedUser>,
+    path_params: HashMap<String, String>,
 ) -> Result<HttpRequestContext, ApiError> {
     // Convert headers to HashMap
     let mut header_map = HashMap::new();
@@ -239,7 +239,7 @@ fn build_request_context(
         query_params,
         headers: header_map,
         body,
-        path_params: HashMap::new(), // TODO: Extract from route pattern
+        path_params,
         user: user_context,
     })
 }
@@ -283,4 +283,4 @@ fn convert_plugin_response_to_axum(
         .map_err(|e| ApiError::internal(format!("Failed to build response: {}", e)))?;
 
     Ok(response)
-} 
+}
