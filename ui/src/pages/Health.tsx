@@ -5,12 +5,10 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Badge } from '@/components/ui/badge';
 import PageLayout from '@/components/PageLayout';
 import { apiService } from '../services/api';
-import type { HealthStatus } from '../types/api';
-
-type ExtendedHealthStatus = HealthStatus & { version?: string };
+import type { ApiHealthStatus } from '../types/api';
 
 const Health: React.FC = () => {
-  const [health, setHealth] = useState<ExtendedHealthStatus | null>(null);
+  const [health, setHealth] = useState<ApiHealthStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -212,4 +210,4 @@ const Health: React.FC = () => {
   );
 };
 
-export default Health; 
+export default Health;

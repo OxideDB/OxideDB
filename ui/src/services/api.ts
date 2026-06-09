@@ -1,5 +1,5 @@
 import type { 
-  ApiError, CollectionStats, CreateCollectionRequest, DbRecord, HealthStatus, 
+  ApiError, CollectionStats, CreateCollectionRequest, DbRecord, ApiHealthStatus,
   CollectionSchema, CollectionPermissionsInfo, CollectionPermissions, PermissionPresetType, 
   ApiResponse, AuthResponse, User, TokenValidationResponse,
   LogQueryParams, AuditQueryParams, LogResponse, LogEntry, SecurityAuditEvent,
@@ -100,6 +100,30 @@ interface RefreshTokenResponse {
   refresh_token: string;
   expires_in: number;
   refresh_expires_in: number;
+}
+
+export type RecordFilterOp =
+  | 'eq'
+  | 'ne'
+  | 'contains'
+  | 'exists'
+  | 'not_exists'
+  | 'gt'
+  | 'gte'
+  | 'lt'
+  | 'lte';
+
+export interface RecordQueryParams {
+  limit?: number;
+  offset?: number;
+  sort_field?: string;
+  sort_ascending?: boolean;
+  populate_relationships?: boolean;
+  populate_fields?: string;
+  filter_field?: string;
+  filter_op?: RecordFilterOp;
+  filter_value?: string;
+  search?: string;
 }
 
 class ApiService {
@@ -372,8 +396,8 @@ class ApiService {
   }
 
   // Health check
-  async getHealth(): Promise<HealthStatus & { version?: string }> {
-    const response = await this.request<ApiResponse<HealthStatus & { version?: string }>>('/health');
+  async getHealth(): Promise<ApiHealthStatus> {
+    const response = await this.request<ApiResponse<ApiHealthStatus>>('/health');
     return response.data;
   }
 
@@ -429,10 +453,18 @@ class ApiService {
   }
 
   // Record methods
-  async getRecords(collection: string, params?: { limit?: number; offset?: number }): Promise<DbRecord[]> {
+  async getRecords(collection: string, params?: RecordQueryParams): Promise<DbRecord[]> {
     const searchParams = new URLSearchParams();
-    if (params?.limit) searchParams.set('limit', params.limit.toString());
-    if (params?.offset) searchParams.set('offset', params.offset.toString());
+    if (params?.limit !== undefined) searchParams.set('limit', params.limit.toString());
+    if (params?.offset !== undefined) searchParams.set('offset', params.offset.toString());
+    if (params?.sort_field) searchParams.set('sort_field', params.sort_field);
+    if (params?.sort_ascending !== undefined) searchParams.set('sort_ascending', params.sort_ascending.toString());
+    if (params?.populate_relationships !== undefined) searchParams.set('populate_relationships', params.populate_relationships.toString());
+    if (params?.populate_fields) searchParams.set('populate_fields', params.populate_fields);
+    if (params?.filter_field) searchParams.set('filter_field', params.filter_field);
+    if (params?.filter_op) searchParams.set('filter_op', params.filter_op);
+    if (params?.filter_value !== undefined) searchParams.set('filter_value', params.filter_value);
+    if (params?.search) searchParams.set('search', params.search);
     
     const query = searchParams.toString();
     const endpoint = `/collections/${encodeURIComponent(collection)}/records${query ? `?${query}` : ''}`;

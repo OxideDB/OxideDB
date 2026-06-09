@@ -1,15 +1,22 @@
 //! CRUD operations for SQLite database
 
 use super::connection::SqliteDb;
-use crate::{db::{Db, ListParams, SchemaAdapter}, Record};
-use oxide_core::{
-    AppError, FieldType,
-    BeforeEventContext, BeforeEventType, AfterEventType,
-    event::types::{RecordData, RecordId},
+use crate::{
+    db::{Db, FilterOp, ListParams, SchemaAdapter},
+    Record,
 };
+use oxide_core::{
+    event::types::{RecordData, RecordId},
+    AfterEventType, AppError, BeforeEventContext, BeforeEventType, CollectionSchema, FieldType,
+};
+use rusqlite::{
+    params_from_iter,
+    types::{ToSqlOutput, Value as RusqliteValue},
+    ToSql,
+};
+use serde_json::Value as JsonValue;
 use tokio::task::spawn_blocking;
 use tracing::debug;
-use serde_json::Value as JsonValue;
 
 impl SqliteDb {
     /// Convert a record data JSON to SQL values for a specific schema
@@ -19,7 +26,7 @@ impl SqliteDb {
         schema: &oxide_core::CollectionSchema,
     ) -> Result<Vec<(String, SqlValue)>, AppError> {
         let mut sql_values = Vec::new();
-        
+
         for (field_name, field_def) in &schema.fields {
             if let Some(value) = data.get(field_name) {
                 let sql_value = match field_def.field_type.sql_type() {
@@ -37,7 +44,11 @@ impl SqliteDb {
                     "INTEGER" => {
                         // Handle both boolean (stored as integer) and actual integers
                         if value.is_boolean() {
-                            SqlValue::Integer(if value.as_bool().unwrap_or(false) { 1 } else { 0 })
+                            SqlValue::Integer(if value.as_bool().unwrap_or(false) {
+                                1
+                            } else {
+                                0
+                            })
                         } else {
                             SqlValue::Integer(value.as_i64().unwrap_or(0))
                         }
@@ -62,7 +73,11 @@ impl SqliteDb {
                     "INTEGER" => {
                         // Handle both boolean (stored as integer) and actual integers
                         if default.is_boolean() {
-                            SqlValue::Integer(if default.as_bool().unwrap_or(false) { 1 } else { 0 })
+                            SqlValue::Integer(if default.as_bool().unwrap_or(false) {
+                                1
+                            } else {
+                                0
+                            })
                         } else {
                             SqlValue::Integer(default.as_i64().unwrap_or(0))
                         }
@@ -72,7 +87,7 @@ impl SqliteDb {
                 sql_values.push((field_name.clone(), sql_value));
             }
         }
-        
+
         Ok(sql_values)
     }
 
@@ -83,7 +98,7 @@ impl SqliteDb {
         schema: &oxide_core::CollectionSchema,
     ) -> Result<Record, rusqlite::Error> {
         let mut data = serde_json::Map::new();
-        
+
         // Extract schema fields from the row
         for (field_name, field_def) in &schema.fields {
             let value = match field_def.field_type.sql_type() {
@@ -91,35 +106,44 @@ impl SqliteDb {
                     if let Ok(text) = row.get::<_, Option<String>>(field_name.as_str()) {
                         text.map(|s| {
                             // For JSON fields and File fields stored as TEXT, try to parse as JSON
-                            if matches!(field_def.field_type, FieldType::Json) ||
-                               matches!(field_def.field_type, FieldType::File(_)) {
+                            if matches!(field_def.field_type, FieldType::Json)
+                                || matches!(field_def.field_type, FieldType::File(_))
+                            {
                                 serde_json::from_str(&s).unwrap_or(JsonValue::String(s))
                             } else {
                                 JsonValue::String(s)
                             }
-                        }).unwrap_or(JsonValue::Null)
+                        })
+                        .unwrap_or(JsonValue::Null)
                     } else {
                         JsonValue::Null
                     }
                 }
                 "REAL" => {
                     if let Ok(num) = row.get::<_, Option<f64>>(field_name.as_str()) {
-                        num.map(|n| JsonValue::Number(serde_json::Number::from_f64(n).unwrap_or_else(|| serde_json::Number::from(0))))
-                            .unwrap_or(JsonValue::Null)
+                        num.map(|n| {
+                            JsonValue::Number(
+                                serde_json::Number::from_f64(n)
+                                    .unwrap_or_else(|| serde_json::Number::from(0)),
+                            )
+                        })
+                        .unwrap_or(JsonValue::Null)
                     } else {
                         JsonValue::Null
                     }
                 }
                 "INTEGER" => {
                     if let Ok(int_val) = row.get::<_, Option<i64>>(field_name.as_str()) {
-                        int_val.map(|i| {
-                            // For boolean fields stored as INTEGER, convert back to boolean
-                            if matches!(field_def.field_type, FieldType::Boolean) {
-                                JsonValue::Bool(i != 0)
-                            } else {
-                                JsonValue::Number(serde_json::Number::from(i))
-                            }
-                        }).unwrap_or(JsonValue::Null)
+                        int_val
+                            .map(|i| {
+                                // For boolean fields stored as INTEGER, convert back to boolean
+                                if matches!(field_def.field_type, FieldType::Boolean) {
+                                    JsonValue::Bool(i != 0)
+                                } else {
+                                    JsonValue::Number(serde_json::Number::from(i))
+                                }
+                            })
+                            .unwrap_or(JsonValue::Null)
                     } else {
                         JsonValue::Null
                     }
@@ -142,18 +166,285 @@ impl SqliteDb {
 /// Enum for SQL value types
 #[derive(Debug, Clone)]
 enum SqlValue {
+    Null,
     Text(String),
     Integer(i64),
     Real(f64),
 }
 
 impl SqlValue {
-    fn bind_to_statement(&self, stmt: &mut rusqlite::Statement, index: usize) -> Result<(), rusqlite::Error> {
+    fn bind_to_statement(
+        &self,
+        stmt: &mut rusqlite::Statement,
+        index: usize,
+    ) -> Result<(), rusqlite::Error> {
         match self {
+            SqlValue::Null => stmt.raw_bind_parameter(index, rusqlite::types::Null),
             SqlValue::Text(s) => stmt.raw_bind_parameter(index, s),
             SqlValue::Integer(i) => stmt.raw_bind_parameter(index, *i),
             SqlValue::Real(r) => stmt.raw_bind_parameter(index, *r),
         }
+    }
+}
+
+impl ToSql for SqlValue {
+    fn to_sql(&self) -> rusqlite::Result<ToSqlOutput<'_>> {
+        Ok(match self {
+            SqlValue::Null => ToSqlOutput::Owned(RusqliteValue::Null),
+            SqlValue::Text(value) => ToSqlOutput::Owned(RusqliteValue::Text(value.clone())),
+            SqlValue::Integer(value) => ToSqlOutput::Owned(RusqliteValue::Integer(*value)),
+            SqlValue::Real(value) => ToSqlOutput::Owned(RusqliteValue::Real(*value)),
+        })
+    }
+}
+
+fn quote_identifier(identifier: &str) -> String {
+    format!("\"{}\"", identifier.replace('"', "\"\""))
+}
+
+fn resolve_record_column(
+    schema: &CollectionSchema,
+    requested_field: &str,
+) -> Result<String, AppError> {
+    match requested_field {
+        "id" | "created_at" | "updated_at" => Ok(requested_field.to_string()),
+        field if schema.fields.contains_key(field) => Ok(field.to_string()),
+        field => Err(AppError::validation(
+            "field".to_string(),
+            format!("Unknown record field '{}'", field),
+        )),
+    }
+}
+
+fn required_filter_value(params: &ListParams, filter_op: FilterOp) -> Result<&str, AppError> {
+    params.filter_value.as_deref().ok_or_else(|| {
+        AppError::validation(
+            "filter_value".to_string(),
+            format!("filter_value is required for {:?} filters", filter_op),
+        )
+    })
+}
+
+fn filter_value_to_sql(raw: &str) -> SqlValue {
+    match serde_json::from_str::<serde_json::Value>(raw) {
+        Ok(serde_json::Value::Null) => SqlValue::Null,
+        Ok(serde_json::Value::Bool(value)) => SqlValue::Integer(i64::from(value)),
+        Ok(serde_json::Value::Number(value)) => {
+            if let Some(value) = value.as_i64() {
+                SqlValue::Integer(value)
+            } else if let Some(value) = value.as_u64() {
+                if value <= i64::MAX as u64 {
+                    SqlValue::Integer(value as i64)
+                } else {
+                    SqlValue::Real(value as f64)
+                }
+            } else {
+                SqlValue::Real(value.as_f64().unwrap_or_default())
+            }
+        }
+        Ok(serde_json::Value::String(value)) => SqlValue::Text(value),
+        Ok(_) | Err(_) => SqlValue::Text(raw.to_string()),
+    }
+}
+
+fn escape_like(raw: &str) -> String {
+    let mut escaped = String::with_capacity(raw.len());
+    for character in raw.chars() {
+        match character {
+            '\\' | '%' | '_' => {
+                escaped.push('\\');
+                escaped.push(character);
+            }
+            _ => escaped.push(character),
+        }
+    }
+    escaped
+}
+
+fn is_searchable_field(field_type: &FieldType) -> bool {
+    matches!(
+        field_type,
+        FieldType::Text
+            | FieldType::Email
+            | FieldType::Url
+            | FieldType::Phone
+            | FieldType::Password
+            | FieldType::Json
+            | FieldType::Relationship(_)
+            | FieldType::File(_)
+            | FieldType::Select(_)
+    )
+}
+
+fn append_filter_clauses(
+    query: &mut String,
+    schema: &CollectionSchema,
+    params: &ListParams,
+    bind_params: &mut Vec<SqlValue>,
+) -> Result<(), AppError> {
+    let mut clauses = Vec::new();
+
+    if let Some(search) = params
+        .search
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        let mut search_clauses = vec![format!("{} LIKE ? ESCAPE '\\'", quote_identifier("id"))];
+        bind_params.push(SqlValue::Text(format!("%{}%", escape_like(search))));
+
+        for (field_name, field_def) in &schema.fields {
+            if is_searchable_field(&field_def.field_type) {
+                search_clauses.push(format!(
+                    "CAST({} AS TEXT) LIKE ? ESCAPE '\\'",
+                    quote_identifier(field_name)
+                ));
+                bind_params.push(SqlValue::Text(format!("%{}%", escape_like(search))));
+            }
+        }
+
+        clauses.push(format!("({})", search_clauses.join(" OR ")));
+    }
+
+    match params
+        .filter_field
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        Some(filter_field) => {
+            let column = quote_identifier(&resolve_record_column(schema, filter_field)?);
+            let filter_op = params.filter_op.unwrap_or_default();
+
+            let clause = match filter_op {
+                FilterOp::Exists => format!("{} IS NOT NULL", column),
+                FilterOp::NotExists => format!("{} IS NULL", column),
+                FilterOp::Contains => {
+                    let value = required_filter_value(params, filter_op)?;
+                    bind_params.push(SqlValue::Text(format!("%{}%", escape_like(value))));
+                    format!("CAST({} AS TEXT) LIKE ? ESCAPE '\\'", column)
+                }
+                FilterOp::Eq | FilterOp::Ne => {
+                    let value = filter_value_to_sql(required_filter_value(params, filter_op)?);
+                    match (filter_op, value) {
+                        (FilterOp::Eq, SqlValue::Null) => format!("{} IS NULL", column),
+                        (FilterOp::Ne, SqlValue::Null) => format!("{} IS NOT NULL", column),
+                        (FilterOp::Eq, value) => {
+                            bind_params.push(value);
+                            format!("{} = ?", column)
+                        }
+                        (FilterOp::Ne, value) => {
+                            bind_params.push(value);
+                            format!("{} <> ?", column)
+                        }
+                        _ => unreachable!(),
+                    }
+                }
+                FilterOp::Gt | FilterOp::Gte | FilterOp::Lt | FilterOp::Lte => {
+                    let value = filter_value_to_sql(required_filter_value(params, filter_op)?);
+                    if matches!(value, SqlValue::Null) {
+                        return Err(AppError::validation(
+                            "filter_value".to_string(),
+                            "null cannot be used with comparison filters".to_string(),
+                        ));
+                    }
+
+                    bind_params.push(value);
+                    let operator = match filter_op {
+                        FilterOp::Gt => ">",
+                        FilterOp::Gte => ">=",
+                        FilterOp::Lt => "<",
+                        FilterOp::Lte => "<=",
+                        _ => unreachable!(),
+                    };
+                    format!("{} {} ?", column, operator)
+                }
+            };
+
+            clauses.push(clause);
+        }
+        None if params.filter_op.is_some() || params.filter_value.is_some() => {
+            return Err(AppError::validation(
+                "filter_field".to_string(),
+                "filter_field is required when filter_op or filter_value is provided".to_string(),
+            ));
+        }
+        None => {}
+    }
+
+    if !clauses.is_empty() {
+        query.push_str(" WHERE ");
+        query.push_str(&clauses.join(" AND "));
+    }
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use oxide_core::{CollectionType, FieldDefinition};
+
+    fn test_schema() -> CollectionSchema {
+        let mut schema = CollectionSchema::new("articles".to_string(), CollectionType::Base);
+        schema.add_field("title".to_string(), FieldDefinition::new(FieldType::Text));
+        schema.add_field("views".to_string(), FieldDefinition::new(FieldType::Number));
+        schema.add_field(
+            "published".to_string(),
+            FieldDefinition::new(FieldType::Boolean),
+        );
+        schema
+    }
+
+    #[test]
+    fn appends_search_and_filter_clauses_with_bound_values() {
+        let mut query = "SELECT * FROM collection_articles".to_string();
+        let mut bind_params = Vec::new();
+        let params = ListParams {
+            search: Some("rust_%".to_string()),
+            filter_field: Some("views".to_string()),
+            filter_op: Some(FilterOp::Gte),
+            filter_value: Some("10".to_string()),
+            ..Default::default()
+        };
+
+        append_filter_clauses(&mut query, &test_schema(), &params, &mut bind_params).unwrap();
+
+        assert!(query.contains("\"id\" LIKE ? ESCAPE '\\'"));
+        assert!(query.contains("\"views\" >= ?"));
+        assert_eq!(bind_params.len(), 3);
+        assert!(matches!(bind_params.last(), Some(SqlValue::Integer(10))));
+    }
+
+    #[test]
+    fn rejects_unknown_filter_fields() {
+        let mut query = "SELECT * FROM collection_articles".to_string();
+        let mut bind_params = Vec::new();
+        let params = ListParams {
+            filter_field: Some("title; DROP TABLE articles".to_string()),
+            filter_value: Some("x".to_string()),
+            ..Default::default()
+        };
+
+        assert!(
+            append_filter_clauses(&mut query, &test_schema(), &params, &mut bind_params).is_err()
+        );
+    }
+
+    #[test]
+    fn supports_null_equality_without_binding_null_comparison() {
+        let mut query = "SELECT * FROM collection_articles".to_string();
+        let mut bind_params = Vec::new();
+        let params = ListParams {
+            filter_field: Some("published".to_string()),
+            filter_value: Some("null".to_string()),
+            ..Default::default()
+        };
+
+        append_filter_clauses(&mut query, &test_schema(), &params, &mut bind_params).unwrap();
+
+        assert!(query.contains("\"published\" IS NULL"));
+        assert!(bind_params.is_empty());
     }
 }
 
@@ -166,15 +457,15 @@ impl Db for SqliteDb {
     async fn create_record(&self, collection: &str, data: RecordData) -> Result<Record, AppError> {
         // Create a mutable context for Before events (allows data transformation)
         let mut context = BeforeEventContext::new_create(collection.to_string(), data);
-        
+
         // Dispatch BeforeRecordCreate event - handlers can modify the data
         self.event_bus
             .dispatch_before(BeforeEventType::RecordCreate, &mut context)
             .await?;
-        
+
         // Extract the potentially modified data from the context
         let data = context.data;
-        
+
         // Get collection schema and validate data
         let schema = self.get_collection_schema(collection).await?;
         if let Err(validation_error) = schema.validate_data(&data) {
@@ -202,9 +493,13 @@ impl Db for SqliteDb {
                 .as_secs() as i64;
 
             // Build dynamic INSERT statement
-            let mut field_names = vec!["id".to_string(), "created_at".to_string(), "updated_at".to_string()];
+            let mut field_names = vec![
+                "id".to_string(),
+                "created_at".to_string(),
+                "updated_at".to_string(),
+            ];
             let mut placeholders = vec!["?1".to_string(), "?2".to_string(), "?3".to_string()];
-            
+
             for (field_name, _) in &sql_values {
                 field_names.push(field_name.clone());
                 placeholders.push(format!("?{}", field_names.len()));
@@ -217,8 +512,9 @@ impl Db for SqliteDb {
                 placeholders.join(", ")
             );
 
-            let mut stmt = conn.prepare(&insert_sql)
-                .map_err(|e| AppError::database(format!("Failed to prepare insert statement: {}", e)))?;
+            let mut stmt = conn.prepare(&insert_sql).map_err(|e| {
+                AppError::database(format!("Failed to prepare insert statement: {}", e))
+            })?;
 
             // Bind base values
             stmt.raw_bind_parameter(1, &record_id)
@@ -230,8 +526,11 @@ impl Db for SqliteDb {
 
             // Bind field values
             for (index, (_, sql_value)) in sql_values.iter().enumerate() {
-                sql_value.bind_to_statement(&mut stmt, index + 4)
-                    .map_err(|e| AppError::database(format!("Failed to bind field value: {}", e)))?;
+                sql_value
+                    .bind_to_statement(&mut stmt, index + 4)
+                    .map_err(|e| {
+                        AppError::database(format!("Failed to bind field value: {}", e))
+                    })?;
             }
 
             stmt.raw_execute()
@@ -249,7 +548,8 @@ impl Db for SqliteDb {
         .map_err(|e| AppError::internal(format!("Task join error: {}", e)))??;
 
         // Dispatch AfterRecordCreate event
-        let request_context = oxide_core::event::RequestContext::authenticated("system".to_string()); // Default system context
+        let request_context =
+            oxide_core::event::RequestContext::authenticated("system".to_string()); // Default system context
         let after_context = oxide_core::event::AfterEventContext::record_created(
             record.collection.clone(),
             record.id.clone(),
@@ -305,7 +605,9 @@ impl Db for SqliteDb {
                 .map_err(|e| AppError::database(format!("Failed to prepare statement: {}", e)))?;
 
             let record = stmt
-                .query_row([&record_id], |row| Self::sql_row_to_record(row, &collection, &schema))
+                .query_row([&record_id], |row| {
+                    Self::sql_row_to_record(row, &collection, &schema)
+                })
                 .map_err(|e| match e {
                     rusqlite::Error::QueryReturnedNoRows => {
                         AppError::not_found("record", &record_id)
@@ -319,7 +621,8 @@ impl Db for SqliteDb {
         .map_err(|e| AppError::internal(format!("Task join error: {}", e)))??;
 
         // Dispatch AfterRecordRead event
-        let request_context = oxide_core::event::RequestContext::authenticated("system".to_string());
+        let request_context =
+            oxide_core::event::RequestContext::authenticated("system".to_string());
         // Note: There's no direct factory method for RecordRead, so we'll use the enum variant with all fields
         let after_context = oxide_core::event::AfterEventContext::RecordRead {
             event_id: uuid::Uuid::new_v4().to_string(),
@@ -407,8 +710,9 @@ impl Db for SqliteDb {
                 sql_values.len() + 2
             );
 
-            let mut stmt = conn.prepare(&update_sql)
-                .map_err(|e| AppError::database(format!("Failed to prepare update statement: {}", e)))?;
+            let mut stmt = conn.prepare(&update_sql).map_err(|e| {
+                AppError::database(format!("Failed to prepare update statement: {}", e))
+            })?;
 
             // Bind updated_at
             stmt.raw_bind_parameter(1, now)
@@ -416,15 +720,19 @@ impl Db for SqliteDb {
 
             // Bind field values
             for (index, (_, sql_value)) in sql_values.iter().enumerate() {
-                sql_value.bind_to_statement(&mut stmt, index + 2)
-                    .map_err(|e| AppError::database(format!("Failed to bind field value: {}", e)))?;
+                sql_value
+                    .bind_to_statement(&mut stmt, index + 2)
+                    .map_err(|e| {
+                        AppError::database(format!("Failed to bind field value: {}", e))
+                    })?;
             }
 
             // Bind record_id for WHERE clause
             stmt.raw_bind_parameter(sql_values.len() + 2, &record_id)
                 .map_err(|e| AppError::database(format!("Failed to bind record_id: {}", e)))?;
 
-            let rows_affected = stmt.raw_execute()
+            let rows_affected = stmt
+                .raw_execute()
                 .map_err(|e| AppError::database(format!("Failed to update record: {}", e)))?;
 
             if rows_affected == 0 {
@@ -443,7 +751,8 @@ impl Db for SqliteDb {
         .map_err(|e| AppError::internal(format!("Task join error: {}", e)))??;
 
         // Dispatch AfterRecordUpdate event
-        let request_context = oxide_core::event::RequestContext::authenticated("system".to_string());
+        let request_context =
+            oxide_core::event::RequestContext::authenticated("system".to_string());
         let after_context = oxide_core::event::AfterEventContext::record_updated(
             updated_record.collection.clone(),
             updated_record.id.clone(),
@@ -511,7 +820,8 @@ impl Db for SqliteDb {
         .map_err(|e| AppError::internal(format!("Task join error: {}", e)))??;
 
         // Dispatch AfterRecordDelete event
-        let request_context = oxide_core::event::RequestContext::authenticated("system".to_string());
+        let request_context =
+            oxide_core::event::RequestContext::authenticated("system".to_string());
         let after_context = oxide_core::event::AfterEventContext::record_deleted(
             record.collection.clone(),
             record.id.clone(),
@@ -548,30 +858,33 @@ impl Db for SqliteDb {
                 .lock()
                 .map_err(|_| AppError::database("Failed to acquire database lock"))?;
 
-            let mut query = format!("SELECT * FROM {}", table_name);
-            let mut bind_params: Vec<String> = vec![];
+            let mut query = format!("SELECT * FROM {}", quote_identifier(&table_name));
+            let mut bind_params: Vec<SqlValue> = vec![];
+
+            append_filter_clauses(&mut query, &schema, &params, &mut bind_params)?;
 
             // Add sorting
             if let Some(sort_field) = &params.sort_field {
+                let sort_column = quote_identifier(&resolve_record_column(&schema, sort_field)?);
                 let direction = if params.sort_ascending.unwrap_or(true) {
                     "ASC"
                 } else {
                     "DESC"
                 };
-                query.push_str(&format!(" ORDER BY {} {}", sort_field, direction));
+                query.push_str(&format!(" ORDER BY {} {}", sort_column, direction));
             } else {
-                query.push_str(" ORDER BY created_at ASC");
+                query.push_str(&format!(" ORDER BY {} ASC", quote_identifier("created_at")));
             }
 
             // Add limit and offset
             if let Some(limit) = params.limit {
                 query.push_str(" LIMIT ?");
-                bind_params.push(limit.to_string());
+                bind_params.push(SqlValue::Integer(limit as i64));
             }
 
             if let Some(offset) = params.offset {
                 query.push_str(" OFFSET ?");
-                bind_params.push(offset.to_string());
+                bind_params.push(SqlValue::Integer(offset as i64));
             }
 
             let mut stmt = conn
@@ -579,10 +892,9 @@ impl Db for SqliteDb {
                 .map_err(|e| AppError::database(format!("Failed to prepare statement: {}", e)))?;
 
             let records: Result<Vec<Record>, rusqlite::Error> = stmt
-                .query_map(
-                    rusqlite::params_from_iter(bind_params.iter()),
-                    |row| Self::sql_row_to_record(row, &collection_name, &schema),
-                )
+                .query_map(params_from_iter(bind_params.iter()), |row| {
+                    Self::sql_row_to_record(row, &collection_name, &schema)
+                })
                 .map_err(|e| AppError::database(format!("Failed to execute query: {}", e)))?
                 .collect();
 
@@ -591,19 +903,33 @@ impl Db for SqliteDb {
         .await
         .map_err(|e| AppError::internal(format!("Task join error: {}", e)))??;
 
-        debug!("Listed {} records from collection table {}", records.len(), table_name_for_debug);
+        debug!(
+            "Listed {} records from collection table {}",
+            records.len(),
+            table_name_for_debug
+        );
         Ok(records)
     }
 
-    async fn create_collection(&self, schema: oxide_core::CollectionSchema) -> Result<(), AppError> {
+    async fn create_collection(
+        &self,
+        schema: oxide_core::CollectionSchema,
+    ) -> Result<(), AppError> {
         SqliteDb::create_collection_with_schema(self, schema).await
     }
 
-    async fn get_collection_schema(&self, collection: &str) -> Result<oxide_core::CollectionSchema, AppError> {
+    async fn get_collection_schema(
+        &self,
+        collection: &str,
+    ) -> Result<oxide_core::CollectionSchema, AppError> {
         SqliteDb::get_collection_schema(self, collection).await
     }
 
-    async fn update_collection_schema(&self, collection: &str, schema: oxide_core::CollectionSchema) -> Result<(), AppError> {
+    async fn update_collection_schema(
+        &self,
+        collection: &str,
+        schema: oxide_core::CollectionSchema,
+    ) -> Result<(), AppError> {
         SqliteDb::update_collection_schema(self, collection, schema).await
     }
 
@@ -623,6 +949,49 @@ impl Db for SqliteDb {
         SqliteDb::count_records(self, collection).await
     }
 
+    async fn count_records_with_params(
+        &self,
+        collection: &str,
+        params: ListParams,
+    ) -> Result<usize, AppError> {
+        // Get collection schema
+        let schema = self.get_collection_schema(collection).await?;
+        let schema_adapter = super::schema_adapter::SqliteSchemaAdapter::new();
+        let table_name = schema_adapter.get_table_name(&schema.name);
+        let table_name_for_debug = table_name.clone();
+        let connection = self.connection.clone();
+
+        let count = spawn_blocking(move || {
+            let conn = connection
+                .lock()
+                .map_err(|_| AppError::database("Failed to acquire database lock"))?;
+
+            let mut query = format!("SELECT COUNT(*) FROM {}", quote_identifier(&table_name));
+            let mut bind_params = Vec::new();
+            append_filter_clauses(&mut query, &schema, &params, &mut bind_params)?;
+
+            let mut stmt = conn.prepare(&query).map_err(|e| {
+                AppError::database(format!("Failed to prepare filtered count statement: {}", e))
+            })?;
+
+            let count: i64 = stmt
+                .query_row(params_from_iter(bind_params.iter()), |row| row.get(0))
+                .map_err(|e| {
+                    AppError::database(format!("Failed to count filtered records: {}", e))
+                })?;
+
+            Ok::<usize, AppError>(count as usize)
+        })
+        .await
+        .map_err(|e| AppError::internal(format!("Task join error: {}", e)))??;
+
+        debug!(
+            "Counted {} filtered records in collection table {}",
+            count, table_name_for_debug
+        );
+        Ok(count)
+    }
+
     async fn get_collection_size_kb(&self, collection: &str) -> Result<f64, AppError> {
         SqliteDb::get_collection_size_kb(self, collection).await
     }
@@ -638,13 +1007,19 @@ impl Db for SqliteDb {
     // Permission storage methods
 
     /// Store permissions for a collection
-    async fn store_permissions(&self, permissions: &oxide_core::CollectionPermissions) -> Result<(), AppError> {
+    async fn store_permissions(
+        &self,
+        permissions: &oxide_core::CollectionPermissions,
+    ) -> Result<(), AppError> {
         use oxide_core::auth::PermissionService;
         <Self as PermissionService>::store_permissions(self, permissions).await
     }
 
     /// Get permissions for a collection
-    async fn get_permissions(&self, collection: &str) -> Result<Option<oxide_core::CollectionPermissions>, AppError> {
+    async fn get_permissions(
+        &self,
+        collection: &str,
+    ) -> Result<Option<oxide_core::CollectionPermissions>, AppError> {
         use oxide_core::auth::PermissionService;
         <Self as PermissionService>::get_permissions(self, collection).await
     }
@@ -661,35 +1036,58 @@ impl Db for SqliteDb {
         <Self as PermissionService>::list_collections_with_permissions(self).await
     }
 
-    async fn authenticate_user(&self, auth_request: crate::db::AuthRequest, auth_config: &oxide_core::auth::AuthCollectionConfig) -> Result<crate::db::AuthResponse, AppError> {
+    async fn authenticate_user(
+        &self,
+        auth_request: crate::db::AuthRequest,
+        auth_config: &oxide_core::auth::AuthCollectionConfig,
+    ) -> Result<crate::db::AuthResponse, AppError> {
         SqliteDb::authenticate_user(self, auth_request, auth_config).await
     }
 
-    async fn register_user(&self, register_request: crate::db::RegisterRequest, auth_config: &oxide_core::auth::AuthCollectionConfig) -> Result<String, AppError> {
+    async fn register_user(
+        &self,
+        register_request: crate::db::RegisterRequest,
+        auth_config: &oxide_core::auth::AuthCollectionConfig,
+    ) -> Result<String, AppError> {
         SqliteDb::register_user(self, register_request, auth_config).await
     }
 
-    async fn find_user_by_identifier(&self, collection: &str, identifier_field: &str, identifier_value: &str) -> Result<crate::Record, AppError> {
-        SqliteDb::find_user_by_identifier(self, collection, identifier_field, identifier_value).await
+    async fn find_user_by_identifier(
+        &self,
+        collection: &str,
+        identifier_field: &str,
+        identifier_value: &str,
+    ) -> Result<crate::Record, AppError> {
+        SqliteDb::find_user_by_identifier(self, collection, identifier_field, identifier_value)
+            .await
     }
 
     async fn list_auth_collections(&self) -> Result<Vec<oxide_core::CollectionSchema>, AppError> {
         SqliteDb::list_auth_collections(self).await
     }
 
-    async fn populate_relationships(&self, collection: &str, records: &mut [Record]) -> Result<(), AppError> {
+    async fn populate_relationships(
+        &self,
+        collection: &str,
+        records: &mut [Record],
+    ) -> Result<(), AppError> {
         SqliteDb::populate_relationships(self, collection, records).await
     }
 
-    async fn populate_specific_relationships(&self, collection: &str, records: &mut [Record], field_names: &[String]) -> Result<(), AppError> {
+    async fn populate_specific_relationships(
+        &self,
+        collection: &str,
+        records: &mut [Record],
+        field_names: &[String],
+    ) -> Result<(), AppError> {
         SqliteDb::populate_specific_relationships(self, collection, records, field_names).await
     }
 
     async fn get_related_records(
-        &self, 
-        target_collection: &str, 
+        &self,
+        target_collection: &str,
         record_ids: &[String],
-        display_field: Option<&str>
+        display_field: Option<&str>,
     ) -> Result<std::collections::HashMap<String, serde_json::Value>, AppError> {
         SqliteDb::get_related_records(self, target_collection, record_ids, display_field).await
     }
@@ -705,7 +1103,9 @@ impl Db for SqliteDb {
     }
 
     /// Get statistics for all collections
-    async fn get_collection_statistics(&self) -> Result<Vec<oxide_core::CollectionStatsEntry>, AppError> {
+    async fn get_collection_statistics(
+        &self,
+    ) -> Result<Vec<oxide_core::CollectionStatsEntry>, AppError> {
         SqliteDb::get_collection_statistics(self).await
     }
 
@@ -715,12 +1115,18 @@ impl Db for SqliteDb {
     }
 
     /// Record an activity entry for the dashboard
-    async fn record_dashboard_activity(&self, activity: oxide_core::ActivityEntry) -> Result<(), AppError> {
+    async fn record_dashboard_activity(
+        &self,
+        activity: oxide_core::ActivityEntry,
+    ) -> Result<(), AppError> {
         SqliteDb::record_dashboard_activity(self, activity).await
     }
 
     /// Get recent activities for the dashboard
-    async fn get_recent_dashboard_activities(&self, limit: usize) -> Result<Vec<oxide_core::ActivityEntry>, AppError> {
+    async fn get_recent_dashboard_activities(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<oxide_core::ActivityEntry>, AppError> {
         SqliteDb::get_recent_dashboard_activities(self, limit).await
     }
 }

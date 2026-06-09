@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { apiService } from '../services/api';
+import type { RecordQueryParams } from '../services/api';
 import type { DbRecord, CollectionSchema, CollectionStats } from '../types/api';
 
 interface UseRecordsDataReturn {
@@ -16,7 +17,10 @@ interface UseRecordsDataReturn {
  * Custom hook for managing records data fetching and state
  * Handles loading states, error handling, and data refetching
  */
-export const useRecordsData = (collection: string | undefined): UseRecordsDataReturn => {
+export const useRecordsData = (
+  collection: string | undefined,
+  recordParams?: RecordQueryParams
+): UseRecordsDataReturn => {
   const [records, setRecords] = useState<DbRecord[]>([]);
   const [schema, setSchema] = useState<CollectionSchema | null>(null);
   const [stats, setStats] = useState<CollectionStats | null>(null);
@@ -32,7 +36,7 @@ export const useRecordsData = (collection: string | undefined): UseRecordsDataRe
       
       // Fetch records, schema, and stats in parallel
       const [recordsData, schemaData, statsData] = await Promise.all([
-        apiService.getRecords(collection),
+        apiService.getRecords(collection, recordParams),
         apiService.getCollectionSchema(collection).catch(() => null), // Don't fail if schema doesn't exist
         apiService.getCollectionStats(collection).catch(() => null), // Don't fail if stats don't exist
       ]);
@@ -47,7 +51,7 @@ export const useRecordsData = (collection: string | undefined): UseRecordsDataRe
     } finally {
       setLoading(false);
     }
-  }, [collection]);
+  }, [collection, recordParams]);
 
   const refetch = useCallback(async () => {
     await fetchData();
@@ -61,7 +65,7 @@ export const useRecordsData = (collection: string | undefined): UseRecordsDataRe
     if (collection) {
       fetchData();
     }
-  }, [fetchData]);
+  }, [collection, fetchData]);
 
   return {
     records,
@@ -72,4 +76,4 @@ export const useRecordsData = (collection: string | undefined): UseRecordsDataRe
     refetch,
     clearError,
   };
-}; 
+};

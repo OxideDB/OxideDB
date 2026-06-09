@@ -3,7 +3,11 @@
 //! This module provides HTTP handlers for record-related operations
 //! including create, read, update, delete, and list operations.
 
-use axum::{extract::{Path, Query, State}, http::StatusCode, response::Json};
+use axum::{
+    extract::{Path, Query, State},
+    http::StatusCode,
+    response::Json,
+};
 use oxide_core::event::types::{RecordData, RecordId};
 use oxide_db::{db::ListParams, Db, Record};
 use std::sync::Arc;
@@ -142,7 +146,9 @@ impl RecordHandlers {
         }
 
         let mut records = db.list_records(&collection, params.clone()).await?;
-        let total_count = db.count_records(&collection).await? as u64;
+        let total_count = db
+            .count_records_with_params(&collection, params.clone())
+            .await? as u64;
 
         // Populate relationships if requested
         if params.populate_relationships.unwrap_or(false) {
@@ -153,16 +159,23 @@ impl RecordHandlers {
                     .map(|s| s.trim().to_string())
                     .filter(|s| !s.is_empty())
                     .collect();
-                
+
                 if !field_names.is_empty() {
                     debug!("Populating specific relationship fields for records in collection: {} - fields: {:?}", collection, field_names);
-                    db.populate_specific_relationships(&collection, &mut records, &field_names).await?;
+                    db.populate_specific_relationships(&collection, &mut records, &field_names)
+                        .await?;
                 } else {
-                    debug!("Populating all relationships for records in collection: {}", collection);
+                    debug!(
+                        "Populating all relationships for records in collection: {}",
+                        collection
+                    );
                     db.populate_relationships(&collection, &mut records).await?;
                 }
             } else {
-                debug!("Populating all relationships for records in collection: {}", collection);
+                debug!(
+                    "Populating all relationships for records in collection: {}",
+                    collection
+                );
                 db.populate_relationships(&collection, &mut records).await?;
             }
         }
@@ -173,7 +186,7 @@ impl RecordHandlers {
             collection,
             total_count
         );
-        
+
         Ok((records, total_count))
     }
 
@@ -193,7 +206,10 @@ impl RecordHandlers {
                 Ok(())
             }
             Err(validation_error) => {
-                debug!("Record validation failed for collection {}: {}", collection, validation_error);
+                debug!(
+                    "Record validation failed for collection {}: {}",
+                    collection, validation_error
+                );
                 Err(ApiError::bad_request(validation_error))
             }
         }
@@ -215,7 +231,10 @@ impl RecordHandlers {
                 if !data_obj.contains_key(field_name) {
                     if let Some(default_value) = &field_def.default {
                         data_obj.insert(field_name.clone(), default_value.clone());
-                        debug!("Applied default value for field '{}' in collection '{}'", field_name, collection);
+                        debug!(
+                            "Applied default value for field '{}' in collection '{}'",
+                            field_name, collection
+                        );
                     }
                 }
             }
@@ -248,11 +267,11 @@ pub async fn get_record(
     Query(params): Query<ListParams>,
 ) -> Result<Json<ApiResponse<Record>>, ApiError> {
     let mut record = RecordHandlers::get_record(state.db.clone(), collection.clone(), id).await?;
-    
+
     // Populate relationships if requested
     if params.populate_relationships.unwrap_or(false) {
         let mut records = vec![record];
-        
+
         if let Some(ref populate_fields_str) = params.populate_fields {
             // Parse comma-separated field names and populate only specified fields
             let field_names: Vec<String> = populate_fields_str
@@ -260,19 +279,28 @@ pub async fn get_record(
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty())
                 .collect();
-            
+
             if !field_names.is_empty() {
-                state.db.populate_specific_relationships(&collection, &mut records, &field_names).await?;
+                state
+                    .db
+                    .populate_specific_relationships(&collection, &mut records, &field_names)
+                    .await?;
             } else {
-                state.db.populate_relationships(&collection, &mut records).await?;
+                state
+                    .db
+                    .populate_relationships(&collection, &mut records)
+                    .await?;
             }
         } else {
-            state.db.populate_relationships(&collection, &mut records).await?;
+            state
+                .db
+                .populate_relationships(&collection, &mut records)
+                .await?;
         }
-        
+
         record = records.into_iter().next().unwrap();
     }
-    
+
     Ok(Json(ApiResponse::success(record)))
 }
 
@@ -307,8 +335,9 @@ pub async fn list_records(
     Path(collection): Path<String>,
     Query(params): Query<ListParams>,
 ) -> Result<Json<PaginatedResponse<Record>>, ApiError> {
-    let (records, total_count) = RecordHandlers::list_records(state.db, collection, params.clone()).await?;
-    
+    let (records, total_count) =
+        RecordHandlers::list_records(state.db, collection, params.clone()).await?;
+
     // Calculate page from offset and limit
     let per_page = params.limit.unwrap_or(50) as u32;
     let page = if per_page > 0 {
@@ -316,7 +345,7 @@ pub async fn list_records(
     } else {
         1
     } as u32;
-    
+
     let response = PaginatedResponse::new(records, page, per_page, total_count);
     Ok(Json(response))
-} 
+}

@@ -1,11 +1,14 @@
-import React, { useCallback, useMemo } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
-import { ArrowLeft, Plus, Download, Upload, Settings, Database } from 'lucide-react';
+import { ArrowLeft, Plus, Download, Upload, Settings, Database, Search, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Input } from '@/components/ui/input';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { RecordTable } from '@/components/RecordTable';
 import PageLayout from '@/components/PageLayout';
 import { apiService } from '../services/api';
+import type { RecordFilterOp, RecordQueryParams } from '../services/api';
 import { useFieldCustomization } from '../hooks/useFieldCustomization';
 import { useRecordsData } from '../hooks/useRecordsData';
 import { usePermissions } from '../hooks/usePermissions';
@@ -16,6 +19,20 @@ import { AccessRules } from '../components/AccessRules';
 import { SchemaDisplay } from '../components/SchemaDisplay';
 import { FieldCustomizationPanel } from '../components/FieldCustomizationPanel';
 
+const ALL_FILTER_FIELDS = '__all__';
+const VALUELESS_FILTER_OPS = new Set<RecordFilterOp>(['exists', 'not_exists']);
+const FILTER_OPERATIONS: { value: RecordFilterOp; label: string }[] = [
+  { value: 'eq', label: '=' },
+  { value: 'ne', label: '!=' },
+  { value: 'contains', label: 'Contains' },
+  { value: 'gt', label: '>' },
+  { value: 'gte', label: '>=' },
+  { value: 'lt', label: '<' },
+  { value: 'lte', label: '<=' },
+  { value: 'exists', label: 'Exists' },
+  { value: 'not_exists', label: 'Missing' },
+];
+
 /**
  * Records page component for managing collection records and settings
  * Handles data fetching, permissions, schema display, and record management
@@ -23,6 +40,52 @@ import { FieldCustomizationPanel } from '../components/FieldCustomizationPanel';
 const Records: React.FC = () => {
   const { collection } = useParams<{ collection: string }>();
   const navigate = useNavigate();
+  const [searchText, setSearchText] = useState('');
+  const [debouncedSearchText, setDebouncedSearchText] = useState('');
+  const [filterField, setFilterField] = useState(ALL_FILTER_FIELDS);
+  const [filterOp, setFilterOp] = useState<RecordFilterOp>('eq');
+  const [filterValue, setFilterValue] = useState('');
+  const [filtersCollection, setFiltersCollection] = useState(collection);
+  const filterRequiresValue = !VALUELESS_FILTER_OPS.has(filterOp);
+  const filtersMatchCollection = filtersCollection === collection;
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setDebouncedSearchText(searchText);
+    }, 250);
+
+    return () => window.clearTimeout(timer);
+  }, [searchText]);
+
+  useEffect(() => {
+    setSearchText('');
+    setDebouncedSearchText('');
+    setFilterField(ALL_FILTER_FIELDS);
+    setFilterOp('eq');
+    setFilterValue('');
+    setFiltersCollection(collection);
+  }, [collection]);
+
+  const recordQuery = useMemo<RecordQueryParams>(() => {
+    const params: RecordQueryParams = {};
+    const search = filtersMatchCollection ? debouncedSearchText.trim() : '';
+    const value = filterValue.trim();
+
+    if (search) {
+      params.search = search;
+    }
+
+    if (filtersMatchCollection && filterField !== ALL_FILTER_FIELDS && (!filterRequiresValue || value)) {
+      params.filter_field = filterField;
+      params.filter_op = filterOp;
+
+      if (filterRequiresValue) {
+        params.filter_value = value;
+      }
+    }
+
+    return params;
+  }, [debouncedSearchText, filterField, filterOp, filterRequiresValue, filterValue, filtersMatchCollection]);
   
   // Custom hooks for data management
   const { 
@@ -33,7 +96,7 @@ const Records: React.FC = () => {
     error, 
     refetch,
     clearError
-  } = useRecordsData(collection);
+  } = useRecordsData(collection, recordQuery);
   
   const {
     permissions,
@@ -98,6 +161,26 @@ const Records: React.FC = () => {
     }));
   }, [schema]);
 
+  const filterFields = useMemo(() => {
+    const seen = new Set<string>();
+    return [
+      { value: 'id', label: 'id' },
+      { value: 'created_at', label: 'created_at' },
+      { value: 'updated_at', label: 'updated_at' },
+      ...schemaFields.map((field) => ({ value: field.name, label: field.name })),
+    ].filter((field) => {
+      if (seen.has(field.value)) return false;
+      seen.add(field.value);
+      return true;
+    });
+  }, [schemaFields]);
+
+  const hasActiveRecordFilters = useMemo(() => (
+    filtersMatchCollection &&
+    (searchText.trim().length > 0 ||
+      (filterField !== ALL_FILTER_FIELDS && (!filterRequiresValue || filterValue.trim().length > 0)))
+  ), [filterField, filterRequiresValue, filterValue, filtersMatchCollection, searchText]);
+
   // Event handlers
   const handleDeleteRecord = useCallback(async (recordId: string) => {
     if (!collection || !confirm('Are you sure you want to delete this record?')) return;
@@ -120,6 +203,32 @@ const Records: React.FC = () => {
   const handleDismissError = useCallback(() => {
     clearError();
   }, [clearError]);
+
+  const handleFilterFieldChange = useCallback((value: string) => {
+    setFiltersCollection(collection);
+    setFilterField(value);
+    if (value === ALL_FILTER_FIELDS) {
+      setFilterValue('');
+    }
+  }, [collection]);
+
+  const handleFilterOpChange = useCallback((value: string) => {
+    const nextOp = value as RecordFilterOp;
+    setFiltersCollection(collection);
+    setFilterOp(nextOp);
+    if (VALUELESS_FILTER_OPS.has(nextOp)) {
+      setFilterValue('');
+    }
+  }, [collection]);
+
+  const handleClearRecordFilters = useCallback(() => {
+    setSearchText('');
+    setDebouncedSearchText('');
+    setFilterField(ALL_FILTER_FIELDS);
+    setFilterOp('eq');
+    setFilterValue('');
+    setFiltersCollection(collection);
+  }, [collection]);
 
   // Early returns for edge cases
   if (!collection) {
@@ -264,6 +373,67 @@ const Records: React.FC = () => {
               </Button>
             </div>
           </div>
+          <div className="grid gap-2 pt-2 md:grid-cols-[minmax(180px,1fr)_minmax(140px,180px)_minmax(112px,140px)_minmax(160px,1fr)_40px]">
+            <div className="relative">
+              <Search className="pointer-events-none absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
+              <Input
+                value={searchText}
+                onChange={(event) => {
+                  setFiltersCollection(collection);
+                  setSearchText(event.target.value);
+                }}
+                placeholder="Search records"
+                className="pl-8"
+              />
+            </div>
+            <Select value={filterField} onValueChange={handleFilterFieldChange}>
+              <SelectTrigger>
+                <SelectValue placeholder="Field" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value={ALL_FILTER_FIELDS}>All fields</SelectItem>
+                {filterFields.map((field) => (
+                  <SelectItem key={field.value} value={field.value}>
+                    {field.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Select
+              value={filterOp}
+              onValueChange={handleFilterOpChange}
+              disabled={filterField === ALL_FILTER_FIELDS}
+            >
+              <SelectTrigger>
+                <SelectValue placeholder="Op" />
+              </SelectTrigger>
+              <SelectContent>
+                {FILTER_OPERATIONS.map((operation) => (
+                  <SelectItem key={operation.value} value={operation.value}>
+                    {operation.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Input
+              value={filterValue}
+              onChange={(event) => setFilterValue(event.target.value)}
+              placeholder={filterRequiresValue ? 'Value' : 'No value'}
+              disabled={filterField === ALL_FILTER_FIELDS || !filterRequiresValue}
+            />
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              onClick={handleClearRecordFilters}
+              disabled={!hasActiveRecordFilters}
+              aria-label="Clear record filters"
+              title="Clear record filters"
+              className="h-9 w-9"
+            >
+              <X className="h-4 w-4" />
+            </Button>
+          </div>
         </CardHeader>
         <CardContent>
           {/* Field Customization Controls */}
@@ -277,12 +447,22 @@ const Records: React.FC = () => {
           {records.length === 0 ? (
             <div className="text-center py-12">
               <Database className="mx-auto h-12 w-12 text-muted-foreground" />
-              <CardTitle className="mt-4 text-lg">No records</CardTitle>
-              <CardDescription className="mt-2">Get started by creating a new record.</CardDescription>
+              <CardTitle className="mt-4 text-lg">
+                {hasActiveRecordFilters ? 'No matching records' : 'No records'}
+              </CardTitle>
+              <CardDescription className="mt-2">
+                {hasActiveRecordFilters ? 'Try another search or filter.' : 'Get started by creating a new record.'}
+              </CardDescription>
               <div className="mt-6">
-                <Button onClick={handleCreateRecord}>
-                  Create Record
-                </Button>
+                {hasActiveRecordFilters ? (
+                  <Button variant="outline" onClick={handleClearRecordFilters}>
+                    Clear filters
+                  </Button>
+                ) : (
+                  <Button onClick={handleCreateRecord}>
+                    Create Record
+                  </Button>
+                )}
               </div>
             </div>
           ) : (
@@ -300,4 +480,4 @@ const Records: React.FC = () => {
   );
 };
 
-export default Records; 
+export default Records;

@@ -5,11 +5,11 @@
 //! while the `SchemaAdapter` trait handles database-specific schema operations.
 
 use crate::Record;
-use oxide_core::{AppError, CollectionSchema, CollectionPermissions};
-use oxide_core::event::types::{RecordData, RecordId};
 use oxide_core::auth::AuthCollectionConfig;
-use oxide_core::user_preferences::UserPreferencesService;
+use oxide_core::event::types::{RecordData, RecordId};
 use oxide_core::site_settings::SiteSettingsService;
+use oxide_core::user_preferences::UserPreferencesService;
+use oxide_core::{AppError, CollectionPermissions, CollectionSchema};
 
 /// Parameters for listing records
 #[derive(Debug, Clone, Default, serde::Deserialize)]
@@ -27,6 +27,30 @@ pub struct ListParams {
     /// Specific relationship fields to populate (comma-separated field names)
     /// If provided, only these fields will be populated. If empty and populate_relationships is true, all relationships are populated.
     pub populate_fields: Option<String>,
+    /// Field to filter by. Supports schema fields plus id, created_at, and updated_at.
+    pub filter_field: Option<String>,
+    /// Filter operation to use. Defaults to equality when filter_field is provided.
+    pub filter_op: Option<FilterOp>,
+    /// Filter value. Plain strings are accepted; JSON literals can be used for numbers, booleans, and null.
+    pub filter_value: Option<String>,
+    /// Search text across id and text-like fields.
+    pub search: Option<String>,
+}
+
+/// Supported record list filter operations.
+#[derive(Debug, Clone, Copy, Default, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum FilterOp {
+    #[default]
+    Eq,
+    Ne,
+    Contains,
+    Exists,
+    NotExists,
+    Gt,
+    Gte,
+    Lt,
+    Lte,
 }
 
 /// Authentication request for generic auth collections
@@ -78,18 +102,22 @@ pub struct RegisterRequest {
 pub trait SchemaAdapter {
     /// Get the table name for a collection
     fn get_table_name(&self, collection_name: &str) -> String;
-    
+
     /// Generate SQL DDL for creating a collection's table
     fn generate_create_table_sql(&self, schema: &CollectionSchema) -> String;
-    
+
     /// Generate SQL statements for creating indexes
     fn generate_index_sql(&self, schema: &CollectionSchema) -> Vec<String>;
-    
+
     /// Convert a field type to the appropriate SQL column type
     fn field_type_to_sql(&self, field_type: &oxide_core::FieldType) -> &'static str;
-    
+
     /// Generate SQL statements to migrate a table from old schema to new schema
-    fn generate_migration_sql(&self, old_schema: &CollectionSchema, new_schema: &CollectionSchema) -> Vec<String>;
+    fn generate_migration_sql(
+        &self,
+        old_schema: &CollectionSchema,
+        new_schema: &CollectionSchema,
+    ) -> Vec<String>;
 }
 
 /// Main database trait for CRUD operations
@@ -159,8 +187,11 @@ pub trait Db: Send + Sync + UserPreferencesService + SiteSettingsService {
     ///
     /// # Returns
     /// The deleted record
-    async fn delete_record(&self, collection: &str, record_id: &RecordId)
-        -> Result<Record, AppError>;
+    async fn delete_record(
+        &self,
+        collection: &str,
+        record_id: &RecordId,
+    ) -> Result<Record, AppError>;
 
     /// List records from the specified collection
     ///
@@ -172,8 +203,11 @@ pub trait Db: Send + Sync + UserPreferencesService + SiteSettingsService {
     ///
     /// # Returns
     /// A vector of records matching the criteria
-    async fn list_records(&self, collection: &str, params: ListParams)
-        -> Result<Vec<Record>, AppError>;
+    async fn list_records(
+        &self,
+        collection: &str,
+        params: ListParams,
+    ) -> Result<Vec<Record>, AppError>;
 
     /// Create a new collection with the given schema
     ///
@@ -199,7 +233,11 @@ pub trait Db: Send + Sync + UserPreferencesService + SiteSettingsService {
     /// # Arguments
     /// * `collection` - The name of the collection
     /// * `schema` - The new schema definition
-    async fn update_collection_schema(&self, collection: &str, schema: CollectionSchema) -> Result<(), AppError>;
+    async fn update_collection_schema(
+        &self,
+        collection: &str,
+        schema: CollectionSchema,
+    ) -> Result<(), AppError>;
 
     /// Delete a collection and all its records
     ///
@@ -232,6 +270,13 @@ pub trait Db: Send + Sync + UserPreferencesService + SiteSettingsService {
     /// # Returns
     /// The number of records in the collection
     async fn count_records(&self, collection: &str) -> Result<usize, AppError>;
+
+    /// Get the number of records in a collection after applying list filters.
+    async fn count_records_with_params(
+        &self,
+        collection: &str,
+        params: ListParams,
+    ) -> Result<usize, AppError>;
 
     /// Get the size of a collection in kilobytes
     ///
@@ -270,7 +315,9 @@ pub trait Db: Send + Sync + UserPreferencesService + SiteSettingsService {
     ///
     /// # Returns
     /// Vector of collection statistics entries
-    async fn get_collection_statistics(&self) -> Result<Vec<oxide_core::CollectionStatsEntry>, AppError>;
+    async fn get_collection_statistics(
+        &self,
+    ) -> Result<Vec<oxide_core::CollectionStatsEntry>, AppError>;
 
     /// Get storage usage information
     ///
@@ -288,7 +335,10 @@ pub trait Db: Send + Sync + UserPreferencesService + SiteSettingsService {
     ///
     /// # Returns
     /// Success or an error if recording fails
-    async fn record_dashboard_activity(&self, activity: oxide_core::ActivityEntry) -> Result<(), AppError>;
+    async fn record_dashboard_activity(
+        &self,
+        activity: oxide_core::ActivityEntry,
+    ) -> Result<(), AppError>;
 
     /// Get recent activities for the dashboard
     ///
@@ -297,7 +347,10 @@ pub trait Db: Send + Sync + UserPreferencesService + SiteSettingsService {
     ///
     /// # Returns
     /// Vector of recent activities or an error if retrieval fails
-    async fn get_recent_dashboard_activities(&self, limit: usize) -> Result<Vec<oxide_core::ActivityEntry>, AppError>;
+    async fn get_recent_dashboard_activities(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<oxide_core::ActivityEntry>, AppError>;
 
     /// Store permissions for a collection
     ///
@@ -312,7 +365,10 @@ pub trait Db: Send + Sync + UserPreferencesService + SiteSettingsService {
     ///
     /// # Returns
     /// The collection permissions if found, or None if no custom permissions exist
-    async fn get_permissions(&self, collection: &str) -> Result<Option<CollectionPermissions>, AppError>;
+    async fn get_permissions(
+        &self,
+        collection: &str,
+    ) -> Result<Option<CollectionPermissions>, AppError>;
 
     /// Delete permissions for a collection (revert to defaults)
     ///
@@ -338,7 +394,11 @@ pub trait Db: Send + Sync + UserPreferencesService + SiteSettingsService {
     ///
     /// # Returns
     /// An AuthResponse containing user ID, token, and additional data if authentication succeeds
-    async fn authenticate_user(&self, auth_request: AuthRequest, auth_config: &AuthCollectionConfig) -> Result<AuthResponse, AppError>;
+    async fn authenticate_user(
+        &self,
+        auth_request: AuthRequest,
+        auth_config: &AuthCollectionConfig,
+    ) -> Result<AuthResponse, AppError>;
 
     /// Register a new user in a specific auth collection
     ///
@@ -352,7 +412,11 @@ pub trait Db: Send + Sync + UserPreferencesService + SiteSettingsService {
     ///
     /// # Returns
     /// The ID of the newly created user record
-    async fn register_user(&self, register_request: RegisterRequest, auth_config: &AuthCollectionConfig) -> Result<String, AppError>;
+    async fn register_user(
+        &self,
+        register_request: RegisterRequest,
+        auth_config: &AuthCollectionConfig,
+    ) -> Result<String, AppError>;
 
     /// Find a user by identifier in a specific auth collection
     ///
@@ -365,7 +429,12 @@ pub trait Db: Send + Sync + UserPreferencesService + SiteSettingsService {
     ///
     /// # Returns
     /// The user record if found
-    async fn find_user_by_identifier(&self, collection: &str, identifier_field: &str, identifier_value: &str) -> Result<Record, AppError>;
+    async fn find_user_by_identifier(
+        &self,
+        collection: &str,
+        identifier_field: &str,
+        identifier_value: &str,
+    ) -> Result<Record, AppError>;
 
     /// List all auth collections
     ///
@@ -386,7 +455,11 @@ pub trait Db: Send + Sync + UserPreferencesService + SiteSettingsService {
     ///
     /// # Returns
     /// The populated records with relationship data
-    async fn populate_relationships(&self, collection: &str, records: &mut [Record]) -> Result<(), AppError>;
+    async fn populate_relationships(
+        &self,
+        collection: &str,
+        records: &mut [Record],
+    ) -> Result<(), AppError>;
 
     /// Populate specific relationship fields in records
     ///
@@ -400,7 +473,12 @@ pub trait Db: Send + Sync + UserPreferencesService + SiteSettingsService {
     ///
     /// # Returns
     /// The populated records with relationship data for specified fields only
-    async fn populate_specific_relationships(&self, collection: &str, records: &mut [Record], field_names: &[String]) -> Result<(), AppError>;
+    async fn populate_specific_relationships(
+        &self,
+        collection: &str,
+        records: &mut [Record],
+        field_names: &[String],
+    ) -> Result<(), AppError>;
 
     /// Get related records for a specific relationship field
     ///
@@ -414,9 +492,9 @@ pub trait Db: Send + Sync + UserPreferencesService + SiteSettingsService {
     /// # Returns
     /// A map of record ID to the related record data
     async fn get_related_records(
-        &self, 
-        target_collection: &str, 
+        &self,
+        target_collection: &str,
         record_ids: &[String],
-        display_field: Option<&str>
+        display_field: Option<&str>,
     ) -> Result<std::collections::HashMap<String, serde_json::Value>, AppError>;
 }

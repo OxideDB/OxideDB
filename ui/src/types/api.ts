@@ -2,18 +2,8 @@ import type {
   CollectionType,
   FieldDefinition,
   IndexDefinition,
-  DbRecord,
-  CollectionStats,
-  HealthStatus,
-  ApiError,
-  CollectionSchema,
   DashboardStats,
-  SystemStats,
-  ActivityEntry,
-  SystemHealth,
-  StorageUsage,
-  UserStats,
-  ApiStats
+  SystemStats
 } from './generated';
 
 // Import auto-generated types from the generated types file
@@ -150,6 +140,21 @@ export interface ApiResponse<T> {
   message?: string;
 }
 
+export interface ComponentVersions {
+  api: string;
+  database: string;
+  vfs: string;
+  plugin_runtime: string;
+}
+
+export interface ApiHealthStatus {
+  status: string;
+  database: string;
+  version?: string;
+  uptime?: number;
+  versions?: ComponentVersions;
+}
+
 // Logging system types
 export interface LogQueryParams {
   level?: string;
@@ -206,7 +211,7 @@ export interface LogContext {
   operation?: string;
   client_ip?: string;
   user_agent?: string;
-  metadata: Record<string, any>;
+  metadata: Record<string, unknown>;
 }
 
 export interface LogEntry {
@@ -537,6 +542,20 @@ export interface SiteSettings {
   security: SecuritySettings;
   created_at: number;
   updated_at: number;
+}
+
+export interface SiteSettingsResponse {
+  success: boolean;
+  message?: string | null;
+  settings?: SiteSettings | null;
+}
+
+export interface SettingsHealthStatus {
+  healthy: boolean;
+  email_config_valid: boolean;
+  license_valid: boolean;
+  warnings: string[];
+  last_validated_at: number;
 }
 
 export interface BrandingSettings {
