@@ -15,8 +15,8 @@ pub use db::Db;
 pub use record::Record;
 pub use sqlite::SqliteDb;
 pub use dashboard_stats_service::{
-    DatabaseDashboardStatsService, LoggingStatsProvider, VfsStatsProvider,
-    LoggingStatsBridge, VfsStatsBridge
+    AuthHealthBridge, AuthHealthProvider, DatabaseDashboardStatsService, LoggingStatsBridge,
+    LoggingStatsProvider, PluginHealthProvider, VfsStatsBridge, VfsStatsProvider,
 };
 pub use dashboard_activity_listener::{DashboardActivityListener, register_dashboard_activity_listener};
 // Note: register_auth_listener is deprecated in favor of the system hooks in oxide-core

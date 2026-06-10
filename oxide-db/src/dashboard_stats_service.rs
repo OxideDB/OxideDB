@@ -4,19 +4,19 @@
 //! that collects real data from the database, logging system, and other components
 //! to provide comprehensive dashboard statistics.
 
-use std::sync::Arc;
-use tracing::{debug, warn};
 use async_trait::async_trait;
-use once_cell::sync::Lazy;
-use std::time::Instant;
 use chrono::Utc;
+use once_cell::sync::Lazy;
+use std::sync::Arc;
+use std::time::Instant;
+use tracing::{debug, warn};
 
-use oxide_core::{
-    DashboardStats, DashboardStatsService, SystemStats, 
-    UserStats, UserActivity, ApiStats, EndpointStats, ActivityEntry,
-    SystemHealth, HealthStatus, AppError
-};
 use crate::Db;
+use oxide_core::{
+    ActivityEntry, ApiStats, AppError, AuthService, CollectionType, DashboardStats,
+    DashboardStatsService, EndpointStats, HealthStatus, SystemHealth, SystemStats, UserActivity,
+    UserStats,
+};
 
 /// Dashboard statistics service that aggregates data from multiple sources
 pub struct DatabaseDashboardStatsService {
@@ -26,6 +26,10 @@ pub struct DatabaseDashboardStatsService {
     logging_service: Option<Arc<dyn LoggingStatsProvider>>,
     /// Optional VFS service for storage metrics
     vfs_service: Option<Arc<dyn VfsStatsProvider>>,
+    /// Optional authentication service health provider
+    auth_health_provider: Option<Arc<dyn AuthHealthProvider>>,
+    /// Optional plugin system health provider
+    plugin_health_provider: Option<Arc<dyn PluginHealthProvider>>,
     // Placeholder: each instance no longer tracks start; global used instead
 }
 
@@ -34,10 +38,10 @@ pub struct DatabaseDashboardStatsService {
 pub trait LoggingStatsProvider: Send + Sync {
     /// Get API request statistics
     async fn get_api_stats(&self) -> Result<ApiStats, AppError>;
-    
+
     /// Get user activity statistics
     async fn get_user_activity_stats(&self) -> Result<UserStats, AppError>;
-    
+
     /// Get system health from logging perspective
     async fn get_logging_health(&self) -> Result<HealthStatus, AppError>;
 }
@@ -47,9 +51,23 @@ pub trait LoggingStatsProvider: Send + Sync {
 pub trait VfsStatsProvider: Send + Sync {
     /// Get VFS storage usage
     async fn get_vfs_storage_usage(&self) -> Result<u64, AppError>;
-    
+
     /// Get VFS health status
     async fn get_vfs_health(&self) -> Result<HealthStatus, AppError>;
+}
+
+/// Trait for providing authentication health checks
+#[async_trait]
+pub trait AuthHealthProvider: Send + Sync {
+    /// Get authentication subsystem health status
+    async fn get_auth_health(&self) -> Result<HealthStatus, AppError>;
+}
+
+/// Trait for providing plugin-system health checks
+#[async_trait]
+pub trait PluginHealthProvider: Send + Sync {
+    /// Get plugin subsystem health status
+    async fn get_plugin_health(&self) -> Result<HealthStatus, AppError>;
 }
 
 impl DatabaseDashboardStatsService {
@@ -59,18 +77,19 @@ impl DatabaseDashboardStatsService {
             db,
             logging_service: None,
             vfs_service: None,
+            auth_health_provider: None,
+            plugin_health_provider: None,
         }
     }
 
     /// Create a dashboard stats service with logging integration
-    pub fn with_logging(
-        db: Arc<dyn Db>,
-        logging_service: Arc<dyn LoggingStatsProvider>,
-    ) -> Self {
+    pub fn with_logging(db: Arc<dyn Db>, logging_service: Arc<dyn LoggingStatsProvider>) -> Self {
         Self {
             db,
             logging_service: Some(logging_service),
             vfs_service: None,
+            auth_health_provider: None,
+            plugin_health_provider: None,
         }
     }
 
@@ -84,6 +103,25 @@ impl DatabaseDashboardStatsService {
             db,
             logging_service,
             vfs_service,
+            auth_health_provider: None,
+            plugin_health_provider: None,
+        }
+    }
+
+    /// Create a dashboard stats service with all available integrations
+    pub fn with_health_integrations(
+        db: Arc<dyn Db>,
+        logging_service: Option<Arc<dyn LoggingStatsProvider>>,
+        vfs_service: Option<Arc<dyn VfsStatsProvider>>,
+        auth_health_provider: Option<Arc<dyn AuthHealthProvider>>,
+        plugin_health_provider: Option<Arc<dyn PluginHealthProvider>>,
+    ) -> Self {
+        Self {
+            db,
+            logging_service,
+            vfs_service,
+            auth_health_provider,
+            plugin_health_provider,
         }
     }
 
@@ -109,12 +147,14 @@ impl DatabaseDashboardStatsService {
             match logging.get_api_stats().await {
                 Ok(api_stats) => {
                     system_stats.api_requests_24h = api_stats.requests_24h;
-                    
+
                     // Calculate growth trends based on 7-day vs 24-hour data
                     if api_stats.requests_7d > 0 {
                         let daily_average_7d = api_stats.requests_7d as f64 / 7.0;
                         let growth_percent = if daily_average_7d > 0.0 {
-                            ((system_stats.api_requests_24h as f64 - daily_average_7d) / daily_average_7d) * 100.0
+                            ((system_stats.api_requests_24h as f64 - daily_average_7d)
+                                / daily_average_7d)
+                                * 100.0
                         } else {
                             0.0
                         };
@@ -142,14 +182,41 @@ impl DatabaseDashboardStatsService {
             Err(_) => HealthStatus::Unhealthy,
         };
 
-        // Get logging system health
-        let auth_status = HealthStatus::Healthy; // TODO: Implement auth health check
-        let plugin_status = HealthStatus::Healthy; // TODO: Implement plugin health check
+        // Get authentication system health
+        let auth_status = if let Some(ref auth_provider) = self.auth_health_provider {
+            match auth_provider.get_auth_health().await {
+                Ok(status) => status,
+                Err(e) => {
+                    warn!("Failed to get auth health: {}", e);
+                    HealthStatus::Unhealthy
+                }
+            }
+        } else {
+            HealthStatus::Unknown
+        };
+
+        // Get plugin system health
+        let plugin_status = if let Some(ref plugin_provider) = self.plugin_health_provider {
+            match plugin_provider.get_plugin_health().await {
+                Ok(status) => status,
+                Err(e) => {
+                    warn!("Failed to get plugin health: {}", e);
+                    HealthStatus::Unhealthy
+                }
+            }
+        } else {
+            HealthStatus::Unknown
+        };
 
         // Get API and logging health from logging service
         let api_status = if let Some(ref logging) = self.logging_service {
-            let _logging_health = logging.get_logging_health().await.unwrap_or(HealthStatus::Unknown);
-            HealthStatus::Healthy // API is healthy if logging is working
+            match logging.get_logging_health().await {
+                Ok(status) => status,
+                Err(e) => {
+                    warn!("Failed to get API/logging health: {}", e);
+                    HealthStatus::Unhealthy
+                }
+            }
         } else {
             HealthStatus::Unknown
         };
@@ -162,11 +229,11 @@ impl DatabaseDashboardStatsService {
         };
 
         let uptime_seconds = PROCESS_START.elapsed().as_secs();
-        
+
         Ok(SystemHealth {
             database_status,
             api_status,
-            auth_status: auth_status,
+            auth_status,
             plugin_status,
             vfs_status,
             storage_usage,
@@ -206,13 +273,135 @@ impl DatabaseDashboardStatsService {
     }
 }
 
+/// Bridge implementation for authentication health checks
+pub struct AuthHealthBridge {
+    /// Database service for validating auth collection schemas
+    db: Arc<dyn Db>,
+    /// Authentication service for validating configured collections and JWT signing
+    auth_service: Arc<AuthService>,
+}
+
+impl AuthHealthBridge {
+    pub fn new(db: Arc<dyn Db>, auth_service: Arc<AuthService>) -> Self {
+        Self { db, auth_service }
+    }
+}
+
+#[async_trait]
+impl AuthHealthProvider for AuthHealthBridge {
+    async fn get_auth_health(&self) -> Result<HealthStatus, AppError> {
+        let auth_schemas = self.db.list_auth_collections().await?;
+        let configured_collections = self.auth_service.config().list_auth_collections();
+
+        if auth_schemas.is_empty() && configured_collections.is_empty() {
+            return Ok(HealthStatus::Warning);
+        }
+
+        if auth_schemas.is_empty() && !configured_collections.is_empty() {
+            warn!(
+                "Auth service has {} configured collections but database has no auth collections",
+                configured_collections.len()
+            );
+            return Ok(HealthStatus::Unhealthy);
+        }
+
+        let mut missing_config_count = 0usize;
+        let mut missing_schema = false;
+        let mut invalid_schema = false;
+
+        for schema in &auth_schemas {
+            if schema.collection_type != CollectionType::Auth {
+                invalid_schema = true;
+                warn!(
+                    "Collection '{}' returned as auth collection but has type {:?}",
+                    schema.name, schema.collection_type
+                );
+                continue;
+            }
+
+            let Some(config) = self.auth_service.config().get_auth_collection(&schema.name) else {
+                missing_config_count += 1;
+                warn!(
+                    "Auth collection '{}' exists in database but is not configured in AuthService",
+                    schema.name
+                );
+                continue;
+            };
+
+            if !schema.fields.contains_key(&config.identifier_field) {
+                invalid_schema = true;
+                warn!(
+                    "Auth collection '{}' is missing configured identifier field '{}'",
+                    schema.name, config.identifier_field
+                );
+            }
+
+            if !schema.fields.contains_key(&config.credential_field) {
+                invalid_schema = true;
+                warn!(
+                    "Auth collection '{}' is missing configured credential field '{}'",
+                    schema.name, config.credential_field
+                );
+            }
+        }
+
+        for configured_name in &configured_collections {
+            if !auth_schemas
+                .iter()
+                .any(|schema| schema.name == *configured_name)
+            {
+                missing_schema = true;
+                warn!(
+                    "AuthService collection '{}' is configured but missing from database schemas",
+                    configured_name
+                );
+            }
+        }
+
+        if invalid_schema || missing_schema {
+            return Ok(HealthStatus::Unhealthy);
+        }
+
+        if let Some(collection_name) = configured_collections.first() {
+            if let Some(config) = self
+                .auth_service
+                .config()
+                .get_auth_collection(collection_name)
+            {
+                let token = self.auth_service.generate_token(
+                    "health-check".to_string(),
+                    "health@example.invalid".to_string(),
+                    config.default_role.clone(),
+                    collection_name.clone(),
+                )?;
+                self.auth_service.verify_token(&token)?;
+            }
+        }
+
+        if missing_config_count == auth_schemas.len() {
+            Ok(HealthStatus::Unhealthy)
+        } else if missing_config_count > 0 {
+            Ok(HealthStatus::Degraded)
+        } else {
+            Ok(HealthStatus::Healthy)
+        }
+    }
+}
+
 #[async_trait]
 impl DashboardStatsService for DatabaseDashboardStatsService {
     async fn get_dashboard_stats(&self) -> Result<DashboardStats, oxide_core::error::AppError> {
         debug!("Collecting comprehensive dashboard statistics");
 
         // Collect all statistics in parallel for better performance
-        let (system_stats_result, collection_stats_result, user_stats_result, api_stats_result, health_result, activities_result) = tokio::join!(
+        let (
+            system_stats_result,
+            collection_stats_result,
+            user_stats_result,
+            api_stats_result,
+            health_result,
+            activities_result,
+        ) = tokio::join!(
             self.get_enhanced_system_stats(),
             self.db.get_collection_statistics(),
             self.get_real_user_stats(),
@@ -221,12 +410,22 @@ impl DashboardStatsService for DatabaseDashboardStatsService {
             self.db.get_recent_dashboard_activities(20)
         );
 
-        let system_stats = system_stats_result.map_err(|e| oxide_core::error::AppError::internal(format!("Failed to get system stats: {}", e)))?;
-        let collection_stats = collection_stats_result.map_err(|e| oxide_core::error::AppError::internal(format!("Failed to get collection stats: {}", e)))?;
-        let user_stats = user_stats_result.map_err(|e| oxide_core::error::AppError::internal(format!("Failed to get user stats: {}", e)))?;
-        let api_stats = api_stats_result.map_err(|e| oxide_core::error::AppError::internal(format!("Failed to get API stats: {}", e)))?;
-        let system_health = health_result.map_err(|e| oxide_core::error::AppError::internal(format!("Failed to get system health: {}", e)))?;
-        
+        let system_stats = system_stats_result.map_err(|e| {
+            oxide_core::error::AppError::internal(format!("Failed to get system stats: {}", e))
+        })?;
+        let collection_stats = collection_stats_result.map_err(|e| {
+            oxide_core::error::AppError::internal(format!("Failed to get collection stats: {}", e))
+        })?;
+        let user_stats = user_stats_result.map_err(|e| {
+            oxide_core::error::AppError::internal(format!("Failed to get user stats: {}", e))
+        })?;
+        let api_stats = api_stats_result.map_err(|e| {
+            oxide_core::error::AppError::internal(format!("Failed to get API stats: {}", e))
+        })?;
+        let system_health = health_result.map_err(|e| {
+            oxide_core::error::AppError::internal(format!("Failed to get system health: {}", e))
+        })?;
+
         let recent_activity = activities_result.map_err(|e| {
             oxide_core::error::AppError::internal(format!("Failed to get recent activities: {}", e))
         })?;
@@ -246,22 +445,40 @@ impl DashboardStatsService for DatabaseDashboardStatsService {
     }
 
     async fn get_system_stats(&self) -> Result<SystemStats, oxide_core::error::AppError> {
-        self.get_enhanced_system_stats().await
-            .map_err(|e| oxide_core::error::AppError::internal(format!("Failed to get system stats: {}", e)))
+        self.get_enhanced_system_stats().await.map_err(|e| {
+            oxide_core::error::AppError::internal(format!("Failed to get system stats: {}", e))
+        })
     }
 
-    async fn record_activity(&self, activity: ActivityEntry) -> Result<(), oxide_core::error::AppError> {
+    async fn record_activity(
+        &self,
+        activity: ActivityEntry,
+    ) -> Result<(), oxide_core::error::AppError> {
         debug!("Recording dashboard activity: {:?}", activity.activity_type);
-        
-        self.db.record_dashboard_activity(activity).await
-            .map_err(|e| oxide_core::error::AppError::internal(format!("Failed to record activity: {}", e)))
+
+        self.db
+            .record_dashboard_activity(activity)
+            .await
+            .map_err(|e| {
+                oxide_core::error::AppError::internal(format!("Failed to record activity: {}", e))
+            })
     }
 
-    async fn get_recent_activities(&self, limit: usize) -> Result<Vec<ActivityEntry>, oxide_core::error::AppError> {
+    async fn get_recent_activities(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<ActivityEntry>, oxide_core::error::AppError> {
         debug!("Getting recent dashboard activities with limit: {}", limit);
-        
-        self.db.get_recent_dashboard_activities(limit).await
-            .map_err(|e| oxide_core::error::AppError::internal(format!("Failed to get recent activities: {}", e)))
+
+        self.db
+            .get_recent_dashboard_activities(limit)
+            .await
+            .map_err(|e| {
+                oxide_core::error::AppError::internal(format!(
+                    "Failed to get recent activities: {}",
+                    e
+                ))
+            })
     }
 }
 
@@ -294,15 +511,18 @@ impl LoggingStatsProvider for LoggingStatsBridge {
             match logging_service.get_dashboard_metrics().await {
                 Ok(dashboard_metrics) => {
                     let log_metrics = &dashboard_metrics.log_metrics;
-                    
+
                     // Calculate API stats from log data
                     let total_requests_24h = log_metrics.total_entries;
                     // For a more accurate calculation, we'd need to filter by HTTP request logs
                     let requests_24h = total_requests_24h as u32;
                     let requests_7d = (total_requests_24h as f64 * 7.0) as u32; // Estimate based on daily average
-                    
+
                     // Calculate error rate from log levels
-                    let error_count = log_metrics.entries_by_level.get(&oxide_logging::models::LogLevel::Error).unwrap_or(&0);
+                    let error_count = log_metrics
+                        .entries_by_level
+                        .get(&oxide_logging::models::LogLevel::Error)
+                        .unwrap_or(&0);
                     let error_rate = if total_requests_24h > 0 {
                         (*error_count as f64 / total_requests_24h as f64) * 100.0
                     } else {
@@ -352,7 +572,10 @@ impl LoggingStatsProvider for LoggingStatsBridge {
                     })
                 }
                 Err(e) => {
-                    warn!("Failed to get dashboard metrics from logging service: {}", e);
+                    warn!(
+                        "Failed to get dashboard metrics from logging service: {}",
+                        e
+                    );
                     self.get_fallback_api_stats().await
                 }
             }
@@ -360,16 +583,17 @@ impl LoggingStatsProvider for LoggingStatsBridge {
             self.get_fallback_api_stats().await
         }
     }
-    
+
     async fn get_user_activity_stats(&self) -> Result<UserStats, AppError> {
         if let Some(ref logging_service) = self.logging_service {
             // Get real user statistics from logging data
             match logging_service.get_dashboard_metrics().await {
                 Ok(dashboard_metrics) => {
                     let log_metrics = &dashboard_metrics.log_metrics;
-                    
+
                     // Convert top users from log metrics
-                    let top_active_users: Vec<UserActivity> = log_metrics.top_users
+                    let top_active_users: Vec<UserActivity> = log_metrics
+                        .top_users
                         .iter()
                         .take(5)
                         .map(|(username, action_count)| UserActivity {
@@ -447,9 +671,7 @@ pub struct VfsStatsBridge {
 
 impl VfsStatsBridge {
     pub fn new() -> Self {
-        Self {
-            vfs_service: None,
-        }
+        Self { vfs_service: None }
     }
 
     /// Create with actual VFS service integration

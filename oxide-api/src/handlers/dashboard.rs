@@ -4,16 +4,125 @@
 //! offering comprehensive insights into system usage, performance, and health.
 
 use axum::{extract::State, Json};
-use oxide_core::{DashboardStats, DashboardStatsService};
-use oxide_db::{DatabaseDashboardStatsService, LoggingStatsBridge, VfsStatsBridge};
-use tracing::debug;
-use std::sync::Arc;
+use oxide_core::plugin_config::PluginStatus as ConfigPluginStatus;
+use oxide_core::{AppError, DashboardStats, DashboardStatsService, HealthStatus};
+use oxide_db::{
+    AuthHealthBridge, DatabaseDashboardStatsService, LoggingStatsBridge, PluginHealthProvider,
+    VfsStatsBridge,
+};
+use oxide_plugin_runtime::manager::PluginStatus as RuntimePluginStatus;
+use std::{collections::HashSet, sync::Arc};
+use tracing::{debug, warn};
 
 use crate::{
-    errors::ApiError,
-    responses::ApiResponse,
-    server::AppState,
+    errors::ApiError, responses::ApiResponse, server::AppState, services::PluginConfigService,
 };
+
+struct DashboardPluginHealthBridge {
+    plugin_manager: Option<Arc<oxide_plugin_runtime::PluginManager>>,
+    plugin_config_service: Arc<PluginConfigService>,
+}
+
+impl DashboardPluginHealthBridge {
+    fn new(
+        plugin_manager: Option<Arc<oxide_plugin_runtime::PluginManager>>,
+        plugin_config_service: Arc<PluginConfigService>,
+    ) -> Self {
+        Self {
+            plugin_manager,
+            plugin_config_service,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl PluginHealthProvider for DashboardPluginHealthBridge {
+    async fn get_plugin_health(&self) -> Result<HealthStatus, AppError> {
+        let plugin_configs = self.plugin_config_service.list_plugin_configs().await?;
+
+        if plugin_configs.is_empty() {
+            return Ok(HealthStatus::Healthy);
+        }
+
+        let enabled_count = plugin_configs
+            .iter()
+            .filter(|config| config.enabled)
+            .count();
+        let enabled_error_count = plugin_configs
+            .iter()
+            .filter(|config| config.enabled && matches!(config.status, ConfigPluginStatus::Error))
+            .count();
+        let transitional_count = plugin_configs
+            .iter()
+            .filter(|config| {
+                matches!(
+                    config.status,
+                    ConfigPluginStatus::Loading | ConfigPluginStatus::Uninstalling
+                )
+            })
+            .count();
+
+        if enabled_count == 0 {
+            return if enabled_error_count > 0 || transitional_count > 0 {
+                Ok(HealthStatus::Warning)
+            } else {
+                Ok(HealthStatus::Healthy)
+            };
+        }
+
+        let Some(plugin_manager) = &self.plugin_manager else {
+            warn!(
+                "{} plugin(s) are enabled but the plugin manager is unavailable",
+                enabled_count
+            );
+            return Ok(HealthStatus::Degraded);
+        };
+
+        let runtime_stats = plugin_manager.get_plugin_statistics()?;
+        let mut unhealthy_plugins = HashSet::new();
+
+        for config in plugin_configs.iter().filter(|config| config.enabled) {
+            if matches!(config.status, ConfigPluginStatus::Error) {
+                unhealthy_plugins.insert(config.name.clone());
+            }
+
+            if !matches!(config.status, ConfigPluginStatus::Disabled)
+                && !runtime_stats.iter().any(|stat| stat.name == config.name)
+            {
+                unhealthy_plugins.insert(config.name.clone());
+            }
+        }
+
+        for stat in &runtime_stats {
+            let is_enabled_plugin = plugin_configs
+                .iter()
+                .any(|config| config.enabled && config.name == stat.name);
+
+            if is_enabled_plugin
+                && matches!(
+                    stat.status,
+                    RuntimePluginStatus::Suspended | RuntimePluginStatus::Error
+                )
+            {
+                unhealthy_plugins.insert(stat.name.clone());
+            }
+        }
+
+        let unhealthy_signals = unhealthy_plugins.len();
+
+        if unhealthy_signals == 0 {
+            if transitional_count > 0 {
+                Ok(HealthStatus::Warning)
+            } else {
+                Ok(HealthStatus::Healthy)
+            }
+        } else if unhealthy_signals >= enabled_count {
+            Ok(HealthStatus::Unhealthy)
+        } else {
+            Ok(HealthStatus::Degraded)
+        }
+    }
+}
 
 /// Get comprehensive dashboard statistics
 ///
@@ -32,20 +141,34 @@ pub async fn get_dashboard_statistics(
     // Create dashboard stats service with available integrations
     let logging_bridge = state.logging_api_service.as_ref().map(|logging_api| {
         // Create a new LogApiService instance using the underlying log service
-        let log_api_service = Arc::new(oxide_logging::api::LogApiService::new(
-            Arc::clone(logging_api.inner().log_service())
-        ));
-        Arc::new(LoggingStatsBridge::with_service(log_api_service)) as Arc<dyn oxide_db::LoggingStatsProvider>
-    });
-    
-    let vfs_bridge = state.vfs_service.as_ref().map(|vfs_service| {
-        Arc::new(VfsStatsBridge::with_service(Arc::clone(vfs_service))) as Arc<dyn oxide_db::VfsStatsProvider>
+        let log_api_service = Arc::new(oxide_logging::api::LogApiService::new(Arc::clone(
+            logging_api.inner().log_service(),
+        )));
+        Arc::new(LoggingStatsBridge::with_service(log_api_service))
+            as Arc<dyn oxide_db::LoggingStatsProvider>
     });
 
-    let dashboard_service = DatabaseDashboardStatsService::with_full_integration(
+    let vfs_bridge = state.vfs_service.as_ref().map(|vfs_service| {
+        Arc::new(VfsStatsBridge::with_service(Arc::clone(vfs_service)))
+            as Arc<dyn oxide_db::VfsStatsProvider>
+    });
+
+    let auth_bridge = Some(Arc::new(AuthHealthBridge::new(
+        state.db.clone(),
+        state.auth_service.clone(),
+    )) as Arc<dyn oxide_db::AuthHealthProvider>);
+
+    let plugin_bridge = Some(Arc::new(DashboardPluginHealthBridge::new(
+        state.plugin_manager.clone(),
+        state.plugin_config_service.clone(),
+    )) as Arc<dyn oxide_db::PluginHealthProvider>);
+
+    let dashboard_service = DatabaseDashboardStatsService::with_health_integrations(
         state.db.clone(),
         logging_bridge,
         vfs_bridge,
+        auth_bridge,
+        plugin_bridge,
     );
 
     let stats = dashboard_service.get_dashboard_stats().await?;
@@ -72,10 +195,11 @@ pub async fn get_system_statistics(
     // Create dashboard stats service with available integrations
     let logging_bridge = state.logging_api_service.as_ref().map(|logging_api| {
         // Create a new LogApiService instance using the underlying log service
-        let log_api_service = Arc::new(oxide_logging::api::LogApiService::new(
-            Arc::clone(logging_api.inner().log_service())
-        ));
-        Arc::new(LoggingStatsBridge::with_service(log_api_service)) as Arc<dyn oxide_db::LoggingStatsProvider>
+        let log_api_service = Arc::new(oxide_logging::api::LogApiService::new(Arc::clone(
+            logging_api.inner().log_service(),
+        )));
+        Arc::new(LoggingStatsBridge::with_service(log_api_service))
+            as Arc<dyn oxide_db::LoggingStatsProvider>
     });
 
     let dashboard_service = DatabaseDashboardStatsService::with_full_integration(
@@ -135,7 +259,10 @@ pub async fn get_recent_dashboard_activities(
     let dashboard_service = DatabaseDashboardStatsService::new(state.db.clone());
     let activities = dashboard_service.get_recent_activities(limit).await?;
 
-    debug!("Successfully retrieved {} recent activities", activities.len());
+    debug!(
+        "Successfully retrieved {} recent activities",
+        activities.len()
+    );
     Ok(Json(ApiResponse::success(activities)))
 }
 
