@@ -4,24 +4,25 @@
 //! providing plugin loading, execution, and security management.
 
 use crate::host_functions::{
-    define_database_functions, define_event_functions,
-    define_http_functions, define_logging_functions, register_vfs_functions
+    define_database_functions, define_event_functions, define_http_functions,
+    define_logging_functions, register_vfs_functions,
 };
-use crate::host_state::{HostState, ExecutionContext};
+use crate::host_state::{ExecutionContext, HostState};
 use oxide_core::{
-    plugin_api::{EventPayload, PluginError, PluginResponse, PluginResult, PluginRuntime},
-    plugin_security::{
-        PluginSecurityManager, PluginCapability, PluginTrustLevel, SecurityPolicies,
-        SecurityViolation, ResourceLimits, ExecutionStats, SecurityAuditEntry
+    plugin_api::{
+        plugin_exports, EventPayload, PluginError, PluginResponse, PluginResult, PluginRuntime,
     },
-    CrudOperation,
+    plugin_security::{
+        ExecutionStats, PluginCapability, PluginSecurityManager, PluginTrustLevel, ResourceLimits,
+        SecurityAuditEntry, SecurityPolicies, SecurityViolation,
+    },
 };
 use oxide_db::Db;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tracing::{debug, info};
-use wasmtime::{Engine, Instance, Linker, Module, Store};
+use wasmtime::{Engine, ExternType, Instance, Linker, Module, Store};
 
 /// Wasmtime-based implementation of the PluginRuntime trait
 pub struct WasmtimePluginRuntime {
@@ -61,7 +62,10 @@ impl WasmtimePluginRuntime {
     }
 
     /// Create a new Wasmtime plugin runtime with custom security policies
-    pub fn new_with_security_policies(database: Arc<dyn Db>, policies: SecurityPolicies) -> PluginResult<Self> {
+    pub fn new_with_security_policies(
+        database: Arc<dyn Db>,
+        policies: SecurityPolicies,
+    ) -> PluginResult<Self> {
         let engine = Engine::default();
         let linker = Linker::new(&engine);
         let host_state = Arc::new(Mutex::new(HostState::default()));
@@ -100,8 +104,9 @@ impl WasmtimePluginRuntime {
         define_database_functions(&mut self.linker, self.database.clone())?;
 
         // Define VFS-related host functions
-        register_vfs_functions(&mut self.linker)
-            .map_err(|e| PluginError::InitializationFailed(format!("Failed to register VFS functions: {}", e)))?;
+        register_vfs_functions(&mut self.linker).map_err(|e| {
+            PluginError::InitializationFailed(format!("Failed to register VFS functions: {}", e))
+        })?;
 
         Ok(())
     }
@@ -179,6 +184,68 @@ impl WasmtimePluginRuntime {
             .map_err(|e| PluginError::InvalidResponse(format!("Failed to parse response: {}", e)))
     }
 
+    fn initialize_plugin(&mut self, name: &str) -> PluginResult<()> {
+        let result = (|| {
+            let instance = self
+                .instances
+                .get(name)
+                .ok_or_else(|| PluginError::PluginNotFound(name.to_string()))?;
+
+            {
+                let mut state = self.store.data().lock().unwrap();
+                state.current_plugin = Some(name.to_string());
+                state.current_http_request = None;
+                state.error_message = None;
+                state.set_execution_context(ExecutionContext::Idle);
+            }
+
+            let init = instance
+                .get_typed_func::<(), i32>(&mut self.store, plugin_exports::PLUGIN_INIT)
+                .map_err(|e| {
+                    PluginError::FunctionNotExported(format!(
+                        "{}: {}",
+                        plugin_exports::PLUGIN_INIT,
+                        e
+                    ))
+                })?;
+
+            let code = init.call(&mut self.store, ()).map_err(|e| {
+                PluginError::InitializationFailed(format!(
+                    "Plugin '{}' initialization failed: {}",
+                    name, e
+                ))
+            })?;
+
+            if code != 0 {
+                return Err(PluginError::InitializationFailed(format!(
+                    "Plugin '{}' initialization returned non-zero status {}",
+                    name, code
+                )));
+            }
+
+            Ok(())
+        })();
+
+        {
+            let mut state = self.store.data().lock().unwrap();
+            state.current_plugin = None;
+            state.set_execution_context(ExecutionContext::Idle);
+        }
+
+        result
+    }
+
+    fn remove_plugin_runtime_state(&mut self, plugin_name: &str) {
+        self.security_manager.unregister_plugin(plugin_name);
+        self.modules.remove(plugin_name);
+        self.instances.remove(plugin_name);
+
+        let mut state = self.store.data().lock().unwrap();
+        state
+            .registered_routes
+            .retain(|route| route.plugin_name != plugin_name);
+    }
+
     /// Load a plugin with specific trust level and capabilities
     pub fn load_plugin_with_trust(
         &mut self,
@@ -188,7 +255,10 @@ impl WasmtimePluginRuntime {
         capabilities: Vec<PluginCapability>,
         _limits: ResourceLimits,
     ) -> PluginResult<()> {
-        debug!("Loading plugin '{}' with trust level {:?}", name, trust_level);
+        debug!(
+            "Loading plugin '{}' with trust level {:?}",
+            name, trust_level
+        );
 
         // Compile the module
         let module = Module::new(&self.engine, wasm_bytes).map_err(|e| {
@@ -203,24 +273,37 @@ impl WasmtimePluginRuntime {
                 PluginError::InitializationFailed(format!("Failed to instantiate module: {}", e))
             })?;
 
+        self.remove_plugin_runtime_state(name);
+
         // Register plugin with specified security settings
-        self.security_manager.register_plugin(
-            name.to_string(),
-            Some(trust_level.clone()),
-        )
-        .map_err(|e| PluginError::SecurityViolation(format!("Failed to register plugin: {:?}", e)))?;
+        self.security_manager
+            .register_plugin(name.to_string(), Some(trust_level.clone()))
+            .map_err(|e| {
+                PluginError::SecurityViolation(format!("Failed to register plugin: {:?}", e))
+            })?;
 
         // Grant specified capabilities
         for capability in capabilities {
-            self.security_manager.grant_capability(name, capability)
-                .map_err(|e| PluginError::SecurityViolation(format!("Failed to grant capability: {:?}", e)))?;
+            self.security_manager
+                .grant_capability(name, capability)
+                .map_err(|e| {
+                    PluginError::SecurityViolation(format!("Failed to grant capability: {:?}", e))
+                })?;
         }
 
         // Store module and instance
         self.modules.insert(name.to_string(), module);
         self.instances.insert(name.to_string(), instance);
 
-        info!("Plugin '{}' loaded successfully with trust level {:?}", name, trust_level);
+        if let Err(e) = self.initialize_plugin(name) {
+            self.remove_plugin_runtime_state(name);
+            return Err(e);
+        }
+
+        info!(
+            "Plugin '{}' loaded successfully with trust level {:?}",
+            name, trust_level
+        );
         Ok(())
     }
 
@@ -230,8 +313,11 @@ impl WasmtimePluginRuntime {
         plugin_name: &str,
         capability: PluginCapability,
     ) -> PluginResult<()> {
-        self.security_manager.grant_capability(plugin_name, capability)
-            .map_err(|e| PluginError::SecurityViolation(format!("Failed to grant capability: {:?}", e)))
+        self.security_manager
+            .grant_capability(plugin_name, capability)
+            .map_err(|e| {
+                PluginError::SecurityViolation(format!("Failed to grant capability: {:?}", e))
+            })
     }
 
     /// Revoke a capability from a plugin
@@ -240,14 +326,20 @@ impl WasmtimePluginRuntime {
         plugin_name: &str,
         capability: &PluginCapability,
     ) -> PluginResult<()> {
-        self.security_manager.revoke_capability(plugin_name, capability)
-            .map_err(|e| PluginError::SecurityViolation(format!("Failed to revoke capability: {:?}", e)))
+        self.security_manager
+            .revoke_capability(plugin_name, capability)
+            .map_err(|e| {
+                PluginError::SecurityViolation(format!("Failed to revoke capability: {:?}", e))
+            })
     }
 
     /// Suspend a plugin due to security violations
     pub fn suspend_plugin(&mut self, plugin_name: &str, _reason: String) -> PluginResult<()> {
-        self.security_manager.suspend_plugin(plugin_name)
-            .map_err(|e| PluginError::SecurityViolation(format!("Failed to suspend plugin: {:?}", e)))?;
+        self.security_manager
+            .suspend_plugin(plugin_name)
+            .map_err(|e| {
+                PluginError::SecurityViolation(format!("Failed to suspend plugin: {:?}", e))
+            })?;
         info!("Plugin '{}' has been suspended", plugin_name);
         Ok(())
     }
@@ -261,7 +353,8 @@ impl WasmtimePluginRuntime {
 
     /// Get security audit log for a plugin
     pub fn get_plugin_audit_log(&self, plugin_name: &str) -> Vec<SecurityAuditEntry> {
-        self.security_manager.get_audit_log()
+        self.security_manager
+            .get_audit_log()
             .iter()
             .filter(|entry| entry.plugin_name == plugin_name)
             .cloned()
@@ -270,7 +363,8 @@ impl WasmtimePluginRuntime {
 
     /// Check if a plugin has a specific capability
     pub fn plugin_has_capability(&self, plugin_name: &str, capability: &PluginCapability) -> bool {
-        self.security_manager.has_capability(plugin_name, capability)
+        self.security_manager
+            .has_capability(plugin_name, capability)
             .unwrap_or(false)
     }
 
@@ -287,6 +381,60 @@ impl WasmtimePluginRuntime {
             .unwrap_or(false)
     }
 
+    fn require_plugin_capability(
+        &mut self,
+        plugin_name: &str,
+        function_name: &str,
+        required_capability: PluginCapability,
+    ) -> PluginResult<()> {
+        let has_capability = self
+            .security_manager
+            .has_capability(plugin_name, &required_capability)
+            .map_err(|e| PluginError::SecurityViolation(e.to_string()))?;
+
+        if !has_capability {
+            let violation = SecurityViolation::UnauthorizedHostFunction {
+                function_name: function_name.to_string(),
+                required_capability: required_capability.clone(),
+            };
+            let _ = self
+                .security_manager
+                .record_violation(plugin_name, violation);
+
+            return Err(PluginError::SecurityViolation(format!(
+                "Plugin '{}' lacks required capability {:?} for function '{}'",
+                plugin_name, required_capability, function_name
+            )));
+        }
+
+        Ok(())
+    }
+
+    fn validate_event_response_capabilities(
+        &mut self,
+        plugin_name: &str,
+        function_name: &str,
+        response: &PluginResponse,
+    ) -> PluginResult<()> {
+        if response.modified_data.is_some() {
+            self.require_plugin_capability(
+                plugin_name,
+                function_name,
+                PluginCapability::ModifyEventData,
+            )?;
+        }
+
+        if function_name.starts_with("on_before") && !response.allow {
+            self.require_plugin_capability(
+                plugin_name,
+                function_name,
+                PluginCapability::BlockOperations,
+            )?;
+        }
+
+        Ok(())
+    }
+
     /// Reset per-execution telemetry before entering plugin code.
     fn reset_execution_metrics(&mut self) {
         let mut state = self.store.data().lock().unwrap();
@@ -296,7 +444,12 @@ impl WasmtimePluginRuntime {
     /// Record elapsed execution telemetry after a plugin call completes.
     fn record_execution_metrics(&mut self, plugin_name: &str, started_at: Instant, failed: bool) {
         let execution_time_ms = started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
-        let host_function_calls = self.store.data().lock().unwrap().current_execution_host_calls;
+        let host_function_calls = self
+            .store
+            .data()
+            .lock()
+            .unwrap()
+            .current_execution_host_calls;
         let peak_memory_usage = self.get_plugin_memory_usage(plugin_name);
 
         if let Err(e) = self.security_manager.record_execution(
@@ -306,7 +459,10 @@ impl WasmtimePluginRuntime {
             host_function_calls,
             peak_memory_usage,
         ) {
-            debug!("Failed to record execution metrics for plugin '{}': {}", plugin_name, e);
+            debug!(
+                "Failed to record execution metrics for plugin '{}': {}",
+                plugin_name, e
+            );
         }
     }
 
@@ -335,6 +491,7 @@ impl WasmtimePluginRuntime {
         self.reset_execution_metrics();
         let result = self.handle_http_request_inner(plugin_name, request);
         self.record_execution_metrics(plugin_name, started_at, result.is_err());
+        self.clear_http_request_context();
         result
     }
 
@@ -343,13 +500,36 @@ impl WasmtimePluginRuntime {
         plugin_name: &str,
         request: &oxide_core::plugin_api::HttpRequestContext,
     ) -> PluginResult<oxide_core::plugin_api::HttpResponse> {
-        debug!("Handling HTTP request: {}::{}", plugin_name, "handle_http_request");
+        debug!(
+            "Handling HTTP request: {}::{}",
+            plugin_name, "handle_http_request"
+        );
+
+        if self.is_plugin_suspended(plugin_name) {
+            return Err(PluginError::SecurityViolation(format!(
+                "Plugin '{}' is suspended",
+                plugin_name
+            )));
+        }
+
+        let can_handle_http = self
+            .security_manager
+            .has_capability(plugin_name, &PluginCapability::HandleHttpRequests)
+            .map_err(|e| PluginError::SecurityViolation(e.to_string()))?;
+
+        if !can_handle_http {
+            return Err(PluginError::SecurityViolation(format!(
+                "Plugin '{}' lacks HandleHttpRequests capability",
+                plugin_name
+            )));
+        }
 
         // Set the current HTTP request context
         {
             let mut state = self.store.data().lock().unwrap();
             state.current_http_request = Some(request.clone());
             state.http_response_buffer.clear();
+            state.error_message = None;
             state.current_plugin = Some(plugin_name.to_string());
             state.set_execution_context(ExecutionContext::HttpRequest);
         }
@@ -365,9 +545,9 @@ impl WasmtimePluginRuntime {
             .get_typed_func::<(), i32>(&mut self.store, "handle_http_request")
             .map_err(|e| PluginError::FunctionNotExported(format!("handle_http_request: {}", e)))?;
 
-        let result = func
-            .call(&mut self.store, ())
-            .map_err(|e| PluginError::ExecutionFailed(format!("HTTP handler call failed: {}", e)))?;
+        let result = func.call(&mut self.store, ()).map_err(|e| {
+            PluginError::ExecutionFailed(format!("HTTP handler call failed: {}", e))
+        })?;
 
         if result != 0 {
             return Err(PluginError::ExecutionFailed(format!(
@@ -391,6 +571,15 @@ impl WasmtimePluginRuntime {
         serde_json::from_str(&response_json).map_err(|e| {
             PluginError::InvalidResponse(format!("Failed to parse HTTP response: {}", e))
         })
+    }
+
+    fn clear_http_request_context(&mut self) {
+        let mut state = self.store.data().lock().unwrap();
+        state.current_http_request = None;
+        state.http_response_buffer.clear();
+        state.current_plugin = None;
+        state.set_execution_context(ExecutionContext::Idle);
+        state.exit_database_operation();
     }
 
     /// Get database operation result from the plugin's result buffer
@@ -449,29 +638,46 @@ impl PluginRuntime for WasmtimePluginRuntime {
                 PluginError::InitializationFailed(format!("Failed to instantiate module: {}", e))
             })?;
 
+        self.remove_plugin_runtime_state(name);
+
         // Register plugin with security manager
         // Default to Untrusted level for new plugins
-        self.security_manager.register_plugin(
-            name.to_string(),
-            Some(PluginTrustLevel::Untrusted),
-        ).map_err(|e| PluginError::SecurityViolation(e.to_string()))?;
+        self.security_manager
+            .register_plugin(name.to_string(), Some(PluginTrustLevel::Untrusted))
+            .map_err(|e| PluginError::SecurityViolation(e.to_string()))?;
 
         // Grant basic logging capabilities by default
-        self.security_manager.grant_capability(
-            name,
-            PluginCapability::LogInfo,
-        ).map_err(|e| PluginError::SecurityViolation(format!("Failed to grant logging capability: {:?}", e)))?;
+        self.security_manager
+            .grant_capability(name, PluginCapability::LogInfo)
+            .map_err(|e| {
+                PluginError::SecurityViolation(format!(
+                    "Failed to grant logging capability: {:?}",
+                    e
+                ))
+            })?;
 
-        self.security_manager.grant_capability(
-            name,
-            PluginCapability::LogError,
-        ).map_err(|e| PluginError::SecurityViolation(format!("Failed to grant logging capability: {:?}", e)))?;
+        self.security_manager
+            .grant_capability(name, PluginCapability::LogError)
+            .map_err(|e| {
+                PluginError::SecurityViolation(format!(
+                    "Failed to grant logging capability: {:?}",
+                    e
+                ))
+            })?;
 
         // Store module and instance
         self.modules.insert(name.to_string(), module);
         self.instances.insert(name.to_string(), instance);
 
-        info!("Plugin '{}' loaded successfully with security context", name);
+        if let Err(e) = self.initialize_plugin(name) {
+            self.remove_plugin_runtime_state(name);
+            return Err(e);
+        }
+
+        info!(
+            "Plugin '{}' loaded successfully with security context",
+            name
+        );
         Ok(())
     }
 
@@ -490,27 +696,22 @@ impl PluginRuntime for WasmtimePluginRuntime {
                 plugin_name, function_name
             );
 
-            // Validate function call capability
-            let required_capability = match function_name {
-                "on_before_create" | "on_after_create" | "on_before_update" | "on_after_update" |
-                "on_before_delete" | "on_after_delete" => PluginCapability::AccessCollection {
-                    collection: "*".to_string(),
-                    operations: vec![CrudOperation::Create, CrudOperation::Read, CrudOperation::Update, CrudOperation::Delete],
-                },
-                _ => PluginCapability::LogInfo, // Default capability for unknown functions
-            };
-
-            if !self.security_manager.has_capability(plugin_name, &required_capability)
-                .map_err(|e| PluginError::SecurityViolation(e.to_string()))? {
-                let violation = SecurityViolation::UnauthorizedHostFunction {
-                    function_name: function_name.to_string(),
-                    required_capability: required_capability.clone(),
-                };
-                let _ = self.security_manager.record_violation(plugin_name, violation);
-                return Err(PluginError::SecurityViolation(
-                    format!("Plugin '{}' lacks required capability for function '{}'", plugin_name, function_name)
-                ));
+            if !self.instances.contains_key(plugin_name) {
+                return Err(PluginError::PluginNotFound(plugin_name.to_string()));
             }
+
+            if self.is_plugin_suspended(plugin_name) {
+                return Err(PluginError::SecurityViolation(format!(
+                    "Plugin '{}' is suspended",
+                    plugin_name
+                )));
+            }
+
+            self.require_plugin_capability(
+                plugin_name,
+                function_name,
+                PluginCapability::ReadEventData,
+            )?;
 
             // Set the current payload for the plugin to access
             self.set_current_payload(payload)?;
@@ -527,15 +728,24 @@ impl PluginRuntime for WasmtimePluginRuntime {
                 if state.current_http_request.is_some() {
                     // We're in an HTTP request context, so keep that context active
                     // even when handling events triggered by the HTTP handler
-                    debug!("Preserving HTTP context during event handling for plugin: {}", plugin_name);
+                    debug!(
+                        "Preserving HTTP context during event handling for plugin: {}",
+                        plugin_name
+                    );
                 } else {
                     // Only set to EventHandler if we're not in an HTTP request
-                    debug!("Setting execution context to EventHandler for plugin: {}", plugin_name);
+                    debug!(
+                        "Setting execution context to EventHandler for plugin: {}",
+                        plugin_name
+                    );
                     state.set_execution_context(ExecutionContext::EventHandler);
                 }
             }
 
-            debug!("About to get plugin instance and call function: {}::{}", plugin_name, function_name);
+            debug!(
+                "About to get plugin instance and call function: {}::{}",
+                plugin_name, function_name
+            );
 
             // Get the instance and call the function
             let instance = self
@@ -543,20 +753,31 @@ impl PluginRuntime for WasmtimePluginRuntime {
                 .get(plugin_name)
                 .ok_or_else(|| PluginError::PluginNotFound(plugin_name.to_string()))?;
 
-            debug!("Got plugin instance, about to get typed function: {}", function_name);
+            debug!(
+                "Got plugin instance, about to get typed function: {}",
+                function_name
+            );
 
             // Call the plugin function
             let func = instance
                 .get_typed_func::<(), i32>(&mut self.store, function_name)
-                .map_err(|e| PluginError::FunctionNotExported(format!("{}: {}", function_name, e)))?;
+                .map_err(|e| {
+                    PluginError::FunctionNotExported(format!("{}: {}", function_name, e))
+                })?;
 
-            debug!("Got typed function, about to call plugin function: {}::{}", plugin_name, function_name);
+            debug!(
+                "Got typed function, about to call plugin function: {}::{}",
+                plugin_name, function_name
+            );
 
-            let result = func
-                .call(&mut self.store, ())
-                .map_err(|e| PluginError::ExecutionFailed(format!("Function call failed: {}", e)))?;
+            let result = func.call(&mut self.store, ()).map_err(|e| {
+                PluginError::ExecutionFailed(format!("Function call failed: {}", e))
+            })?;
 
-            debug!("Plugin function call completed with result: {} for {}::{}", result, plugin_name, function_name);
+            debug!(
+                "Plugin function call completed with result: {} for {}::{}",
+                result, plugin_name, function_name
+            );
 
             // Check if plugin set an error
             let state = self.store.data().lock().unwrap();
@@ -568,6 +789,7 @@ impl PluginRuntime for WasmtimePluginRuntime {
 
             // Get the plugin response
             let response = self.get_plugin_response(plugin_name)?;
+            self.validate_event_response_capabilities(plugin_name, function_name, &response)?;
 
             Ok(response)
         })();
@@ -576,32 +798,40 @@ impl PluginRuntime for WasmtimePluginRuntime {
         result
     }
 
-    fn has_function(&self, plugin_name: &str, _function_name: &str) -> bool {
-        // For now, we'll assume the function exists if the plugin is loaded
-        // A more robust implementation would check the exports
-        self.instances.contains_key(plugin_name)
+    fn has_function(&self, plugin_name: &str, function_name: &str) -> bool {
+        self.modules
+            .get(plugin_name)
+            .map(|module| {
+                module.exports().any(|export| {
+                    export.name() == function_name && matches!(export.ty(), ExternType::Func(_))
+                })
+            })
+            .unwrap_or(false)
     }
 
     fn unload_plugin(&mut self, plugin_name: &str) -> PluginResult<()> {
-        // Remove from security manager
-        self.security_manager.unregister_plugin(plugin_name);
+        let removed_count = {
+            let state = self.store.data().lock().unwrap();
+            state
+                .registered_routes
+                .iter()
+                .filter(|route| route.plugin_name == plugin_name)
+                .count()
+        };
 
-        // Remove module and instance
-        self.modules.remove(plugin_name);
-        self.instances.remove(plugin_name);
+        self.remove_plugin_runtime_state(plugin_name);
 
-        // Clean up registered routes for this plugin
-        {
-            let mut state = self.store.data().lock().unwrap();
-            let original_count = state.registered_routes.len();
-            state.registered_routes.retain(|route| route.plugin_name != plugin_name);
-            let removed_count = original_count - state.registered_routes.len();
-            if removed_count > 0 {
-                info!("Cleaned up {} registered routes for plugin '{}'", removed_count, plugin_name);
-            }
+        if removed_count > 0 {
+            info!(
+                "Cleaned up {} registered routes for plugin '{}'",
+                removed_count, plugin_name
+            );
         }
 
-        info!("Plugin '{}' unloaded and security context cleared", plugin_name);
+        info!(
+            "Plugin '{}' unloaded and security context cleared",
+            plugin_name
+        );
         Ok(())
     }
 

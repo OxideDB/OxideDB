@@ -10,6 +10,7 @@ import type {
   SiteSettings, SiteSettingsResponse, UpdateSiteSettingsRequest, SettingsHealthStatus
 } from '../types/api';
 import { capabilityNameToObject } from '../types/api';
+import type { PluginCapability } from '../types/api';
 
 // Plugin-related interfaces
 interface PluginInfo {
@@ -18,7 +19,7 @@ interface PluginInfo {
   version: string;
   description: string;
   author: string;
-  capabilities: string[];
+  capabilities: PluginCapability[];
   trust_level: 'Untrusted' | 'PartiallyTrusted' | 'FullyTrusted' | 'System';
   routes: PluginRoute[];
   executions: number;
@@ -206,6 +207,22 @@ class ApiService {
     }
 
     return response.json();
+  }
+
+  private async fetchErrorMessage(response: Response): Promise<string> {
+    const fallback = response.statusText || `HTTP ${response.status}`;
+    const errorText = await response.text();
+
+    if (!errorText) {
+      return fallback;
+    }
+
+    try {
+      const errorData: ApiError = JSON.parse(errorText);
+      return errorData.message || errorData.error || fallback;
+    } catch {
+      return errorText;
+    }
   }
 
   private async performTokenRefresh(): Promise<string> {
@@ -664,15 +681,12 @@ class ApiService {
 
     const response = await fetch(`${this.baseUrl}/plugins/analyze`, {
       method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${this.token}`
-      },
+      headers: this.token ? { 'Authorization': `Bearer ${this.token}` } : {},
       body: formData
     });
 
     if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(errorText || `HTTP ${response.status}`);
+      throw new Error(await this.fetchErrorMessage(response));
     }
 
     const result = await response.json();
@@ -697,15 +711,12 @@ class ApiService {
 
     const response = await fetch(`${this.baseUrl}/plugins`, {
       method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${this.token}`
-      },
+      headers: this.token ? { 'Authorization': `Bearer ${this.token}` } : {},
       body: formData
     });
 
     if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(errorText || `HTTP ${response.status}`);
+      throw new Error(await this.fetchErrorMessage(response));
     }
   }
 

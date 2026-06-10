@@ -416,7 +416,9 @@ export const createCapability = {
 
 // Function to convert capability names to capability objects
 export function capabilityNameToObject(capabilityName: string): PluginCapability {
-  switch (capabilityName) {
+  const normalizedCapability = capabilityName.trim().split('(')[0];
+
+  switch (normalizedCapability) {
     case "LogInfo": return createCapability.LogInfo();
     case "LogError": return createCapability.LogError();
     case "ReadEventData": return createCapability.ReadEventData();

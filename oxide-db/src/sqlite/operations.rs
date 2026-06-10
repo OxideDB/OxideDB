@@ -18,6 +18,8 @@ use serde_json::Value as JsonValue;
 use tokio::task::spawn_blocking;
 use tracing::debug;
 
+use oxide_core::event::handlers::HandlerExecutionResult;
+
 impl SqliteDb {
     /// Convert a record data JSON to SQL values for a specific schema
     fn record_data_to_sql_values(
@@ -161,6 +163,39 @@ impl SqliteDb {
             updated_at: row.get("updated_at")?,
         })
     }
+}
+
+fn ensure_before_handlers_succeeded(results: &[HandlerExecutionResult]) -> Result<(), AppError> {
+    if let Some(result) = results
+        .iter()
+        .find(|result| !result.success && !result.skipped)
+    {
+        let error = result
+            .error
+            .clone()
+            .unwrap_or_else(|| "Unknown handler error".to_string());
+
+        if let Some(plugin_error) = plugin_error_from_handler_error(&error) {
+            return Err(plugin_error);
+        }
+
+        return Err(AppError::internal(format!(
+            "Before event handler {} failed: {}",
+            result.handler_id, error
+        )));
+    }
+
+    Ok(())
+}
+
+fn plugin_error_from_handler_error(error: &str) -> Option<AppError> {
+    let rest = error.strip_prefix("Plugin error: ")?;
+    let (plugin_name, message) = rest.split_once(" - ")?;
+
+    Some(AppError::plugin(
+        plugin_name.to_string(),
+        message.to_string(),
+    ))
 }
 
 /// Enum for SQL value types
@@ -459,9 +494,11 @@ impl Db for SqliteDb {
         let mut context = BeforeEventContext::new_create(collection.to_string(), data);
 
         // Dispatch BeforeRecordCreate event - handlers can modify the data
-        self.event_bus
+        let before_results = self
+            .event_bus
             .dispatch_before(BeforeEventType::RecordCreate, &mut context)
             .await?;
+        ensure_before_handlers_succeeded(&before_results)?;
 
         // Extract the potentially modified data from the context
         let data = context.data;
@@ -567,6 +604,99 @@ impl Db for SqliteDb {
         Ok(record)
     }
 
+    async fn upsert_record_with_metadata(
+        &self,
+        collection: &str,
+        mut record: Record,
+    ) -> Result<Record, AppError> {
+        let schema = self.get_collection_schema(collection).await?;
+        if let Err(validation_error) = schema.validate_data(&record.data) {
+            return Err(AppError::validation("data", &validation_error));
+        }
+
+        record.collection = collection.to_string();
+
+        let schema_adapter = super::schema_adapter::SqliteSchemaAdapter::new();
+        let table_name = schema_adapter.get_table_name(&schema.name);
+        let table_name_for_debug = table_name.clone();
+        let connection = self.connection.clone();
+
+        let sql_values = self.record_data_to_sql_values(&record.data, &schema)?;
+        let restored_record = record.clone();
+
+        spawn_blocking(move || {
+            let conn = connection
+                .lock()
+                .map_err(|_| AppError::database("Failed to acquire database lock"))?;
+
+            let mut field_names = vec![
+                "id".to_string(),
+                "created_at".to_string(),
+                "updated_at".to_string(),
+            ];
+            let mut placeholders = vec!["?1".to_string(), "?2".to_string(), "?3".to_string()];
+
+            for (field_name, _) in &sql_values {
+                field_names.push(field_name.clone());
+                placeholders.push(format!("?{}", field_names.len()));
+            }
+
+            let quoted_fields = field_names
+                .iter()
+                .map(|field_name| quote_identifier(field_name))
+                .collect::<Vec<_>>();
+            let update_clauses = field_names
+                .iter()
+                .skip(1)
+                .map(|field_name| {
+                    let quoted = quote_identifier(field_name);
+                    format!("{} = excluded.{}", quoted, quoted)
+                })
+                .collect::<Vec<_>>();
+
+            let insert_sql = format!(
+                "INSERT INTO {} ({}) VALUES ({}) ON CONFLICT({}) DO UPDATE SET {}",
+                quote_identifier(&table_name),
+                quoted_fields.join(", "),
+                placeholders.join(", "),
+                quote_identifier("id"),
+                update_clauses.join(", ")
+            );
+
+            let mut stmt = conn.prepare(&insert_sql).map_err(|e| {
+                AppError::database(format!("Failed to prepare restore statement: {}", e))
+            })?;
+
+            stmt.raw_bind_parameter(1, &restored_record.id)
+                .map_err(|e| AppError::database(format!("Failed to bind record_id: {}", e)))?;
+            stmt.raw_bind_parameter(2, restored_record.created_at)
+                .map_err(|e| AppError::database(format!("Failed to bind created_at: {}", e)))?;
+            stmt.raw_bind_parameter(3, restored_record.updated_at)
+                .map_err(|e| AppError::database(format!("Failed to bind updated_at: {}", e)))?;
+
+            for (index, (_, sql_value)) in sql_values.iter().enumerate() {
+                sql_value
+                    .bind_to_statement(&mut stmt, index + 4)
+                    .map_err(|e| {
+                        AppError::database(format!("Failed to bind restored field value: {}", e))
+                    })?;
+            }
+
+            stmt.raw_execute()
+                .map_err(|e| AppError::database(format!("Failed to restore record: {}", e)))?;
+
+            Ok::<(), AppError>(())
+        })
+        .await
+        .map_err(|e| AppError::internal(format!("Task join error: {}", e)))??;
+
+        debug!(
+            "Restored record {} in collection table {}",
+            record.id, table_name_for_debug
+        );
+        Ok(record)
+    }
+
     async fn read_record(
         &self,
         collection: &str,
@@ -580,9 +710,11 @@ impl Db for SqliteDb {
         );
 
         // Dispatch BeforeRecordRead event
-        self.event_bus
+        let before_results = self
+            .event_bus
             .dispatch_before(BeforeEventType::RecordRead, &mut context)
             .await?;
+        ensure_before_handlers_succeeded(&before_results)?;
 
         // Get collection schema
         let schema = self.get_collection_schema(collection).await?;
@@ -664,9 +796,11 @@ impl Db for SqliteDb {
         );
 
         // Dispatch BeforeRecordUpdate event
-        self.event_bus
+        let before_results = self
+            .event_bus
             .dispatch_before(BeforeEventType::RecordUpdate, &mut context)
             .await?;
+        ensure_before_handlers_succeeded(&before_results)?;
 
         // Extract the potentially modified data from the context
         let new_data = context.data;
@@ -787,9 +921,11 @@ impl Db for SqliteDb {
         );
 
         // Dispatch BeforeRecordDelete event
-        self.event_bus
+        let before_results = self
+            .event_bus
             .dispatch_before(BeforeEventType::RecordDelete, &mut context)
             .await?;
+        ensure_before_handlers_succeeded(&before_results)?;
 
         // Get collection schema
         let schema = self.get_collection_schema(collection).await?;

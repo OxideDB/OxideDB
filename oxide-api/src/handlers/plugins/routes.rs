@@ -8,14 +8,13 @@ use axum::{
 use std::collections::HashMap;
 use tracing::{debug, info};
 
-use crate::{
-    errors::ApiError,
-    server::AppState,
-    extractors::AuthenticatedUser,
-};
+use crate::{errors::ApiError, extractors::AuthenticatedUser, server::AppState};
 use oxide_core::{
+    auth::{
+        CollectionPermissions, CrudOperation, PermissionContext, PermissionLevel, PermissionService,
+    },
     plugin_api::{HttpRequestContext, HttpResponse as PluginHttpResponse, RouteRegistration},
-    auth::{CollectionPermissions, PermissionContext, PermissionLevel, PermissionService, CrudOperation},
+    AppError,
 };
 
 /// Handle plugin HTTP routes
@@ -31,14 +30,17 @@ pub async fn handle_plugin_route(
     debug!("🔌 Plugin route request: {} /{}", method, route_path);
 
     // Get plugin manager
-    let plugin_manager = state.plugin_manager.as_ref()
+    let plugin_manager = state
+        .plugin_manager
+        .as_ref()
         .ok_or_else(|| ApiError::internal("Plugin system not available".to_string()))?;
 
     // Find matching plugin route
     let route = find_matching_route(&plugin_manager, &method, &route_path).await?;
-    
+
     // Check authorization for the plugin route
-    check_plugin_route_authorization(&state, &route, user_claims.as_ref(), &method, &route_path).await?;
+    check_plugin_route_authorization(&state, &route, user_claims.as_ref(), &method, &route_path)
+        .await?;
 
     let path_params = extract_path_params(&route.path, &format!("/{}", route_path));
 
@@ -66,17 +68,22 @@ async fn find_matching_route(
     method: &Method,
     path: &str,
 ) -> Result<RouteRegistration, ApiError> {
-    let routes = plugin_manager.get_registered_routes()
+    let routes = plugin_manager
+        .get_registered_routes()
         .map_err(|e| ApiError::internal(format!("Failed to get plugin routes: {}", e)))?;
 
     debug!("🔍 Looking for plugin route: {} /{}", method, path);
     debug!("📋 Available plugin routes: {:#?}", routes);
 
     // Find exact match first
-    if let Some(route) = routes.iter().find(|r| 
-        r.method.to_uppercase() == method.as_str() && r.path == format!("/{}", path)
-    ) {
-        debug!("✅ Found exact match for plugin route: {} {}", route.method, route.path);
+    if let Some(route) = routes
+        .iter()
+        .find(|r| r.method.to_uppercase() == method.as_str() && r.path == format!("/{}", path))
+    {
+        debug!(
+            "✅ Found exact match for plugin route: {} {}",
+            route.method, route.path
+        );
         return Ok(route.clone());
     }
 
@@ -84,13 +91,21 @@ async fn find_matching_route(
     for route in &routes {
         if route.method.to_uppercase() == method.as_str() {
             if path_matches_pattern(&route.path, &format!("/{}", path)) {
-                debug!("✅ Found pattern match for plugin route: {} {} (pattern: {})", route.method, format!("/{}", path), route.path);
+                debug!(
+                    "✅ Found pattern match for plugin route: {} {} (pattern: {})",
+                    route.method,
+                    format!("/{}", path),
+                    route.path
+                );
                 return Ok(route.clone());
             }
         }
     }
 
-    Err(ApiError::not_found(format!("Plugin route not found: {} /{}", method, path)))
+    Err(ApiError::not_found(format!(
+        "Plugin route not found: {} /{}",
+        method, path
+    )))
 }
 
 /// Simple pattern matching for plugin routes
@@ -137,7 +152,10 @@ async fn check_plugin_route_authorization(
     method: &Method,
     path: &str,
 ) -> Result<(), ApiError> {
-    debug!("🔒 Checking authorization for plugin route: {} /{}", method, path);
+    debug!(
+        "🔒 Checking authorization for plugin route: {} /{}",
+        method, path
+    );
 
     // Create a special collection name for plugin routes
     let plugin_collection = format!("plugin:{}", route.plugin_name);
@@ -146,20 +164,34 @@ async fn check_plugin_route_authorization(
     let permission_service = &state.database_permission_service;
 
     // Try to get permissions for the plugin collection
-    let permissions = match permission_service.get_permissions(&plugin_collection).await? {
+    let permissions = match permission_service
+        .get_permissions(&plugin_collection)
+        .await?
+    {
         Some(perms) => perms,
         None => {
             // Create default permissions for plugin routes
             // By default, plugin routes require authentication unless configured otherwise
-            info!("Creating default permissions for plugin collection: {}", plugin_collection);
+            info!(
+                "Creating default permissions for plugin collection: {}",
+                plugin_collection
+            );
             let mut perms = CollectionPermissions::new(plugin_collection.clone());
-            
+
             // Set default permission based on plugin security configuration
             // For now, default to authenticated-only access
             let default_permission = PermissionLevel::AuthenticatedOnly;
-            
-            perms.set_crud_permission(CrudOperation::Read, default_permission);
-            
+
+            for operation in [
+                CrudOperation::Create,
+                CrudOperation::Read,
+                CrudOperation::Update,
+                CrudOperation::Delete,
+                CrudOperation::List,
+            ] {
+                perms.set_crud_permission(operation, default_permission.clone());
+            }
+
             // Store the default permissions
             permission_service.store_permissions(&perms).await?;
             perms
@@ -176,16 +208,26 @@ async fn check_plugin_route_authorization(
     };
 
     let mut metadata = std::collections::HashMap::new();
-    metadata.insert("plugin_name".to_string(), serde_json::Value::String(route.plugin_name.clone()));
-    metadata.insert("handler_function".to_string(), serde_json::Value::String(route.handler_function.clone()));
-    metadata.insert("route_path".to_string(), serde_json::Value::String(route.path.clone()));
+    metadata.insert(
+        "plugin_name".to_string(),
+        serde_json::Value::String(route.plugin_name.clone()),
+    );
+    metadata.insert(
+        "handler_function".to_string(),
+        serde_json::Value::String(route.handler_function.clone()),
+    );
+    metadata.insert(
+        "route_path".to_string(),
+        serde_json::Value::String(route.path.clone()),
+    );
 
     let permission_context = PermissionContext::new(
         user_claims.map(|user| user.claims.clone()),
         oxide_core::auth::types::Operation::Crud(operation),
         plugin_collection,
         None,
-    ).with_metadata(metadata);
+    )
+    .with_metadata(metadata);
 
     // Check permission
     let allowed = permission_service.check_permission(&permissions, &permission_context)?;
@@ -201,7 +243,10 @@ async fn check_plugin_route_authorization(
         )));
     }
 
-    info!("✅ Plugin route authorization granted for {}: {} {}", route.plugin_name, method, path);
+    info!(
+        "✅ Plugin route authorization granted for {}: {} {}",
+        route.plugin_name, method, path
+    );
     Ok(())
 }
 
@@ -250,24 +295,29 @@ async fn execute_plugin_handler(
     route: &RouteRegistration,
     request_context: &HttpRequestContext,
 ) -> Result<PluginHttpResponse, ApiError> {
-    debug!("🚀 Executing plugin handler: {}::{}", route.plugin_name, route.handler_function);
+    debug!(
+        "🚀 Executing plugin handler: {}::{}",
+        route.plugin_name, route.handler_function
+    );
 
     plugin_manager
         .handle_http_request(&route.plugin_name, &route.handler_function, request_context)
         .await
-        .map_err(|e| ApiError::internal(format!("Plugin execution failed: {}", e)))
+        .map_err(|e| match e {
+            AppError::Security { message } => ApiError::forbidden(message),
+            other => ApiError::internal(format!("Plugin execution failed: {}", other)),
+        })
 }
 
 /// Convert plugin response to Axum response
 fn convert_plugin_response_to_axum(
     plugin_response: PluginHttpResponse,
 ) -> Result<Response<axum::body::Body>, ApiError> {
-    let mut response_builder = Response::builder()
-        .status(plugin_response.status_code);
+    let mut response_builder = Response::builder().status(plugin_response.status_code);
 
     // Set default content-type if not specified
-    let needs_content_type = !plugin_response.headers.contains_key("content-type") && 
-                             !plugin_response.headers.contains_key("Content-Type");
+    let needs_content_type = !plugin_response.headers.contains_key("content-type")
+        && !plugin_response.headers.contains_key("Content-Type");
 
     // Add headers
     for (name, value) in plugin_response.headers {
