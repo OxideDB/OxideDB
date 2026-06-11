@@ -4,11 +4,14 @@
 //! User preferences are stored in a dedicated table and can be retrieved per user.
 
 use super::SqliteDb;
-use oxide_core::{AppError, user_preferences::{UserPreferencesService, UserPreferences as CoreUserPreferences}};
 use async_trait::async_trait;
+use oxide_core::{
+    user_preferences::{UserPreferences as CoreUserPreferences, UserPreferencesService},
+    AppError,
+};
+use serde_json::Value;
 use tokio::task::spawn_blocking;
 use tracing::{debug, info};
-use serde_json::Value;
 
 /// User preference data structure
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -29,7 +32,7 @@ impl SqliteDb {
     /// Create the user preferences table if it doesn't exist
     pub(super) async fn create_user_preferences_table(&self) -> Result<(), AppError> {
         let connection = self.connection.clone();
-        
+
         spawn_blocking(move || {
             let conn = connection
                 .lock()
@@ -48,7 +51,9 @@ impl SqliteDb {
                 "#,
                 [],
             )
-            .map_err(|e| AppError::database(format!("Failed to create user preferences table: {}", e)))?;
+            .map_err(|e| {
+                AppError::database(format!("Failed to create user preferences table: {}", e))
+            })?;
 
             debug!("✅ User preferences table ready");
             Ok::<(), AppError>(())
@@ -66,14 +71,17 @@ impl SqliteDb {
         preference_key: &str,
         preference_value: &Value,
     ) -> Result<(), AppError> {
-        debug!("Storing user preference: {} for user: {}", preference_key, user_id);
+        debug!(
+            "Storing user preference: {} for user: {}",
+            preference_key, user_id
+        );
 
         // Ensure preferences table exists
         self.create_user_preferences_table().await?;
 
         let preference_json = serde_json::to_string(preference_value)
             .map_err(|e| AppError::internal(format!("Failed to serialize preference: {}", e)))?;
-        
+
         let user_id = user_id.to_string();
         let preference_key = preference_key.to_string();
         let connection = self.connection.clone();
@@ -115,7 +123,10 @@ impl SqliteDb {
         user_id: &str,
         preference_key: &str,
     ) -> Result<Option<Value>, AppError> {
-        debug!("Getting user preference '{}' for user: {}", preference_key, user_id);
+        debug!(
+            "Getting user preference '{}' for user: {}",
+            preference_key, user_id
+        );
 
         // Ensure preferences table exists
         self.create_user_preferences_table().await?;
@@ -123,7 +134,7 @@ impl SqliteDb {
         // Clone for logging purposes before moving into spawn_blocking
         let user_id_for_log = user_id.to_string();
         let preference_key_for_log = preference_key.to_string();
-        
+
         let user_id = user_id.to_string();
         let preference_key = preference_key.to_string();
         let connection = self.connection.clone();
@@ -153,21 +164,31 @@ impl SqliteDb {
 
         match preference_json {
             Some(json) => {
-                let preference_value: Value = serde_json::from_str(&json)
-                    .map_err(|e| AppError::internal(format!("Failed to deserialize preference: {}", e)))?;
-                
-                debug!("✅ Found preference '{}' for user: {}", preference_key_for_log, user_id_for_log);
+                let preference_value: Value = serde_json::from_str(&json).map_err(|e| {
+                    AppError::internal(format!("Failed to deserialize preference: {}", e))
+                })?;
+
+                debug!(
+                    "✅ Found preference '{}' for user: {}",
+                    preference_key_for_log, user_id_for_log
+                );
                 Ok(Some(preference_value))
             }
             None => {
-                debug!("No preference '{}' found for user: {}", preference_key_for_log, user_id_for_log);
+                debug!(
+                    "No preference '{}' found for user: {}",
+                    preference_key_for_log, user_id_for_log
+                );
                 Ok(None)
             }
         }
     }
 
     /// Get all preferences for a user
-    pub async fn get_user_preferences(&self, user_id: &str) -> Result<Vec<UserPreferences>, AppError> {
+    pub async fn get_user_preferences(
+        &self,
+        user_id: &str,
+    ) -> Result<Vec<UserPreferences>, AppError> {
         debug!("Getting all preferences for user: {}", user_id);
 
         // Ensure preferences table exists
@@ -219,7 +240,10 @@ impl SqliteDb {
         user_id: &str,
         preference_key: &str,
     ) -> Result<bool, AppError> {
-        debug!("Deleting user preference '{}' for user: {}", preference_key, user_id);
+        debug!(
+            "Deleting user preference '{}' for user: {}",
+            preference_key, user_id
+        );
 
         // Ensure preferences table exists
         self.create_user_preferences_table().await?;
@@ -237,19 +261,26 @@ impl SqliteDb {
             let preference_key_for_log = preference_key.clone();
             let user_id_for_log = user_id.clone();
 
-            let rows_affected = conn.execute(
-                "DELETE FROM user_preferences WHERE user_id = ?1 AND preference_key = ?2",
-                [&user_id, &preference_key],
-            )
-            .map_err(|e| AppError::database(format!("Failed to delete preference: {}", e)))?;
+            let rows_affected = conn
+                .execute(
+                    "DELETE FROM user_preferences WHERE user_id = ?1 AND preference_key = ?2",
+                    [&user_id, &preference_key],
+                )
+                .map_err(|e| AppError::database(format!("Failed to delete preference: {}", e)))?;
 
             let deleted = rows_affected > 0;
             if deleted {
-                info!("✅ Deleted preference '{}' for user: {}", preference_key_for_log, user_id_for_log);
+                info!(
+                    "✅ Deleted preference '{}' for user: {}",
+                    preference_key_for_log, user_id_for_log
+                );
             } else {
-                debug!("No preference '{}' found to delete for user: {}", preference_key_for_log, user_id_for_log);
+                debug!(
+                    "No preference '{}' found to delete for user: {}",
+                    preference_key_for_log, user_id_for_log
+                );
             }
-            
+
             Ok(deleted)
         })
         .await
@@ -271,13 +302,19 @@ impl SqliteDb {
                 .lock()
                 .map_err(|_| AppError::database("Failed to acquire database lock"))?;
 
-            let rows_affected = conn.execute(
-                "DELETE FROM user_preferences WHERE user_id = ?1",
-                [&user_id],
-            )
-            .map_err(|e| AppError::database(format!("Failed to delete user preferences: {}", e)))?;
+            let rows_affected = conn
+                .execute(
+                    "DELETE FROM user_preferences WHERE user_id = ?1",
+                    [&user_id],
+                )
+                .map_err(|e| {
+                    AppError::database(format!("Failed to delete user preferences: {}", e))
+                })?;
 
-            info!("✅ Deleted {} preferences for user: {}", rows_affected, user_id);
+            info!(
+                "✅ Deleted {} preferences for user: {}",
+                rows_affected, user_id
+            );
             Ok(rows_affected as u32)
         })
         .await
@@ -294,7 +331,8 @@ impl UserPreferencesService for SqliteDb {
         preference_key: &str,
         preference_value: &Value,
     ) -> Result<(), AppError> {
-        self.store_user_preference(user_id, preference_key, preference_value).await
+        self.store_user_preference(user_id, preference_key, preference_value)
+            .await
     }
 
     async fn get_user_preference(
@@ -305,18 +343,24 @@ impl UserPreferencesService for SqliteDb {
         self.get_user_preference(user_id, preference_key).await
     }
 
-    async fn get_user_preferences(&self, user_id: &str) -> Result<Vec<CoreUserPreferences>, AppError> {
+    async fn get_user_preferences(
+        &self,
+        user_id: &str,
+    ) -> Result<Vec<CoreUserPreferences>, AppError> {
         let db_prefs = self.get_user_preferences(user_id).await?;
-        
+
         // Convert from DB UserPreferences to Core UserPreferences
-        let core_prefs = db_prefs.into_iter().map(|db_pref| CoreUserPreferences {
-            user_id: db_pref.user_id,
-            preference_key: db_pref.preference_key,
-            preference_value: db_pref.preference_value,
-            created_at: db_pref.created_at,
-            updated_at: db_pref.updated_at,
-        }).collect();
-        
+        let core_prefs = db_prefs
+            .into_iter()
+            .map(|db_pref| CoreUserPreferences {
+                user_id: db_pref.user_id,
+                preference_key: db_pref.preference_key,
+                preference_value: db_pref.preference_value,
+                created_at: db_pref.created_at,
+                updated_at: db_pref.updated_at,
+            })
+            .collect();
+
         Ok(core_prefs)
     }
 
@@ -331,4 +375,4 @@ impl UserPreferencesService for SqliteDb {
     async fn delete_all_user_preferences(&self, user_id: &str) -> Result<u32, AppError> {
         self.delete_all_user_preferences(user_id).await
     }
-} 
+}

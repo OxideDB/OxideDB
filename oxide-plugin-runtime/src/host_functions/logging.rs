@@ -6,6 +6,7 @@
 use crate::host_state::HostState;
 use crate::utils::read_string_from_plugin_memory;
 use oxide_core::plugin_api::{host_functions, PluginError};
+use oxide_core::plugin_security::PluginCapability;
 use std::sync::{Arc, Mutex};
 use tracing::{error, info, warn};
 use wasmtime::{Caller, Linker};
@@ -29,6 +30,10 @@ pub fn define_logging_functions(
 
                 let plugin_name = {
                     let state = caller.data().lock().unwrap();
+                    if !state.current_plugin_has_capability(&PluginCapability::LogInfo) {
+                        warn!("log_info denied: current plugin lacks LogInfo capability");
+                        return;
+                    }
                     state.current_plugin.clone()
                 };
 
@@ -63,6 +68,10 @@ pub fn define_logging_functions(
 
                 let plugin_name = {
                     let state = caller.data().lock().unwrap();
+                    if !state.current_plugin_has_capability(&PluginCapability::LogError) {
+                        warn!("log_error denied: current plugin lacks LogError capability");
+                        return;
+                    }
                     state.current_plugin.clone()
                 };
 
@@ -94,6 +103,14 @@ pub fn define_logging_functions(
             host_functions::SET_ERROR,
             |mut caller: Caller<'_, Arc<Mutex<HostState>>>, ptr: i32, len: i32| {
                 caller.data().lock().unwrap().record_host_call();
+
+                {
+                    let state = caller.data().lock().unwrap();
+                    if !state.current_plugin_has_capability(&PluginCapability::BlockOperations) {
+                        warn!("set_error denied: current plugin lacks BlockOperations capability");
+                        return;
+                    }
+                }
 
                 if let Ok(message) = read_string_from_plugin_memory(&mut caller, ptr, len) {
                     warn!("[PLUGIN ERROR] {}", message);

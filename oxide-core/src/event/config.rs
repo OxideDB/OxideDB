@@ -63,44 +63,50 @@ impl EventSystemConfig {
 
     /// Load configuration from environment variables
     pub fn from_env() -> Result<Self, ConfigError> {
-        let profile = std::env::var("OXIDE_EVENT_PROFILE").unwrap_or_else(|_| "development".to_string());
-        
+        let profile =
+            std::env::var("OXIDE_EVENT_PROFILE").unwrap_or_else(|_| "development".to_string());
+
         let base_config = match profile.as_str() {
             "production" => Self::production(),
             "testing" => Self::testing(),
             _ => Self::development(),
         };
 
-        Ok(base_config.apply_env_overrides()?)
+        base_config.apply_env_overrides()
     }
 
     /// Apply environment variable overrides to configuration
     fn apply_env_overrides(mut self) -> Result<Self, ConfigError> {
         // Bus configuration overrides
         if let Ok(max_concurrent) = std::env::var("OXIDE_EVENT_MAX_CONCURRENT_HANDLERS") {
-            self.bus.max_concurrent_handlers = max_concurrent.parse()
-                .map_err(|_| ConfigError::InvalidValue("OXIDE_EVENT_MAX_CONCURRENT_HANDLERS".to_string()))?;
+            self.bus.max_concurrent_handlers = max_concurrent.parse().map_err(|_| {
+                ConfigError::InvalidValue("OXIDE_EVENT_MAX_CONCURRENT_HANDLERS".to_string())
+            })?;
         }
 
         if let Ok(timeout_ms) = std::env::var("OXIDE_EVENT_DEFAULT_HANDLER_TIMEOUT_MS") {
-            self.bus.default_handler_timeout_ms = timeout_ms.parse()
-                .map_err(|_| ConfigError::InvalidValue("OXIDE_EVENT_DEFAULT_HANDLER_TIMEOUT_MS".to_string()))?;
+            self.bus.default_handler_timeout_ms = timeout_ms.parse().map_err(|_| {
+                ConfigError::InvalidValue("OXIDE_EVENT_DEFAULT_HANDLER_TIMEOUT_MS".to_string())
+            })?;
         }
 
         if let Ok(max_retries) = std::env::var("OXIDE_EVENT_MAX_HANDLER_RETRIES") {
-            self.bus.max_handler_retries = max_retries.parse()
-                .map_err(|_| ConfigError::InvalidValue("OXIDE_EVENT_MAX_HANDLER_RETRIES".to_string()))?;
+            self.bus.max_handler_retries = max_retries.parse().map_err(|_| {
+                ConfigError::InvalidValue("OXIDE_EVENT_MAX_HANDLER_RETRIES".to_string())
+            })?;
         }
 
         // Metrics configuration overrides
         if let Ok(enabled) = std::env::var("OXIDE_EVENT_METRICS_ENABLED") {
-            self.metrics.enabled = enabled.parse()
-                .map_err(|_| ConfigError::InvalidValue("OXIDE_EVENT_METRICS_ENABLED".to_string()))?;
+            self.metrics.enabled = enabled.parse().map_err(|_| {
+                ConfigError::InvalidValue("OXIDE_EVENT_METRICS_ENABLED".to_string())
+            })?;
         }
 
         // Performance configuration overrides
         if let Ok(buffer_size) = std::env::var("OXIDE_EVENT_BUFFER_SIZE") {
-            self.performance.event_buffer_size = buffer_size.parse()
+            self.performance.event_buffer_size = buffer_size
+                .parse()
                 .map_err(|_| ConfigError::InvalidValue("OXIDE_EVENT_BUFFER_SIZE".to_string()))?;
         }
 
@@ -111,33 +117,43 @@ impl EventSystemConfig {
     pub fn validate(&self) -> Result<(), ConfigError> {
         // Validate bus configuration
         if self.bus.max_concurrent_handlers == 0 {
-            return Err(ConfigError::ValidationError("max_concurrent_handlers must be greater than 0".to_string()));
+            return Err(ConfigError::ValidationError(
+                "max_concurrent_handlers must be greater than 0".to_string(),
+            ));
         }
 
         if self.bus.default_handler_timeout_ms == 0 {
-            return Err(ConfigError::ValidationError("default_handler_timeout_ms must be greater than 0".to_string()));
+            return Err(ConfigError::ValidationError(
+                "default_handler_timeout_ms must be greater than 0".to_string(),
+            ));
         }
 
         // Validate performance configuration
         if self.performance.event_buffer_size == 0 {
-            return Err(ConfigError::ValidationError("event_buffer_size must be greater than 0".to_string()));
+            return Err(ConfigError::ValidationError(
+                "event_buffer_size must be greater than 0".to_string(),
+            ));
         }
 
         if self.performance.max_event_batch_size > self.performance.event_buffer_size {
-            return Err(ConfigError::ValidationError("max_event_batch_size cannot be larger than event_buffer_size".to_string()));
+            return Err(ConfigError::ValidationError(
+                "max_event_batch_size cannot be larger than event_buffer_size".to_string(),
+            ));
         }
 
         // Validate middleware configuration
-        if self.middleware.timeout.enable_timeout {
-            if self.middleware.timeout.default_timeout_ms == 0 {
-                return Err(ConfigError::ValidationError("timeout middleware default_timeout_ms must be greater than 0 when enabled".to_string()));
-            }
+        if self.middleware.timeout.enable_timeout && self.middleware.timeout.default_timeout_ms == 0
+        {
+            return Err(ConfigError::ValidationError(
+                "timeout middleware default_timeout_ms must be greater than 0 when enabled"
+                    .to_string(),
+            ));
         }
 
-        if self.middleware.retry.enable_retry {
-            if self.middleware.retry.max_retries == 0 {
-                return Err(ConfigError::ValidationError("retry middleware max_retries must be greater than 0 when enabled".to_string()));
-            }
+        if self.middleware.retry.enable_retry && self.middleware.retry.max_retries == 0 {
+            return Err(ConfigError::ValidationError(
+                "retry middleware max_retries must be greater than 0 when enabled".to_string(),
+            ));
         }
 
         Ok(())
@@ -289,7 +305,10 @@ impl HandlerConfig {
             event_timeouts: [
                 ("BeforeRecordDelete".to_string(), 10000),
                 ("BeforeCollectionDelete".to_string(), 30000),
-            ].iter().cloned().collect(),
+            ]
+            .iter()
+            .cloned()
+            .collect(),
         }
     }
 
@@ -373,7 +392,10 @@ impl TimeoutMiddlewareConfig {
             event_timeouts: [
                 ("BeforeRecordDelete".to_string(), 10000),
                 ("BeforeCollectionDelete".to_string(), 30000),
-            ].iter().cloned().collect(),
+            ]
+            .iter()
+            .cloned()
+            .collect(),
         }
     }
 
@@ -584,16 +606,16 @@ impl LoggingConfig {
 pub enum ConfigError {
     #[error("Invalid configuration value for {0}")]
     InvalidValue(String),
-    
+
     #[error("Configuration validation failed: {0}")]
     ValidationError(String),
-    
+
     #[error("Missing required configuration: {0}")]
     MissingRequired(String),
-    
+
     #[error("IO error reading configuration: {0}")]
     IoError(String),
-    
+
     #[error("Serialization error: {0}")]
     SerializationError(String),
 }
@@ -604,32 +626,33 @@ impl EventSystemConfig {
     pub fn save_to_file(&self, path: &std::path::Path) -> Result<(), ConfigError> {
         let toml_content = toml::to_string_pretty(self)
             .map_err(|e| ConfigError::SerializationError(e.to_string()))?;
-        
-        std::fs::write(path, toml_content)
-            .map_err(|e| ConfigError::IoError(e.to_string()))?;
-        
+
+        std::fs::write(path, toml_content).map_err(|e| ConfigError::IoError(e.to_string()))?;
+
         Ok(())
     }
 
     /// Load configuration from a TOML file
     pub fn load_from_file(path: &std::path::Path) -> Result<Self, ConfigError> {
-        let content = std::fs::read_to_string(path)
-            .map_err(|e| ConfigError::IoError(e.to_string()))?;
-        
-        let config: Self = toml::from_str(&content)
-            .map_err(|e| ConfigError::SerializationError(e.to_string()))?;
-        
+        let content =
+            std::fs::read_to_string(path).map_err(|e| ConfigError::IoError(e.to_string()))?;
+
+        let config: Self =
+            toml::from_str(&content).map_err(|e| ConfigError::SerializationError(e.to_string()))?;
+
         config.validate()?;
         Ok(config)
     }
 
     /// Convert durations from config values to Duration objects
     pub fn get_handler_timeout(&self, event_name: &str) -> Duration {
-        let timeout_ms = self.handlers.event_timeouts
+        let timeout_ms = self
+            .handlers
+            .event_timeouts
             .get(event_name)
             .copied()
             .unwrap_or(self.bus.default_handler_timeout_ms);
-        
+
         Duration::from_millis(timeout_ms)
     }
 
@@ -672,9 +695,9 @@ mod tests {
     fn test_config_validation() {
         let mut config = EventSystemConfig::development();
         config.bus.max_concurrent_handlers = 0;
-        
+
         assert!(config.validate().is_err());
-        
+
         config.bus.max_concurrent_handlers = 10;
         assert!(config.validate().is_ok());
     }
@@ -683,34 +706,43 @@ mod tests {
     fn test_config_serialization() {
         let config = EventSystemConfig::production();
         let toml_content = toml::to_string_pretty(&config).unwrap();
-        
+
         let deserialized: EventSystemConfig = toml::from_str(&toml_content).unwrap();
-        assert_eq!(config.bus.max_concurrent_handlers, deserialized.bus.max_concurrent_handlers);
+        assert_eq!(
+            config.bus.max_concurrent_handlers,
+            deserialized.bus.max_concurrent_handlers
+        );
     }
 
     #[test]
     fn test_config_file_operations() {
         let config = EventSystemConfig::testing();
         let temp_file = NamedTempFile::new().unwrap();
-        
+
         // Save to file
         config.save_to_file(temp_file.path()).unwrap();
-        
+
         // Load from file
         let loaded_config = EventSystemConfig::load_from_file(temp_file.path()).unwrap();
-        assert_eq!(config.bus.max_concurrent_handlers, loaded_config.bus.max_concurrent_handlers);
+        assert_eq!(
+            config.bus.max_concurrent_handlers,
+            loaded_config.bus.max_concurrent_handlers
+        );
     }
 
     #[test]
     fn test_duration_helpers() {
         let config = EventSystemConfig::production();
-        
+
         let timeout = config.get_handler_timeout("BeforeRecordDelete");
         assert_eq!(timeout, Duration::from_millis(10000));
-        
+
         let default_timeout = config.get_handler_timeout("UnknownEvent");
-        assert_eq!(default_timeout, Duration::from_millis(config.bus.default_handler_timeout_ms));
-        
+        assert_eq!(
+            default_timeout,
+            Duration::from_millis(config.bus.default_handler_timeout_ms)
+        );
+
         let (initial, max) = config.get_retry_config();
         assert_eq!(initial, Duration::from_millis(100));
         assert_eq!(max, Duration::from_millis(30000));
@@ -720,15 +752,15 @@ mod tests {
     fn test_env_override() {
         std::env::set_var("OXIDE_EVENT_MAX_CONCURRENT_HANDLERS", "500");
         std::env::set_var("OXIDE_EVENT_METRICS_ENABLED", "false");
-        
+
         let mut config = EventSystemConfig::development();
         config = config.apply_env_overrides().unwrap();
-        
+
         assert_eq!(config.bus.max_concurrent_handlers, 500);
         assert!(!config.metrics.enabled);
-        
+
         // Clean up
         std::env::remove_var("OXIDE_EVENT_MAX_CONCURRENT_HANDLERS");
         std::env::remove_var("OXIDE_EVENT_METRICS_ENABLED");
     }
-} 
+}

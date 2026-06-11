@@ -7,10 +7,12 @@
 use crate::AppError;
 use std::collections::HashMap;
 
-use super::context::{BeforeEventContext, AfterEventContext};
-use super::handlers::{BeforeEventHandler, AfterEventHandler, HandlerExecutionResult, HandlerMetadata, EventFilter};
+use super::context::{AfterEventContext, BeforeEventContext};
+use super::handlers::{
+    AfterEventHandler, BeforeEventHandler, EventFilter, HandlerExecutionResult, HandlerMetadata,
+};
 use super::metrics::EventMetrics;
-use super::types::{BeforeEventType, AfterEventType};
+use super::types::{AfterEventType, BeforeEventType};
 
 /// The EventBus trait defines the interface for dispatching and subscribing to events.
 ///
@@ -107,7 +109,11 @@ pub trait EventBus: Send + Sync {
     /// * `Ok(true)` if handler was found and removed
     /// * `Ok(false)` if handler was not found
     /// * `Err(AppError)` if operation failed
-    async fn unsubscribe_before(&self, event_name: &str, handler_id: &str) -> Result<bool, AppError>;
+    async fn unsubscribe_before(
+        &self,
+        event_name: &str,
+        handler_id: &str,
+    ) -> Result<bool, AppError>;
 
     /// Unsubscribe an After event handler
     ///
@@ -119,7 +125,8 @@ pub trait EventBus: Send + Sync {
     /// * `Ok(true)` if handler was found and removed
     /// * `Ok(false)` if handler was not found
     /// * `Err(AppError)` if operation failed
-    async fn unsubscribe_after(&self, event_name: &str, handler_id: &str) -> Result<bool, AppError>;
+    async fn unsubscribe_after(&self, event_name: &str, handler_id: &str)
+        -> Result<bool, AppError>;
 
     /// Enable or disable a specific handler
     ///
@@ -214,7 +221,7 @@ impl EventBusHealth {
         // - Too many recent failures (>10% of total events)
         // - Average processing time is too high (>5 seconds)
         // - Too many disabled handlers (>50% of total)
-        
+
         if self.recent_failures > 100 {
             return false;
         }
@@ -223,7 +230,9 @@ impl EventBusHealth {
             return false;
         }
 
-        if self.total_handlers > 0 && (self.disabled_handlers as f64 / self.total_handlers as f64) > 0.5 {
+        if self.total_handlers > 0
+            && (self.disabled_handlers as f64 / self.total_handlers as f64) > 0.5
+        {
             return false;
         }
 
@@ -326,10 +335,10 @@ pub trait EventBusExt: EventBus {
         handler: BeforeEventHandler,
     ) -> impl std::future::Future<Output = Result<String, AppError>> + Send {
         async move {
-        let metadata = HandlerMetadata::new(
-            uuid::Uuid::new_v4().to_string(),
-            format!("Handler for {}", event_name),
-        );
+            let metadata = HandlerMetadata::new(
+                uuid::Uuid::new_v4().to_string(),
+                format!("Handler for {}", event_name),
+            );
             self.subscribe_before(event_name, handler, metadata).await
         }
     }
@@ -341,10 +350,10 @@ pub trait EventBusExt: EventBus {
         handler: AfterEventHandler,
     ) -> impl std::future::Future<Output = Result<String, AppError>> + Send {
         async move {
-        let metadata = HandlerMetadata::new(
-            uuid::Uuid::new_v4().to_string(),
-            format!("Handler for {}", event_name),
-        );
+            let metadata = HandlerMetadata::new(
+                uuid::Uuid::new_v4().to_string(),
+                format!("Handler for {}", event_name),
+            );
             self.subscribe_after(event_name, handler, metadata).await
         }
     }
@@ -356,19 +365,19 @@ pub trait EventBusExt: EventBus {
         context: &mut BeforeEventContext,
     ) -> impl std::future::Future<Output = Result<(), AppError>> + Send {
         async move {
-        let results = self.dispatch_before(event_type, context).await?;
-        
-        // Check if any critical handlers failed
-        for result in results {
-            if !result.success && !result.skipped {
-                return Err(AppError::internal(format!(
-                    "Handler {} failed: {}",
-                    result.handler_id,
-                    result.error.unwrap_or_else(|| "Unknown error".to_string())
-                )));
+            let results = self.dispatch_before(event_type, context).await?;
+
+            // Check if any critical handlers failed
+            for result in results {
+                if !result.success && !result.skipped {
+                    return Err(AppError::internal(format!(
+                        "Handler {} failed: {}",
+                        result.handler_id,
+                        result.error.unwrap_or_else(|| "Unknown error".to_string())
+                    )));
+                }
             }
-        }
-        
+
             Ok(())
         }
     }
@@ -380,19 +389,19 @@ pub trait EventBusExt: EventBus {
         context: &AfterEventContext,
     ) -> impl std::future::Future<Output = Result<(), AppError>> + Send {
         async move {
-        let results = self.dispatch_after(event_type, context).await?;
-        
-        // Check if any critical handlers failed
-        for result in results {
-            if !result.success && !result.skipped {
-                return Err(AppError::internal(format!(
-                    "Handler {} failed: {}",
-                    result.handler_id,
-                    result.error.unwrap_or_else(|| "Unknown error".to_string())
-                )));
+            let results = self.dispatch_after(event_type, context).await?;
+
+            // Check if any critical handlers failed
+            for result in results {
+                if !result.success && !result.skipped {
+                    return Err(AppError::internal(format!(
+                        "Handler {} failed: {}",
+                        result.handler_id,
+                        result.error.unwrap_or_else(|| "Unknown error".to_string())
+                    )));
+                }
             }
-        }
-        
+
             Ok(())
         }
     }
@@ -438,6 +447,9 @@ mod tests {
     fn test_unhealthy_status() {
         let health = EventBusHealth::unhealthy("Database connection lost".to_string());
         assert!(!health.healthy);
-        assert_eq!(health.diagnostics.get("error").unwrap(), "Database connection lost");
+        assert_eq!(
+            health.diagnostics.get("error").unwrap(),
+            "Database connection lost"
+        );
     }
-} 
+}

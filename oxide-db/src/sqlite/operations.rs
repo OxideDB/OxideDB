@@ -1,6 +1,6 @@
 //! CRUD operations for SQLite database
 
-use super::connection::SqliteDb;
+use super::{connection::SqliteDb, schema_adapter::quote_identifier};
 use crate::{
     db::{Db, FilterOp, ListParams, SchemaAdapter},
     Record,
@@ -233,10 +233,6 @@ impl ToSql for SqlValue {
     }
 }
 
-fn quote_identifier(identifier: &str) -> String {
-    format!("\"{}\"", identifier.replace('"', "\"\""))
-}
-
 fn resolve_record_column(
     schema: &CollectionSchema,
     requested_field: &str,
@@ -415,74 +411,6 @@ fn append_filter_clauses(
     Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use oxide_core::{CollectionType, FieldDefinition};
-
-    fn test_schema() -> CollectionSchema {
-        let mut schema = CollectionSchema::new("articles".to_string(), CollectionType::Base);
-        schema.add_field("title".to_string(), FieldDefinition::new(FieldType::Text));
-        schema.add_field("views".to_string(), FieldDefinition::new(FieldType::Number));
-        schema.add_field(
-            "published".to_string(),
-            FieldDefinition::new(FieldType::Boolean),
-        );
-        schema
-    }
-
-    #[test]
-    fn appends_search_and_filter_clauses_with_bound_values() {
-        let mut query = "SELECT * FROM collection_articles".to_string();
-        let mut bind_params = Vec::new();
-        let params = ListParams {
-            search: Some("rust_%".to_string()),
-            filter_field: Some("views".to_string()),
-            filter_op: Some(FilterOp::Gte),
-            filter_value: Some("10".to_string()),
-            ..Default::default()
-        };
-
-        append_filter_clauses(&mut query, &test_schema(), &params, &mut bind_params).unwrap();
-
-        assert!(query.contains("\"id\" LIKE ? ESCAPE '\\'"));
-        assert!(query.contains("\"views\" >= ?"));
-        assert_eq!(bind_params.len(), 3);
-        assert!(matches!(bind_params.last(), Some(SqlValue::Integer(10))));
-    }
-
-    #[test]
-    fn rejects_unknown_filter_fields() {
-        let mut query = "SELECT * FROM collection_articles".to_string();
-        let mut bind_params = Vec::new();
-        let params = ListParams {
-            filter_field: Some("title; DROP TABLE articles".to_string()),
-            filter_value: Some("x".to_string()),
-            ..Default::default()
-        };
-
-        assert!(
-            append_filter_clauses(&mut query, &test_schema(), &params, &mut bind_params).is_err()
-        );
-    }
-
-    #[test]
-    fn supports_null_equality_without_binding_null_comparison() {
-        let mut query = "SELECT * FROM collection_articles".to_string();
-        let mut bind_params = Vec::new();
-        let params = ListParams {
-            filter_field: Some("published".to_string()),
-            filter_value: Some("null".to_string()),
-            ..Default::default()
-        };
-
-        append_filter_clauses(&mut query, &test_schema(), &params, &mut bind_params).unwrap();
-
-        assert!(query.contains("\"published\" IS NULL"));
-        assert!(bind_params.is_empty());
-    }
-}
-
 #[async_trait::async_trait]
 impl Db for SqliteDb {
     async fn initialize(&self) -> Result<(), AppError> {
@@ -542,10 +470,15 @@ impl Db for SqliteDb {
                 placeholders.push(format!("?{}", field_names.len()));
             }
 
+            let quoted_field_names = field_names
+                .iter()
+                .map(|field_name| quote_identifier(field_name))
+                .collect::<Vec<_>>();
+
             let insert_sql = format!(
                 "INSERT INTO {} ({}) VALUES ({})",
-                table_name,
-                field_names.join(", "),
+                quote_identifier(&table_name),
+                quoted_field_names.join(", "),
                 placeholders.join(", ")
             );
 
@@ -731,7 +664,11 @@ impl Db for SqliteDb {
                 .lock()
                 .map_err(|_| AppError::database("Failed to acquire database lock"))?;
 
-            let select_sql = format!("SELECT * FROM {} WHERE id = ?1", table_name);
+            let select_sql = format!(
+                "SELECT * FROM {} WHERE {} = ?1",
+                quote_identifier(&table_name),
+                quote_identifier("id")
+            );
             let mut stmt = conn
                 .prepare(&select_sql)
                 .map_err(|e| AppError::database(format!("Failed to prepare statement: {}", e)))?;
@@ -832,15 +769,16 @@ impl Db for SqliteDb {
                 .as_secs() as i64;
 
             // Build dynamic UPDATE statement
-            let mut set_clauses = vec!["updated_at = ?1".to_string()];
+            let mut set_clauses = vec![format!("{} = ?1", quote_identifier("updated_at"))];
             for (index, (field_name, _)) in sql_values.iter().enumerate() {
-                set_clauses.push(format!("{} = ?{}", field_name, index + 2));
+                set_clauses.push(format!("{} = ?{}", quote_identifier(field_name), index + 2));
             }
 
             let update_sql = format!(
-                "UPDATE {} SET {} WHERE id = ?{}",
-                table_name,
+                "UPDATE {} SET {} WHERE {} = ?{}",
+                quote_identifier(&table_name),
                 set_clauses.join(", "),
+                quote_identifier("id"),
                 sql_values.len() + 2
             );
 
@@ -941,7 +879,11 @@ impl Db for SqliteDb {
                 .lock()
                 .map_err(|_| AppError::database("Failed to acquire database lock"))?;
 
-            let delete_sql = format!("DELETE FROM {} WHERE id = ?1", table_name);
+            let delete_sql = format!(
+                "DELETE FROM {} WHERE {} = ?1",
+                quote_identifier(&table_name),
+                quote_identifier("id")
+            );
             let rows_affected = conn
                 .execute(&delete_sql, [&record_id])
                 .map_err(|e| AppError::database(format!("Failed to delete record: {}", e)))?;
@@ -1202,6 +1144,25 @@ impl Db for SqliteDb {
         SqliteDb::list_auth_collections(self).await
     }
 
+    async fn store_refresh_token(
+        &self,
+        token: crate::db::RefreshTokenRecord,
+    ) -> Result<(), AppError> {
+        SqliteDb::store_refresh_token(self, token).await
+    }
+
+    async fn rotate_refresh_token(
+        &self,
+        old_token_hash: &str,
+        new_token: crate::db::RefreshTokenRecord,
+    ) -> Result<(), AppError> {
+        SqliteDb::rotate_refresh_token(self, old_token_hash, new_token).await
+    }
+
+    async fn revoke_refresh_token(&self, token_hash: &str) -> Result<(), AppError> {
+        SqliteDb::revoke_refresh_token(self, token_hash).await
+    }
+
     async fn populate_relationships(
         &self,
         collection: &str,
@@ -1264,5 +1225,73 @@ impl Db for SqliteDb {
         limit: usize,
     ) -> Result<Vec<oxide_core::ActivityEntry>, AppError> {
         SqliteDb::get_recent_dashboard_activities(self, limit).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use oxide_core::{CollectionType, FieldDefinition};
+
+    fn test_schema() -> CollectionSchema {
+        let mut schema = CollectionSchema::new("articles".to_string(), CollectionType::Base);
+        schema.add_field("title".to_string(), FieldDefinition::new(FieldType::Text));
+        schema.add_field("views".to_string(), FieldDefinition::new(FieldType::Number));
+        schema.add_field(
+            "published".to_string(),
+            FieldDefinition::new(FieldType::Boolean),
+        );
+        schema
+    }
+
+    #[test]
+    fn appends_search_and_filter_clauses_with_bound_values() {
+        let mut query = "SELECT * FROM collection_articles".to_string();
+        let mut bind_params = Vec::new();
+        let params = ListParams {
+            search: Some("rust_%".to_string()),
+            filter_field: Some("views".to_string()),
+            filter_op: Some(FilterOp::Gte),
+            filter_value: Some("10".to_string()),
+            ..Default::default()
+        };
+
+        append_filter_clauses(&mut query, &test_schema(), &params, &mut bind_params).unwrap();
+
+        assert!(query.contains("\"id\" LIKE ? ESCAPE '\\'"));
+        assert!(query.contains("\"views\" >= ?"));
+        assert_eq!(bind_params.len(), 3);
+        assert!(matches!(bind_params.last(), Some(SqlValue::Integer(10))));
+    }
+
+    #[test]
+    fn rejects_unknown_filter_fields() {
+        let mut query = "SELECT * FROM collection_articles".to_string();
+        let mut bind_params = Vec::new();
+        let params = ListParams {
+            filter_field: Some("title; DROP TABLE articles".to_string()),
+            filter_value: Some("x".to_string()),
+            ..Default::default()
+        };
+
+        assert!(
+            append_filter_clauses(&mut query, &test_schema(), &params, &mut bind_params).is_err()
+        );
+    }
+
+    #[test]
+    fn supports_null_equality_without_binding_null_comparison() {
+        let mut query = "SELECT * FROM collection_articles".to_string();
+        let mut bind_params = Vec::new();
+        let params = ListParams {
+            filter_field: Some("published".to_string()),
+            filter_value: Some("null".to_string()),
+            ..Default::default()
+        };
+
+        append_filter_clauses(&mut query, &test_schema(), &params, &mut bind_params).unwrap();
+
+        assert!(query.contains("\"published\" IS NULL"));
+        assert!(bind_params.is_empty());
     }
 }

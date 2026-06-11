@@ -5,7 +5,7 @@
 
 use async_trait::async_trait;
 use oxide_core::{
-    auth::{PermissionService, CollectionPermissions, PermissionContext},
+    auth::{CollectionPermissions, PermissionContext, PermissionService},
     AppError,
 };
 use oxide_db::Db;
@@ -34,7 +34,11 @@ impl PermissionService for DatabasePermissionService {
     }
 
     /// Check if a user can perform an operation on a collection
-    fn check_permission(&self, permissions: &CollectionPermissions, context: &PermissionContext) -> Result<bool, AppError> {
+    fn check_permission(
+        &self,
+        permissions: &CollectionPermissions,
+        context: &PermissionContext,
+    ) -> Result<bool, AppError> {
         // First check: if the user is a superuser, they should have access to everything
         // unless explicitly denied (PermissionLevel::None)
         if context.is_superuser() {
@@ -46,7 +50,7 @@ impl PermissionService for DatabasePermissionService {
                     return Ok(true);
                 }
             };
-            
+
             // Only deny superuser access if explicitly set to None
             if matches!(rule.permission, oxide_core::auth::PermissionLevel::None) {
                 return Ok(false);
@@ -64,10 +68,13 @@ impl PermissionService for DatabasePermissionService {
         match &rule.permission {
             oxide_core::auth::PermissionLevel::None => Ok(false),
             oxide_core::auth::PermissionLevel::Public => Ok(true),
-            oxide_core::auth::PermissionLevel::AuthenticatedOnly => Ok(context.user_claims.is_some()),
-            oxide_core::auth::PermissionLevel::SuperuserOnly => {
-                Ok(matches!(context.user_role(), Some(oxide_core::auth::UserRole::Superuser)))
+            oxide_core::auth::PermissionLevel::AuthenticatedOnly => {
+                Ok(context.user_claims.is_some())
             }
+            oxide_core::auth::PermissionLevel::SuperuserOnly => Ok(matches!(
+                context.user_role(),
+                Some(oxide_core::auth::UserRole::Superuser)
+            )),
             oxide_core::auth::PermissionLevel::Rule(rule_expr) => {
                 // Import the rule evaluator from the rules module
                 use oxide_core::auth::rules::RuleEvaluator;
@@ -84,7 +91,10 @@ impl PermissionService for DatabasePermissionService {
     }
 
     /// Get permissions for a collection
-    async fn get_permissions(&self, collection: &str) -> Result<Option<CollectionPermissions>, AppError> {
+    async fn get_permissions(
+        &self,
+        collection: &str,
+    ) -> Result<Option<CollectionPermissions>, AppError> {
         // Delegate to the database's permission system
         self.db.get_permissions(collection).await
     }
@@ -102,4 +112,4 @@ impl PermissionService for DatabasePermissionService {
         let collections = self.db.list_collections().await?;
         Ok(collections.into_iter().map(|schema| schema.name).collect())
     }
-} 
+}

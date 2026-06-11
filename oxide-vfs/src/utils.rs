@@ -2,9 +2,9 @@
 //!
 //! Common utilities for file operations, hashing, compression, and validation.
 
-use sha2::{Sha256, Digest};
-use std::io::{Read, Write};
 use flate2::{read::GzDecoder, write::GzEncoder, Compression};
+use sha2::{Digest, Sha256};
+use std::io::{Read, Write};
 
 /// Calculate SHA256 hash of file content
 pub fn calculate_content_hash(content: &[u8]) -> String {
@@ -34,13 +34,13 @@ pub fn validate_path(path: &str) -> bool {
     if path.contains("..") || path.contains("\\") || path.starts_with('/') {
         return false;
     }
-    
+
     // Check for invalid characters
     let invalid_chars = ['<', '>', ':', '"', '|', '?', '*'];
     if path.chars().any(|c| invalid_chars.contains(&c)) {
         return false;
     }
-    
+
     true
 }
 
@@ -56,7 +56,7 @@ pub fn detect_mime_type(filename: &str) -> String {
         .and_then(|ext| ext.to_str())
         .unwrap_or("")
         .to_lowercase();
-    
+
     match extension.as_str() {
         "jpg" | "jpeg" => "image/jpeg".to_string(),
         "png" => "image/png".to_string(),
@@ -96,7 +96,7 @@ mod tests {
         let content = b"hello world".repeat(100);
         let compressed = compress_content(&content).unwrap();
         assert!(compressed.len() < content.len());
-        
+
         let decompressed = decompress_content(&compressed).unwrap();
         assert_eq!(content, decompressed);
     }
@@ -117,4 +117,4 @@ mod tests {
         assert_eq!(detect_mime_type("document.pdf"), "application/pdf");
         assert_eq!(detect_mime_type("unknown.xyz"), "application/octet-stream");
     }
-} 
+}

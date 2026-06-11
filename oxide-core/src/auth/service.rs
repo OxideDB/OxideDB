@@ -4,10 +4,10 @@
 //! all authentication functionality including JWT token management, password
 //! hashing, and collection management.
 
-use crate::{AppError, CollectionSchema, CollectionType};
-use super::types::{AuthServiceConfig, AuthCollectionConfig, UserRole};
-use super::jwt::{JwtService, Claims, RefreshClaims, TokenPair};
+use super::jwt::{Claims, JwtService, RefreshClaims, TokenPair};
 use super::password::PasswordService;
+use super::types::{AuthCollectionConfig, AuthServiceConfig, UserRole};
+use crate::{AppError, CollectionSchema, CollectionType};
 
 /// Main authentication service
 pub struct AuthService {
@@ -18,7 +18,7 @@ pub struct AuthService {
 impl AuthService {
     /// Create a new authentication service
     pub fn new(config: AuthServiceConfig) -> Self {
-        Self { 
+        Self {
             config,
             password_service: PasswordService::new(),
         }
@@ -30,7 +30,7 @@ impl AuthService {
     }
 
     /// Get a JWT service instance
-    pub fn jwt_service(&self) -> JwtService {
+    pub fn jwt_service(&self) -> JwtService<'_> {
         JwtService::new(&self.config)
     }
 
@@ -45,20 +45,22 @@ impl AuthService {
             if schema.collection_type == CollectionType::Auth {
                 // Create default auth collection config if not exists
                 if !self.config.is_auth_collection(&schema.name) {
-                    let mut config = AuthCollectionConfig::default();
-                    config.collection = schema.name.clone();
-                    
                     // Set the correct default role based on collection name
-                    config.default_role = self.determine_role_from_collection(&schema.name);
-                    
+                    let default_role = self.determine_role_from_collection(&schema.name);
+                    let mut config = AuthCollectionConfig {
+                        collection: schema.name.clone(),
+                        default_role,
+                        ..Default::default()
+                    };
+
                     // Configure refresh tokens for superuser collections
                     if matches!(config.default_role, UserRole::Superuser) {
                         config.refresh_tokens_enabled = true;
                         config.refresh_tokens_required = true; // Enforce for superusers
                     }
-                    
+
                     // Try to detect identifier and credential fields from schema
-                    for (field_name, _field_def) in &schema.fields {
+                    for field_name in schema.fields.keys() {
                         match field_name.as_str() {
                             "email" | "username" | "login" => {
                                 config.identifier_field = field_name.clone();
@@ -69,7 +71,7 @@ impl AuthService {
                             _ => {}
                         }
                     }
-                    
+
                     self.config.add_auth_collection(config);
                 }
             }
@@ -87,7 +89,13 @@ impl AuthService {
     }
 
     /// Generate a JWT token for a user (backward compatibility)
-    pub fn generate_token(&self, user_id: String, email: String, role: UserRole, auth_collection: String) -> Result<String, AppError> {
+    pub fn generate_token(
+        &self,
+        user_id: String,
+        email: String,
+        role: UserRole,
+        auth_collection: String,
+    ) -> Result<String, AppError> {
         let jwt_service = self.jwt_service();
         jwt_service.generate_token(user_id, email, role, auth_collection)
     }
@@ -99,15 +107,34 @@ impl AuthService {
     }
 
     /// Generate both access and refresh tokens
-    pub fn generate_token_pair(&self, user_id: String, email: String, role: UserRole, auth_collection: String) -> Result<TokenPair, AppError> {
+    pub fn generate_token_pair(
+        &self,
+        user_id: String,
+        email: String,
+        role: UserRole,
+        auth_collection: String,
+    ) -> Result<TokenPair, AppError> {
         let jwt_service = self.jwt_service();
         jwt_service.generate_token_pair(user_id, email, role, auth_collection)
     }
 
     /// Generate authentication tokens based on collection configuration
-    pub fn generate_auth_tokens(&self, user_id: String, email: String, role: UserRole, auth_collection: String) -> Result<AuthTokens, AppError> {
-        let auth_config = self.config.get_auth_collection(&auth_collection)
-            .ok_or_else(|| AppError::internal(format!("Auth collection '{}' not configured", auth_collection)))?;
+    pub fn generate_auth_tokens(
+        &self,
+        user_id: String,
+        email: String,
+        role: UserRole,
+        auth_collection: String,
+    ) -> Result<AuthTokens, AppError> {
+        let auth_config = self
+            .config
+            .get_auth_collection(&auth_collection)
+            .ok_or_else(|| {
+                AppError::internal(format!(
+                    "Auth collection '{}' not configured",
+                    auth_collection
+                ))
+            })?;
 
         let jwt_service = self.jwt_service();
 
@@ -116,7 +143,8 @@ impl AuthService {
 
         if use_refresh_tokens {
             // Generate token pair
-            let token_pair = jwt_service.generate_token_pair(user_id, email, role, auth_collection)?;
+            let token_pair =
+                jwt_service.generate_token_pair(user_id, email, role, auth_collection)?;
             Ok(AuthTokens::Pair(token_pair))
         } else {
             // Generate only access token
@@ -126,7 +154,11 @@ impl AuthService {
     }
 
     /// Check if refresh tokens should be used for a given collection and role
-    pub fn should_use_refresh_tokens(&self, auth_config: &AuthCollectionConfig, role: &UserRole) -> Result<bool, AppError> {
+    pub fn should_use_refresh_tokens(
+        &self,
+        auth_config: &AuthCollectionConfig,
+        role: &UserRole,
+    ) -> Result<bool, AppError> {
         // Superusers must use refresh tokens if they're available in the collection
         if matches!(role, UserRole::Superuser) {
             if auth_config.refresh_tokens_enabled {
@@ -137,8 +169,8 @@ impl AuthService {
         }
 
         // For other roles, check if refresh tokens are enabled and required
-        Ok(auth_config.refresh_tokens_enabled && 
-           (auth_config.refresh_tokens_required || matches!(role, UserRole::Superuser)))
+        Ok(auth_config.refresh_tokens_enabled
+            && (auth_config.refresh_tokens_required || matches!(role, UserRole::Superuser)))
     }
 
     /// Verify and decode a JWT token
@@ -167,9 +199,7 @@ impl AuthService {
 
     fn determine_role_from_collection(&self, collection: &str) -> UserRole {
         match collection {
-            "_superusers" => {
-                UserRole::Superuser
-            }
+            "_superusers" => UserRole::Superuser,
             "_users" => UserRole::User,
             _ => UserRole::User, // Default role for any other auth collection
         }
@@ -231,7 +261,8 @@ mod tests {
             FieldDefinition::new(FieldType::Password).required(),
         );
 
-        let mut superusers_schema = CollectionSchema::new("_superusers".to_string(), CollectionType::Auth);
+        let mut superusers_schema =
+            CollectionSchema::new("_superusers".to_string(), CollectionType::Auth);
         superusers_schema.add_field(
             "email".to_string(),
             FieldDefinition::new(FieldType::Email).required().unique(),
@@ -251,7 +282,10 @@ mod tests {
         assert_eq!(users_config.default_role, UserRole::User);
 
         // Verify that _superusers collection has Superuser role
-        let superusers_config = auth_service.config().get_auth_collection("_superusers").unwrap();
+        let superusers_config = auth_service
+            .config()
+            .get_auth_collection("_superusers")
+            .unwrap();
         assert_eq!(superusers_config.default_role, UserRole::Superuser);
     }
 
@@ -272,7 +306,8 @@ mod tests {
             FieldDefinition::new(FieldType::Password).required(),
         );
 
-        let mut superusers_schema = CollectionSchema::new("_superusers".to_string(), CollectionType::Auth);
+        let mut superusers_schema =
+            CollectionSchema::new("_superusers".to_string(), CollectionType::Auth);
         superusers_schema.add_field(
             "email".to_string(),
             FieldDefinition::new(FieldType::Email).required().unique(),
@@ -288,20 +323,24 @@ mod tests {
         auth_service.update_auth_collections(&schemas);
 
         // Test token generation for regular user
-        let user_token = auth_service.generate_token(
-            "user123".to_string(),
-            "user@example.com".to_string(),
-            UserRole::User,
-            "_users".to_string(),
-        ).unwrap();
+        let user_token = auth_service
+            .generate_token(
+                "user123".to_string(),
+                "user@example.com".to_string(),
+                UserRole::User,
+                "_users".to_string(),
+            )
+            .unwrap();
 
         // Test token generation for superuser
-        let superuser_token = auth_service.generate_token(
-            "superuser123".to_string(),
-            "admin@example.com".to_string(),
-            UserRole::Superuser,
-            "_superusers".to_string(),
-        ).unwrap();
+        let superuser_token = auth_service
+            .generate_token(
+                "superuser123".to_string(),
+                "admin@example.com".to_string(),
+                UserRole::Superuser,
+                "_superusers".to_string(),
+            )
+            .unwrap();
 
         // Verify tokens contain correct roles
         let user_claims = auth_service.verify_token(&user_token).unwrap();
@@ -312,4 +351,4 @@ mod tests {
         assert_eq!(superuser_claims.role, "superuser");
         assert_eq!(superuser_claims.user_role().unwrap(), UserRole::Superuser);
     }
-} 
+}

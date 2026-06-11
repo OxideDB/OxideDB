@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { apiService } from '../services/api';
+import { getCapabilityName, type PluginCapability } from '../types/api';
 import { Button } from '../components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card';
 import { Badge } from '../components/ui/badge';
@@ -40,7 +41,7 @@ interface PluginInfo {
   version: string;
   description: string;
   author: string;
-  capabilities: string[];
+  capabilities: PluginCapability[];
   trust_level: 'Untrusted' | 'PartiallyTrusted' | 'FullyTrusted' | 'System';
   routes: PluginRoute[];
   executions: number;
@@ -302,6 +303,8 @@ const Plugins: React.FC = () => {
     return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
   };
 
+  const formatCapability = (capability: PluginCapability) => getCapabilityName(capability);
+
   // Filter plugins based on search term
   const filteredPlugins = plugins.filter(
     (plugin) =>
@@ -560,7 +563,7 @@ const Plugins: React.FC = () => {
                     <div className="flex flex-wrap gap-1">
                       {plugin.capabilities.slice(0, 3).map((cap, index) => (
                         <Badge key={index} variant="outline" className="text-xs">
-                          {cap}
+                          {formatCapability(cap)}
                         </Badge>
                       ))}
                       {plugin.capabilities.length > 3 && (
@@ -677,7 +680,7 @@ const Plugins: React.FC = () => {
                     <div className="grid gap-2">
                       {selectedPlugin.capabilities.map((capability, index) => (
                         <div key={index} className="flex items-center justify-between p-2 border rounded">
-                          <span className="font-mono text-sm">{capability}</span>
+                          <span className="font-mono text-sm">{formatCapability(capability)}</span>
                           <Button variant="outline" size="sm">
                             <Minus className="w-3 h-3" />
                           </Button>
@@ -921,4 +924,4 @@ const Plugins: React.FC = () => {
   );
 };
 
-export default Plugins; 
+export default Plugins;

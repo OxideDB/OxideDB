@@ -456,18 +456,13 @@ pub struct EventTypeMetadata {
 }
 
 /// Priority levels for event processing
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum EventPriority {
     Low = 0,
+    #[default]
     Normal = 1,
     High = 2,
     Critical = 3,
-}
-
-impl Default for EventPriority {
-    fn default() -> Self {
-        EventPriority::Normal
-    }
 }
 
 impl EventPriority {
@@ -498,14 +493,22 @@ mod tests {
     fn test_all_before_events_have_unique_names() {
         let events = BeforeEventType::all();
         let names: std::collections::HashSet<_> = events.iter().map(|e| e.name()).collect();
-        assert_eq!(events.len(), names.len(), "All Before event names should be unique");
+        assert_eq!(
+            events.len(),
+            names.len(),
+            "All Before event names should be unique"
+        );
     }
 
     #[test]
     fn test_all_after_events_have_unique_names() {
         let events = AfterEventType::all();
         let names: std::collections::HashSet<_> = events.iter().map(|e| e.name()).collect();
-        assert_eq!(events.len(), names.len(), "All After event names should be unique");
+        assert_eq!(
+            events.len(),
+            names.len(),
+            "All After event names should be unique"
+        );
     }
 
     #[test]
@@ -522,4 +525,4 @@ mod tests {
         let deserialized: BeforeEventType = serde_json::from_str(&serialized).unwrap();
         assert_eq!(event, deserialized);
     }
-} 
+}

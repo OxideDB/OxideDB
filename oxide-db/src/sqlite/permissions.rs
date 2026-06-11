@@ -4,8 +4,8 @@
 //! Permissions are stored in a dedicated table and can be retrieved for authorization.
 
 use super::SqliteDb;
+use oxide_core::auth::{PermissionContext, PermissionLevel, PermissionService};
 use oxide_core::{AppError, CollectionPermissions};
-use oxide_core::auth::{PermissionService, PermissionContext, PermissionLevel};
 use tokio::task::spawn_blocking;
 use tracing::{debug, info};
 
@@ -13,7 +13,7 @@ impl SqliteDb {
     /// Create the permissions table if it doesn't exist
     pub(super) async fn create_permissions_table(&self) -> Result<(), AppError> {
         let connection = self.connection.clone();
-        
+
         spawn_blocking(move || {
             let conn = connection
                 .lock()
@@ -30,7 +30,9 @@ impl SqliteDb {
                 "#,
                 [],
             )
-            .map_err(|e| AppError::database(format!("Failed to create permissions table: {}", e)))?;
+            .map_err(|e| {
+                AppError::database(format!("Failed to create permissions table: {}", e))
+            })?;
 
             debug!("✅ Collection permissions table ready");
             Ok::<(), AppError>(())
@@ -52,12 +54,16 @@ impl PermissionService for SqliteDb {
     }
 
     /// Check if a user can perform an operation on a collection
-    fn check_permission(&self, permissions: &CollectionPermissions, context: &PermissionContext) -> Result<bool, AppError> {
+    fn check_permission(
+        &self,
+        permissions: &CollectionPermissions,
+        context: &PermissionContext,
+    ) -> Result<bool, AppError> {
         // First check: if the user is a superuser, they should have access to everything
         // unless explicitly denied (PermissionLevel::None)
         if context.is_superuser() {
             debug!("🔍 Superuser detected - checking if access is explicitly denied");
-            
+
             // Get the operation rule for the requested operation
             let rule = match permissions.get_operation_rule(&context.operation) {
                 Some(rule) => rule,
@@ -68,15 +74,19 @@ impl PermissionService for SqliteDb {
                     return Ok(true);
                 }
             };
-            
+
             // Only deny superuser access if explicitly set to None
             if matches!(rule.permission, PermissionLevel::None) {
-                debug!("🚫 Superuser access explicitly denied for operation {:?} on collection {}", 
-                       context.operation, context.collection);
+                debug!(
+                    "🚫 Superuser access explicitly denied for operation {:?} on collection {}",
+                    context.operation, context.collection
+                );
                 return Ok(false);
             } else {
-                debug!("✅ Superuser access granted for operation {:?} on collection {} (rule: {:?})", 
-                       context.operation, context.collection, rule.permission);
+                debug!(
+                    "✅ Superuser access granted for operation {:?} on collection {} (rule: {:?})",
+                    context.operation, context.collection, rule.permission
+                );
                 return Ok(true);
             }
         }
@@ -92,37 +102,50 @@ impl PermissionService for SqliteDb {
             }
         };
 
-        debug!("🔍 Permission check: Found rule for operation {:?}: {:?}", context.operation, rule);
+        debug!(
+            "🔍 Permission check: Found rule for operation {:?}: {:?}",
+            context.operation, rule
+        );
 
         // Check permission level
         match &rule.permission {
             PermissionLevel::None => {
                 debug!("🔍 Permission level: None - denying access");
-                debug!("Permission denied: operation {:?} not allowed on collection {}", 
-                       context.operation, context.collection);
+                debug!(
+                    "Permission denied: operation {:?} not allowed on collection {}",
+                    context.operation, context.collection
+                );
                 Ok(false)
             }
             PermissionLevel::Public => {
                 debug!("🔍 Permission level: Public - allowing access");
-                debug!("Permission granted: public access for operation {:?} on collection {}", 
-                       context.operation, context.collection);
+                debug!(
+                    "Permission granted: public access for operation {:?} on collection {}",
+                    context.operation, context.collection
+                );
                 Ok(true)
             }
             PermissionLevel::AuthenticatedOnly => {
                 debug!("🔍 Permission level: AuthenticatedOnly - checking authentication");
                 let allowed = context.is_authenticated();
-                debug!("Permission {}: authenticated access for operation {:?} on collection {}", 
-                       if allowed { "granted" } else { "denied" },
-                       context.operation, context.collection);
+                debug!(
+                    "Permission {}: authenticated access for operation {:?} on collection {}",
+                    if allowed { "granted" } else { "denied" },
+                    context.operation,
+                    context.collection
+                );
                 Ok(allowed)
             }
             PermissionLevel::SuperuserOnly => {
                 debug!("🔍 Permission level: SuperuserOnly - checking superuser status");
                 let allowed = context.is_superuser();
-                debug!("Permission {}: superuser access for operation {:?} on collection {}", 
-                       if allowed { "granted" } else { "denied" },
-                       context.operation, context.collection);
-                       
+                debug!(
+                    "Permission {}: superuser access for operation {:?} on collection {}",
+                    if allowed { "granted" } else { "denied" },
+                    context.operation,
+                    context.collection
+                );
+
                 // Additional debug info for superuser permission failures
                 if !allowed {
                     if let Some(claims) = &context.user_claims {
@@ -132,14 +155,16 @@ impl PermissionService for SqliteDb {
                         debug!("🚫 Superuser permission denied: no user claims (unauthenticated)");
                     }
                 }
-                
+
                 Ok(allowed)
             }
             PermissionLevel::Rule(rule_expr) => {
                 debug!("🔍 Permission level: Rule - evaluating custom rule");
-                debug!("Evaluating rule '{}' for operation {:?} on collection {}", 
-                       rule_expr, context.operation, context.collection);
-                
+                debug!(
+                    "Evaluating rule '{}' for operation {:?} on collection {}",
+                    rule_expr, context.operation, context.collection
+                );
+
                 // Basic rule evaluation (this is a placeholder for more sophisticated logic)
                 self.evaluate_permission_rule(rule_expr, context)
             }
@@ -148,14 +173,17 @@ impl PermissionService for SqliteDb {
 
     /// Store permissions for a collection
     async fn store_permissions(&self, permissions: &CollectionPermissions) -> Result<(), AppError> {
-        debug!("Storing permissions for collection: {}", permissions.collection);
+        debug!(
+            "Storing permissions for collection: {}",
+            permissions.collection
+        );
 
         // Ensure permissions table exists
         self.create_permissions_table().await?;
 
         let permissions_json = serde_json::to_string(permissions)
             .map_err(|e| AppError::internal(format!("Failed to serialize permissions: {}", e)))?;
-        
+
         let collection_name = permissions.collection.clone();
         let connection = self.connection.clone();
         let updated_at = permissions.updated_at;
@@ -186,7 +214,10 @@ impl PermissionService for SqliteDb {
     }
 
     /// Get permissions for a collection
-    async fn get_permissions(&self, collection: &str) -> Result<Option<CollectionPermissions>, AppError> {
+    async fn get_permissions(
+        &self,
+        collection: &str,
+    ) -> Result<Option<CollectionPermissions>, AppError> {
         debug!("Getting permissions for collection: {}", collection);
 
         // Ensure permissions table exists
@@ -201,7 +232,9 @@ impl PermissionService for SqliteDb {
                 .map_err(|_| AppError::database("Failed to acquire database lock"))?;
 
             let mut stmt = conn
-                .prepare("SELECT permissions_json FROM collection_permissions WHERE collection = ?1")
+                .prepare(
+                    "SELECT permissions_json FROM collection_permissions WHERE collection = ?1",
+                )
                 .map_err(|e| AppError::database(format!("Failed to prepare statement: {}", e)))?;
 
             let result = stmt.query_row([&collection_name], |row| {
@@ -212,7 +245,10 @@ impl PermissionService for SqliteDb {
             match result {
                 Ok(json) => Ok(Some(json)),
                 Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-                Err(e) => Err(AppError::database(format!("Failed to get permissions: {}", e))),
+                Err(e) => Err(AppError::database(format!(
+                    "Failed to get permissions: {}",
+                    e
+                ))),
             }
         })
         .await
@@ -220,9 +256,11 @@ impl PermissionService for SqliteDb {
 
         match permissions_json {
             Some(json) => {
-                let permissions: CollectionPermissions = serde_json::from_str(&json)
-                    .map_err(|e| AppError::internal(format!("Failed to deserialize permissions: {}", e)))?;
-                
+                let permissions: CollectionPermissions =
+                    serde_json::from_str(&json).map_err(|e| {
+                        AppError::internal(format!("Failed to deserialize permissions: {}", e))
+                    })?;
+
                 debug!("✅ Found permissions for collection: {}", collection);
                 Ok(Some(permissions))
             }
@@ -248,16 +286,20 @@ impl PermissionService for SqliteDb {
                 .lock()
                 .map_err(|_| AppError::database("Failed to acquire database lock"))?;
 
-            let rows_affected = conn.execute(
-                "DELETE FROM collection_permissions WHERE collection = ?1",
-                [&collection_name],
-            )
-            .map_err(|e| AppError::database(format!("Failed to delete permissions: {}", e)))?;
+            let rows_affected = conn
+                .execute(
+                    "DELETE FROM collection_permissions WHERE collection = ?1",
+                    [&collection_name],
+                )
+                .map_err(|e| AppError::database(format!("Failed to delete permissions: {}", e)))?;
 
             if rows_affected > 0 {
                 info!("✅ Deleted permissions for collection: {}", collection_name);
             } else {
-                debug!("No permissions to delete for collection: {}", collection_name);
+                debug!(
+                    "No permissions to delete for collection: {}",
+                    collection_name
+                );
             }
 
             Ok::<(), AppError>(())
@@ -300,32 +342,45 @@ impl PermissionService for SqliteDb {
         .await
         .map_err(|e| AppError::internal(format!("Task join error: {}", e)))??;
 
-        debug!("✅ Found {} collections with custom permissions", collections.len());
+        debug!(
+            "✅ Found {} collections with custom permissions",
+            collections.len()
+        );
         Ok(collections)
     }
 }
 
 impl SqliteDb {
     /// Evaluate permission rules using the comprehensive rule evaluator
-    fn evaluate_permission_rule(&self, rule_expr: &str, context: &PermissionContext) -> Result<bool, AppError> {
+    fn evaluate_permission_rule(
+        &self,
+        rule_expr: &str,
+        context: &PermissionContext,
+    ) -> Result<bool, AppError> {
         use oxide_core::auth::RuleEvaluator;
-        
+
         debug!("🔍 Rule evaluation starting");
         debug!("🔍 Rule expression: '{}'", rule_expr);
         debug!("🔍 Context metadata: {:?}", context.metadata);
-        
+
         let evaluator = RuleEvaluator::new(context);
         let result = evaluator.evaluate(rule_expr);
-        
+
         match &result {
             Ok(allowed) => {
-                debug!("✅ Rule evaluation completed: rule '{}' evaluated to {}", rule_expr, allowed);
+                debug!(
+                    "✅ Rule evaluation completed: rule '{}' evaluated to {}",
+                    rule_expr, allowed
+                );
             }
             Err(e) => {
-                debug!("❌ Rule evaluation failed: rule '{}' error: {}", rule_expr, e);
+                debug!(
+                    "❌ Rule evaluation failed: rule '{}' error: {}",
+                    rule_expr, e
+                );
             }
         }
-        
+
         result
     }
 }

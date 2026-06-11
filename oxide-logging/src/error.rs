@@ -171,4 +171,4 @@ impl LoggingError {
                 | LoggingError::Database { .. }
         )
     }
-} 
+}

@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { ArrowLeft, Plus, X, Save, Database, Settings, Shield, ChevronDown, ChevronRight } from 'lucide-react';
+import { ArrowLeft, Save, Database, Settings, Shield, ChevronDown, ChevronRight } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -12,7 +12,7 @@ import { Checkbox } from '@/components/ui/checkbox';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import PageLayout from '@/components/PageLayout';
 import { apiService } from '../services/api';
-import type { CollectionSchema, FieldDefinition, FieldType } from '../types/api';
+import type { CollectionSchema, FieldDefinition } from '../types/api';
 import { parseFieldDefaultValue } from '../utils/fieldDefaults';
 import { useFieldManagement, FieldsList, convertSchemaFieldsToFormData } from '@/components/collection-form';
 
@@ -26,6 +26,10 @@ interface AuthCollectionConfig {
   refreshTokensRequired: boolean;
   customClaimFields: string[];
 }
+
+type CollectionSchemaWithAuthConfig = CollectionSchema & {
+  auth_config?: Partial<AuthCollectionConfig>;
+};
 
 const EditCollection: React.FC = () => {
   const { collection } = useParams<{ collection: string }>();
@@ -90,8 +94,9 @@ const EditCollection: React.FC = () => {
       fieldManagement.setFieldsFromSchema(formFields);
       
       // Extract auth config if this is an auth collection
-      if (schemaData.collection_type === 'auth' && (schemaData as any).auth_config) {
-        const authConfigData = (schemaData as any).auth_config;
+      const schemaWithAuthConfig = schemaData as CollectionSchemaWithAuthConfig;
+      if (schemaData.collection_type === 'auth' && schemaWithAuthConfig.auth_config) {
+        const authConfigData = schemaWithAuthConfig.auth_config;
         setAuthConfig({
           identifierField: authConfigData.identifierField || 'email',
           credentialField: authConfigData.credentialField || 'password',

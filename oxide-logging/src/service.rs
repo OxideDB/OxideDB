@@ -9,10 +9,12 @@
 //! - Graceful shutdown handling
 
 use crate::{
-    error::{LoggingError, LoggingResult},
-    models::{LogEntry, SecurityAuditEvent, LogQuery, LogMetrics, LogLevel, LogContext, CorrelationId},
-    storage::SqliteLogStorage,
     audit::SecurityAuditService,
+    error::{LoggingError, LoggingResult},
+    models::{
+        CorrelationId, LogContext, LogEntry, LogLevel, LogMetrics, LogQuery, SecurityAuditEvent,
+    },
+    storage::SqliteLogStorage,
     DEFAULT_CHANNEL_BUFFER, MAX_BATCH_SIZE,
 };
 use dashmap::DashMap;
@@ -199,7 +201,7 @@ impl LogService {
     pub async fn with_config(config: LogServiceConfig) -> LoggingResult<Self> {
         // Create storage backend
         let storage = Arc::new(SqliteLogStorage::new(&config.db_path).await?);
-        
+
         // Create audit service
         let audit_service = Arc::new(SecurityAuditService::new(Arc::clone(&storage)));
 
@@ -277,19 +279,31 @@ impl LogService {
     }
 
     /// Convenience method to log an info message
-    pub async fn info(&self, message: impl Into<String>, module: impl Into<String>) -> LoggingResult<()> {
+    pub async fn info(
+        &self,
+        message: impl Into<String>,
+        module: impl Into<String>,
+    ) -> LoggingResult<()> {
         let entry = LogEntry::new(LogLevel::Info, message, module);
         self.log(entry).await
     }
 
     /// Convenience method to log an error message
-    pub async fn error(&self, message: impl Into<String>, module: impl Into<String>) -> LoggingResult<()> {
+    pub async fn error(
+        &self,
+        message: impl Into<String>,
+        module: impl Into<String>,
+    ) -> LoggingResult<()> {
         let entry = LogEntry::new(LogLevel::Error, message, module);
         self.log(entry).await
     }
 
     /// Convenience method to log a warning message
-    pub async fn warn(&self, message: impl Into<String>, module: impl Into<String>) -> LoggingResult<()> {
+    pub async fn warn(
+        &self,
+        message: impl Into<String>,
+        module: impl Into<String>,
+    ) -> LoggingResult<()> {
         let entry = LogEntry::new(LogLevel::Warn, message, module);
         self.log(entry).await
     }
@@ -321,7 +335,7 @@ impl LogService {
     /// Query log entries
     pub async fn query(&self, query: LogQuery) -> LoggingResult<Vec<LogEntry>> {
         let (sender, receiver) = oneshot::channel();
-        
+
         self.command_sender
             .send(LogCommand::Query {
                 query,
@@ -336,9 +350,12 @@ impl LogService {
     }
 
     /// Query audit events
-    pub async fn query_audit_events(&self, query: LogQuery) -> LoggingResult<Vec<SecurityAuditEvent>> {
+    pub async fn query_audit_events(
+        &self,
+        query: LogQuery,
+    ) -> LoggingResult<Vec<SecurityAuditEvent>> {
         let (sender, receiver) = oneshot::channel();
-        
+
         self.command_sender
             .send(LogCommand::QueryAuditEvents {
                 query,
@@ -355,7 +372,7 @@ impl LogService {
     /// Get logging metrics and statistics
     pub async fn get_metrics(&self) -> LoggingResult<LogMetrics> {
         let (sender, receiver) = oneshot::channel();
-        
+
         self.command_sender
             .send(LogCommand::GetMetrics { response: sender })
             .await
@@ -378,8 +395,12 @@ impl LogService {
 
     /// Get recent logs from memory cache
     pub fn get_recent_logs(&self, limit: usize) -> Vec<LogEntry> {
-        let mut entries: Vec<_> = self.memory_cache.iter().map(|entry| entry.value().clone()).collect();
-        entries.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+        let mut entries: Vec<_> = self
+            .memory_cache
+            .iter()
+            .map(|entry| entry.value().clone())
+            .collect();
+        entries.sort_by_key(|entry| std::cmp::Reverse(entry.timestamp));
         entries.truncate(limit);
         entries
     }
@@ -392,7 +413,12 @@ impl LogService {
     /// Gracefully shutdown the logging service
     pub async fn shutdown(self) -> LoggingResult<()> {
         // Send shutdown command
-        if let Err(_) = self.command_sender.send(LogCommand::Shutdown).await {
+        if self
+            .command_sender
+            .send(LogCommand::Shutdown)
+            .await
+            .is_err()
+        {
             warn!("Failed to send shutdown command to worker");
         }
 
@@ -424,13 +450,14 @@ impl LogService {
     ) {
         let mut pending_logs = Vec::new();
         let mut last_flush = Instant::now();
-        
+
         // Create flush timer
         let mut flush_interval = interval(Duration::from_millis(config.batch_flush_interval_ms));
         flush_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
         // Create cleanup timer
-        let mut cleanup_interval = interval(Duration::from_secs(config.cleanup_interval_hours * 3600));
+        let mut cleanup_interval =
+            interval(Duration::from_secs(config.cleanup_interval_hours * 3600));
         cleanup_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
         info!("Background logging worker started");
@@ -442,7 +469,7 @@ impl LogService {
                     match command {
                         Some(LogCommand::LogEntry(entry)) => {
                             pending_logs.push(entry);
-                            
+
                             // Flush if batch is full
                             if pending_logs.len() >= config.max_batch_size {
                                 Self::flush_pending_logs(&storage, &mut pending_logs).await;
@@ -451,7 +478,7 @@ impl LogService {
                         }
                         Some(LogCommand::LogBatch(mut entries)) => {
                             pending_logs.append(&mut entries);
-                            
+
                             // Flush if batch is full
                             if pending_logs.len() >= config.max_batch_size {
                                 Self::flush_pending_logs(&storage, &mut pending_logs).await;
@@ -465,19 +492,19 @@ impl LogService {
                         }
                         Some(LogCommand::Query { query, response }) => {
                             let result = storage.query_log_entries(&query).await;
-                            if let Err(_) = response.send(result) {
+                            if response.send(result).is_err() {
                                 warn!("Failed to send query response");
                             }
                         }
                         Some(LogCommand::QueryAuditEvents { query, response }) => {
                             let result = storage.query_audit_events(&query).await;
-                            if let Err(_) = response.send(result) {
+                            if response.send(result).is_err() {
                                 warn!("Failed to send audit query response");
                             }
                         }
                         Some(LogCommand::GetMetrics { response }) => {
                             let result = storage.get_metrics().await;
-                            if let Err(_) = response.send(result) {
+                            if response.send(result).is_err() {
                                 warn!("Failed to send metrics response");
                             }
                         }
@@ -550,4 +577,4 @@ impl LogService {
 
         pending_logs.clear();
     }
-} 
+}

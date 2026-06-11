@@ -9,6 +9,9 @@ use oxide_core::AppError;
 use std::path::PathBuf;
 use tracing::Level;
 
+const DEFAULT_JWT_SECRET: &str = "dev_secret_key_change_in_production";
+const PRODUCTION_ENV_VARS: [&str; 5] = ["OXIDEDB_ENV", "OXIDE_ENV", "APP_ENV", "ENV", "NODE_ENV"];
+
 /// Main application configuration
 #[derive(Debug, Clone)]
 pub struct OxideDbConfig {
@@ -84,16 +87,22 @@ impl ServerConfig {
         if self.api_port == 0 {
             return Err(AppError::validation("api_port", "API port cannot be 0"));
         }
-        
+
         if self.bind_address.is_empty() {
-            return Err(AppError::validation("bind_address", "Bind address cannot be empty"));
+            return Err(AppError::validation(
+                "bind_address",
+                "Bind address cannot be empty",
+            ));
         }
 
         if matches!(self.admin_mode, AdminMode::External) && !self.admin_ui_path.exists() {
-            return Err(AppError::validation("admin_ui_path", &format!(
-                "External admin UI path {:?} does not exist", 
-                self.admin_ui_path
-            )));
+            return Err(AppError::validation(
+                "admin_ui_path",
+                &format!(
+                    "External admin UI path {:?} does not exist",
+                    self.admin_ui_path
+                ),
+            ));
         }
 
         Ok(())
@@ -113,10 +122,12 @@ impl DatabaseConfig {
         if self.db_path.to_string_lossy() != ":memory:" {
             if let Some(parent) = self.db_path.parent() {
                 if !parent.exists() {
-                    std::fs::create_dir_all(parent)
-                                        .map_err(|e| AppError::validation("db_path", &format!(
-                    "Cannot create database directory {:?}: {}", parent, e
-                )))?;
+                    std::fs::create_dir_all(parent).map_err(|e| {
+                        AppError::validation(
+                            "db_path",
+                            &format!("Cannot create database directory {:?}: {}", parent, e),
+                        )
+                    })?;
                 }
             }
         }
@@ -131,8 +142,9 @@ impl DatabaseConfig {
 
         // Ensure parent directory exists
         if let Some(parent) = self.db_path.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| AppError::internal(format!("Failed to create database directory: {}", e)))?;
+            std::fs::create_dir_all(parent).map_err(|e| {
+                AppError::internal(format!("Failed to create database directory: {}", e))
+            })?;
         }
 
         // If the path is a directory, append the default database filename
@@ -174,10 +186,12 @@ impl LoggingConfig {
             // Ensure logging directory can be created
             if let Some(parent) = self.logging_db_path.parent() {
                 if !parent.exists() {
-                    std::fs::create_dir_all(parent)
-                                        .map_err(|e| AppError::validation("logging_db_path", &format!(
-                    "Cannot create logging directory {:?}: {}", parent, e
-                )))?;
+                    std::fs::create_dir_all(parent).map_err(|e| {
+                        AppError::validation(
+                            "logging_db_path",
+                            &format!("Cannot create logging directory {:?}: {}", parent, e),
+                        )
+                    })?;
                 }
             }
         }
@@ -197,7 +211,7 @@ impl Default for SecurityConfig {
     fn default() -> Self {
         Self {
             jwt_secret: std::env::var("JWT_SECRET")
-                .unwrap_or_else(|_| "dev_secret_key_change_in_production".to_string()),
+                .unwrap_or_else(|_| DEFAULT_JWT_SECRET.to_string()),
             require_https: false, // Default to false for development
             max_request_size: 16 * 1024 * 1024, // 16MB default
         }
@@ -206,16 +220,38 @@ impl Default for SecurityConfig {
 
 impl SecurityConfig {
     fn validate(&self) -> Result<(), AppError> {
-        if self.jwt_secret == "dev_secret_key_change_in_production" {
-            tracing::warn!("Using default JWT secret - change this in production!");
+        if self.jwt_secret == DEFAULT_JWT_SECRET {
+            if is_production_environment() {
+                return Err(AppError::validation(
+                    "jwt_secret",
+                    "JWT_SECRET must be set to a strong non-default value in production",
+                ));
+            }
+
+            tracing::warn!("Using default JWT secret - change this before production!");
         }
 
         if self.jwt_secret.len() < 32 {
-            return Err(AppError::validation("jwt_secret", "JWT secret must be at least 32 characters"));
+            return Err(AppError::validation(
+                "jwt_secret",
+                "JWT secret must be at least 32 characters",
+            ));
         }
 
         Ok(())
     }
+}
+
+fn is_production_environment() -> bool {
+    PRODUCTION_ENV_VARS.iter().any(|name| {
+        std::env::var(name)
+            .map(|value| is_production_environment_value(&value))
+            .unwrap_or(false)
+    })
+}
+
+fn is_production_environment_value(value: &str) -> bool {
+    value.trim().eq_ignore_ascii_case("production")
 }
 
 /// Security policy levels for plugin execution
@@ -234,7 +270,8 @@ impl From<SecurityPolicy> for oxide_core::plugin_security::SecurityPolicies {
         match policy {
             SecurityPolicy::Strict => oxide_core::plugin_security::SecurityPolicies {
                 default_trust_level: oxide_core::plugin_security::PluginTrustLevel::FullyTrusted,
-                default_resource_limits: oxide_core::plugin_security::ResourceLimits::conservative(),
+                default_resource_limits: oxide_core::plugin_security::ResourceLimits::conservative(
+                ),
                 max_violations_before_suspension: 3,
                 allow_untrusted_plugins: false,
                 require_code_signing: true,
@@ -247,7 +284,8 @@ impl From<SecurityPolicy> for oxide_core::plugin_security::SecurityPolicies {
                 require_code_signing: false,
             },
             SecurityPolicy::Dev => oxide_core::plugin_security::SecurityPolicies {
-                default_trust_level: oxide_core::plugin_security::PluginTrustLevel::PartiallyTrusted,
+                default_trust_level:
+                    oxide_core::plugin_security::PluginTrustLevel::PartiallyTrusted,
                 default_resource_limits: oxide_core::plugin_security::ResourceLimits::relaxed(),
                 max_violations_before_suspension: 10,
                 allow_untrusted_plugins: true,
@@ -496,9 +534,13 @@ impl From<PluginTrustLevel> for oxide_core::plugin_security::PluginTrustLevel {
     fn from(trust_level: PluginTrustLevel) -> Self {
         match trust_level {
             PluginTrustLevel::Untrusted => oxide_core::plugin_security::PluginTrustLevel::Untrusted,
-            PluginTrustLevel::PartiallyTrusted => oxide_core::plugin_security::PluginTrustLevel::PartiallyTrusted,
-            PluginTrustLevel::FullyTrusted => oxide_core::plugin_security::PluginTrustLevel::FullyTrusted,
+            PluginTrustLevel::PartiallyTrusted => {
+                oxide_core::plugin_security::PluginTrustLevel::PartiallyTrusted
+            }
+            PluginTrustLevel::FullyTrusted => {
+                oxide_core::plugin_security::PluginTrustLevel::FullyTrusted
+            }
             PluginTrustLevel::System => oxide_core::plugin_security::PluginTrustLevel::System,
         }
     }
-} 
+}

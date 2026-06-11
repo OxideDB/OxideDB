@@ -19,8 +19,6 @@ const Permissions: React.FC = () => {
     error,
     loadPermissions,
     updateCollectionPermissions,
-    resetPermissions,
-    applyPreset,
   } = usePermissions();
 
   if (loading) {

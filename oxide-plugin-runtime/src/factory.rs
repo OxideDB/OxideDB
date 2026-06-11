@@ -54,10 +54,12 @@ impl WasmtimePluginRuntimeFactoryWithPolicies {
     /// Create a factory from configuration
     pub fn from_config(database: Arc<dyn Db>, config: &PluginRuntimeConfig) -> PluginResult<Self> {
         let policies = if let Some(security_config) = &config.security_policies {
-            serde_json::from_value(security_config.clone())
-                .map_err(|e| oxide_core::plugin_api::PluginError::InitializationFailed(
-                    format!("Failed to parse security policies: {}", e)
-                ))?
+            serde_json::from_value(security_config.clone()).map_err(|e| {
+                oxide_core::plugin_api::PluginError::InitializationFailed(format!(
+                    "Failed to parse security policies: {}",
+                    e
+                ))
+            })?
         } else {
             SecurityPolicies::default()
         };
@@ -70,7 +72,10 @@ impl PluginRuntimeFactory for WasmtimePluginRuntimeFactoryWithPolicies {
     type Runtime = WasmtimePluginRuntime;
 
     fn create_runtime(&self) -> PluginResult<Self::Runtime> {
-        WasmtimePluginRuntime::new_with_security_policies(self.database.clone(), self.policies.clone())
+        WasmtimePluginRuntime::new_with_security_policies(
+            self.database.clone(),
+            self.policies.clone(),
+        )
     }
 
     fn runtime_type(&self) -> &'static str {
@@ -78,6 +83,9 @@ impl PluginRuntimeFactory for WasmtimePluginRuntimeFactoryWithPolicies {
     }
 
     fn supports_config(&self, config: &PluginRuntimeConfig) -> bool {
-        matches!(config.runtime_type.as_str(), "wasmtime" | "wasmtime-wasi" | "wasmtime-secure")
+        matches!(
+            config.runtime_type.as_str(),
+            "wasmtime" | "wasmtime-wasi" | "wasmtime-secure"
+        )
     }
-} 
+}

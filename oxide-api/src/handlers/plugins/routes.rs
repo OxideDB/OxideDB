@@ -36,7 +36,7 @@ pub async fn handle_plugin_route(
         .ok_or_else(|| ApiError::internal("Plugin system not available".to_string()))?;
 
     // Find matching plugin route
-    let route = find_matching_route(&plugin_manager, &method, &route_path).await?;
+    let route = find_matching_route(plugin_manager, &method, &route_path).await?;
 
     // Check authorization for the plugin route
     check_plugin_route_authorization(&state, &route, user_claims.as_ref(), &method, &route_path)
@@ -56,7 +56,7 @@ pub async fn handle_plugin_route(
     )?;
 
     // Execute plugin handler
-    let plugin_response = execute_plugin_handler(&plugin_manager, &route, &request_context).await?;
+    let plugin_response = execute_plugin_handler(plugin_manager, &route, &request_context).await?;
 
     // Convert plugin response to Axum response
     convert_plugin_response_to_axum(plugin_response)
@@ -89,16 +89,16 @@ async fn find_matching_route(
 
     // Find pattern match (for :id style parameters)
     for route in &routes {
-        if route.method.to_uppercase() == method.as_str() {
-            if path_matches_pattern(&route.path, &format!("/{}", path)) {
-                debug!(
-                    "✅ Found pattern match for plugin route: {} {} (pattern: {})",
-                    route.method,
-                    format!("/{}", path),
-                    route.path
-                );
-                return Ok(route.clone());
-            }
+        if route.method.to_uppercase() == method.as_str()
+            && path_matches_pattern(&route.path, &format!("/{}", path))
+        {
+            debug!(
+                "✅ Found pattern match for plugin route: {} {} (pattern: {})",
+                route.method,
+                format!("/{}", path),
+                route.path
+            );
+            return Ok(route.clone());
         }
     }
 

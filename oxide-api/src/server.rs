@@ -3,16 +3,18 @@
 //! This module contains the core HTTP server implementation for the OxideDB API.
 //! The server is built on top of Axum and provides a REST API interface.
 
+use crate::services::{
+    plugin_config_service::PluginConfigService, DatabasePermissionService, LoggingApiService,
+};
 use oxide_core::{event::EventBus, logging::ApplicationLogger, AppError, AuthService};
 use oxide_db::Db;
 use oxide_logging::LogServiceBridge;
-use crate::services::{LoggingApiService, DatabasePermissionService, plugin_config_service::PluginConfigService};
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::net::TcpListener;
-use tracing::{info, debug, warn};
+use tracing::{debug, info, warn};
 
-use crate::routes::{build_router_with_config, build_router_with_config_and_middleware, RouteConfig};
+use crate::routes::{build_router_with_config, RouteConfig};
 
 /// Shared application state
 #[derive(Clone)]
@@ -46,7 +48,10 @@ pub struct ApiServer {
 
 impl AppState {
     /// Update the AppState with a plugin manager
-    pub fn with_plugin_manager(mut self, plugin_manager: Arc<oxide_plugin_runtime::PluginManager>) -> Self {
+    pub fn with_plugin_manager(
+        mut self,
+        plugin_manager: Arc<oxide_plugin_runtime::PluginManager>,
+    ) -> Self {
         self.plugin_manager = Some(plugin_manager);
         self
     }
@@ -67,7 +72,13 @@ impl ApiServer {
     /// * `auth_service` - The authentication service
     /// * `host` - The host address to bind to
     /// * `port` - The port to listen on
-    pub fn new(db: Arc<dyn Db>, event_bus: Arc<dyn EventBus>, auth_service: Arc<AuthService>, host: String, port: u16) -> Self {
+    pub fn new(
+        db: Arc<dyn Db>,
+        event_bus: Arc<dyn EventBus>,
+        auth_service: Arc<AuthService>,
+        host: String,
+        port: u16,
+    ) -> Self {
         Self {
             db,
             event_bus,
@@ -90,13 +101,13 @@ impl ApiServer {
     /// * `host` - The host address to bind to
     /// * `port` - The port to listen on
     pub fn new_with_logging(
-        db: Arc<dyn Db>, 
-        event_bus: Arc<dyn EventBus>, 
+        db: Arc<dyn Db>,
+        event_bus: Arc<dyn EventBus>,
         auth_service: Arc<AuthService>,
         logging_service: Arc<LogServiceBridge>,
         logging_api_service: Arc<LoggingApiService>,
-        host: String, 
-        port: u16
+        host: String,
+        port: u16,
     ) -> Self {
         Self {
             db,
@@ -122,39 +133,43 @@ impl ApiServer {
     /// This allows for different configurations in different environments
     /// (e.g., disabling admin UI in production, serving external UI in development).
     pub async fn start_with_config(&self, config: RouteConfig) -> Result<(), AppError> {
-        self.start_with_config_plugin_manager_and_optional_vfs(config, None, None).await
+        self.start_with_config_plugin_manager_and_optional_vfs(config, None, None)
+            .await
     }
 
     /// Start the API server with custom configuration and plugin manager
     ///
     /// This variant includes plugin support by passing the plugin manager to the app state.
     pub async fn start_with_config_and_plugin_manager(
-        &self, 
-        config: RouteConfig, 
-        plugin_manager: Arc<oxide_plugin_runtime::PluginManager>
+        &self,
+        config: RouteConfig,
+        plugin_manager: Arc<oxide_plugin_runtime::PluginManager>,
     ) -> Result<(), AppError> {
-        self.start_with_config_plugin_manager_and_optional_vfs(config, Some(plugin_manager), None).await
+        self.start_with_config_plugin_manager_and_optional_vfs(config, Some(plugin_manager), None)
+            .await
     }
 
     /// Start the API server with custom configuration, optional plugin manager, and optional VFS service
     ///
     /// This is the main startup method that handles all combinations of services.
     pub async fn start_with_config_plugin_manager_and_optional_vfs(
-        &self, 
-        config: RouteConfig, 
+        &self,
+        config: RouteConfig,
         plugin_manager: Option<Arc<oxide_plugin_runtime::PluginManager>>,
-        vfs_service: Option<Arc<dyn oxide_core::VirtualFileSystem>>
+        vfs_service: Option<Arc<dyn oxide_core::VirtualFileSystem>>,
     ) -> Result<(), AppError> {
         info!("Starting API server on {}:{}", self.host, self.port);
-        debug!("Server configuration: Admin enabled: {}, CORS enabled: {}, Tracing enabled: {}", 
-               config.enable_admin, config.enable_cors, config.enable_tracing);
+        debug!(
+            "Server configuration: Admin enabled: {}, CORS enabled: {}, Tracing enabled: {}",
+            config.enable_admin, config.enable_cors, config.enable_tracing
+        );
 
         // Log admin UI configuration details
         if config.enable_admin {
             match &config.admin_mode {
                 crate::routes::AdminUiMode::Embedded => {
                     info!("Admin UI mode: Embedded (built-in UI)");
-                    
+
                     // Check if embedded UI is available
                     if crate::handlers::admin::is_admin_ui_available() {
                         info!("✅ Embedded admin UI is available");
@@ -164,7 +179,7 @@ impl ApiServer {
                 }
                 crate::routes::AdminUiMode::External(path) => {
                     info!("Admin UI mode: External (serving from {:?})", path);
-                    
+
                     // Check if external UI is available
                     if crate::handlers::admin::is_external_admin_ui_available(path).await {
                         info!("✅ External admin UI is available at {:?}", path);
@@ -180,27 +195,29 @@ impl ApiServer {
             info!("Admin UI is disabled by configuration");
         }
 
-        let database_permission_service = Arc::new(DatabasePermissionService::new(Arc::clone(&self.db)));
+        let database_permission_service =
+            Arc::new(DatabasePermissionService::new(Arc::clone(&self.db)));
         // Default plugins directory
         let plugins_dir = std::env::current_dir()
             .unwrap_or_else(|_| std::path::PathBuf::from("."))
             .join("oxide-plugins");
-        let plugin_config_service = Arc::new(PluginConfigService::new(Arc::clone(&self.db), plugins_dir));
-        
+        let plugin_config_service =
+            Arc::new(PluginConfigService::new(Arc::clone(&self.db), plugins_dir));
+
         let state = AppState {
             db: Arc::clone(&self.db),
             event_bus: Arc::clone(&self.event_bus),
             auth_service: Arc::clone(&self.auth_service),
             logging_service: self.logging_service.clone(),
             logging_api_service: self.logging_api_service.clone(),
-            plugin_manager: plugin_manager,
+            plugin_manager,
             database_permission_service,
             plugin_config_service,
-            vfs_service: vfs_service,
+            vfs_service,
             started_at: Instant::now(),
         };
 
-        let app = build_router_with_config_and_middleware(config.clone(), state.clone());
+        let app = build_router_with_config(config.clone(), state.clone());
 
         // Log all registered endpoints
         crate::routes::log_registered_endpoints(&state, &config);
@@ -286,12 +303,12 @@ pub struct ServerStatus {
 /// and middleware configured. It's useful for testing or when you need
 /// more control over the server lifecycle.
 pub fn create_app(state: AppState) -> axum::Router {
-    build_router_with_config(RouteConfig::default()).with_state(state)
+    build_router_with_config(RouteConfig::default(), state)
 }
 
 /// Create an Axum app with custom configuration
 pub fn create_app_with_config(state: AppState, config: RouteConfig) -> axum::Router {
-    build_router_with_config(config).with_state(state)
+    build_router_with_config(config, state)
 }
 
 async fn shutdown_signal() {
@@ -300,5 +317,3 @@ async fn shutdown_signal() {
         Err(e) => warn!("Failed to listen for shutdown signal: {}", e),
     }
 }
-
-

@@ -46,18 +46,17 @@ pub mod middleware;
 pub mod types;
 
 // Re-export main public API - specific exports to avoid conflicts
-pub use bus::{EventBus, EventBusHealth, EventBusExt};
-pub use config::{EventSystemConfig, EventBusConfig as BusConfig};
-pub use context::{BeforeEventContext, AfterEventContext, RequestContext, ErrorSeverity};
+pub use bus::{EventBus, EventBusExt, EventBusHealth};
+pub use config::{EventBusConfig as BusConfig, EventSystemConfig};
+pub use context::{AfterEventContext, BeforeEventContext, ErrorSeverity, RequestContext};
 pub use handlers::{
-    BeforeEventHandler, AfterEventHandler, HandlerMetadata, HandlerExecutionResult,
-    ManagedBeforeHandler, ManagedAfterHandler, EventFilter, CollectionFilter, TagFilter,
-    CompositeFilter,
+    AfterEventHandler, BeforeEventHandler, CollectionFilter, CompositeFilter, EventFilter,
+    HandlerExecutionResult, HandlerMetadata, ManagedAfterHandler, ManagedBeforeHandler, TagFilter,
 };
 pub use memory::InMemoryEventBus;
 pub use metrics::{EventMetrics, EventMetricsCollector, EventTypeMetrics, HandlerMetrics};
 pub use middleware::{
-    BeforeHandlerMiddleware, AfterHandlerMiddleware, TimeoutMiddleware, RetryMiddleware,
-    CircuitBreakerMiddleware, CompositeBeforeMiddleware, CompositeAfterMiddleware,
+    AfterHandlerMiddleware, BeforeHandlerMiddleware, CircuitBreakerMiddleware,
+    CompositeAfterMiddleware, CompositeBeforeMiddleware, RetryMiddleware, TimeoutMiddleware,
 };
-pub use types::{BeforeEventType, AfterEventType, EventCategory, EventPriority}; 
+pub use types::{AfterEventType, BeforeEventType, EventCategory, EventPriority};

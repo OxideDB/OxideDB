@@ -3,10 +3,14 @@
 //! This module provides HTTP handlers for collection-related operations
 //! including CRUD operations, schema management, and statistics.
 
-use axum::{extract::{Path, State}, http::StatusCode, response::Json};
+use axum::{
+    extract::{Path, State},
+    http::StatusCode,
+    response::Json,
+};
 use oxide_core::collection::{CollectionSchema, CollectionType, FieldDefinition, IndexDefinition};
 use oxide_db::Db;
-use serde::{Deserialize, Serialize};
+use serde::{ser::SerializeStruct, Deserialize, Serialize, Serializer};
 use std::{collections::HashMap, sync::Arc};
 use tracing::{debug, info};
 use ts_rs::TS;
@@ -43,7 +47,7 @@ impl CreateCollectionRequest {
 }
 
 /// Collection statistics response
-#[derive(Debug, Serialize, TS)]
+#[derive(Debug, TS)]
 #[ts(export)]
 pub struct CollectionStats {
     /// Collection name
@@ -55,14 +59,45 @@ pub struct CollectionStats {
     /// Collection size in kilobytes
     pub size_kb: f64,
     /// Collection schema version
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub schema_version: Option<u32>,
     /// Collection creation timestamp
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub created_at: Option<String>,
     /// Last modification timestamp
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub updated_at: Option<String>,
+}
+
+impl Serialize for CollectionStats {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut fields = 4;
+        if self.schema_version.is_some() {
+            fields += 1;
+        }
+        if self.created_at.is_some() {
+            fields += 1;
+        }
+        if self.updated_at.is_some() {
+            fields += 1;
+        }
+
+        let mut state = serializer.serialize_struct("CollectionStats", fields)?;
+        state.serialize_field("name", &self.name)?;
+        state.serialize_field("record_count", &self.record_count)?;
+        state.serialize_field("exists", &self.exists)?;
+        state.serialize_field("size_kb", &self.size_kb)?;
+        if let Some(schema_version) = self.schema_version {
+            state.serialize_field("schema_version", &schema_version)?;
+        }
+        if let Some(created_at) = &self.created_at {
+            state.serialize_field("created_at", created_at)?;
+        }
+        if let Some(updated_at) = &self.updated_at {
+            state.serialize_field("updated_at", updated_at)?;
+        }
+        state.end()
+    }
 }
 
 /// Handlers for collection operations
@@ -118,7 +153,9 @@ impl CollectionHandlers {
     }
 
     /// List all collections with relationship data populated
-    pub async fn list_collections_with_relationships(db: Arc<dyn Db>) -> Result<Vec<CollectionSchema>, ApiError> {
+    pub async fn list_collections_with_relationships(
+        db: Arc<dyn Db>,
+    ) -> Result<Vec<CollectionSchema>, ApiError> {
         debug!("Listing collections with relationship data");
 
         let collection_schemas = db.list_collections().await?;
@@ -151,14 +188,18 @@ impl CollectionHandlers {
             exists,
             size_kb,
             schema_version: Some(schema.version),
-            created_at: Some(chrono::DateTime::from_timestamp(schema.created_at, 0)
-                .unwrap_or_default()
-                .format("%Y-%m-%d %H:%M:%S")
-                .to_string()),
-            updated_at: Some(chrono::DateTime::from_timestamp(schema.updated_at, 0)
-                .unwrap_or_default()
-                .format("%Y-%m-%d %H:%M:%S")
-                .to_string()),
+            created_at: Some(
+                chrono::DateTime::from_timestamp(schema.created_at, 0)
+                    .unwrap_or_default()
+                    .format("%Y-%m-%d %H:%M:%S")
+                    .to_string(),
+            ),
+            updated_at: Some(
+                chrono::DateTime::from_timestamp(schema.updated_at, 0)
+                    .unwrap_or_default()
+                    .format("%Y-%m-%d %H:%M:%S")
+                    .to_string(),
+            ),
         };
 
         debug!("Retrieved stats for collection: {:?}", stats);
@@ -214,6 +255,10 @@ impl CollectionHandlers {
         if schema.name.is_empty() {
             return Err(ApiError::bad_request("Collection name cannot be empty"));
         }
+
+        schema
+            .validate_identifiers()
+            .map_err(ApiError::bad_request)?;
 
         // Check for reserved names
         if schema.name.starts_with("_") {

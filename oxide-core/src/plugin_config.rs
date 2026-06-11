@@ -4,13 +4,13 @@
 //! to the database, with WASM files stored separately on the filesystem.
 
 use crate::{
-    plugin_security::{PluginCapability, PluginTrustLevel, ResourceLimits},
     collection::{CollectionSchema, CollectionType, FieldDefinition},
     field_types::FieldType,
+    plugin_security::{PluginCapability, PluginTrustLevel, ResourceLimits},
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use ts_rs::TS;
 
 /// Complete plugin configuration that can be persisted to the database
@@ -70,6 +70,7 @@ pub enum PluginStatus {
 
 impl PluginConfiguration {
     /// Create a new plugin configuration
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         name: String,
         version: String,
@@ -168,7 +169,12 @@ impl PluginConfiguration {
     }
 
     /// Update WASM file information
-    pub fn set_wasm_info(&mut self, wasm_path: Option<String>, wasm_size: Option<u64>, wasm_hash: Option<String>) {
+    pub fn set_wasm_info(
+        &mut self,
+        wasm_path: Option<String>,
+        wasm_size: Option<u64>,
+        wasm_hash: Option<String>,
+    ) {
         self.wasm_path = wasm_path;
         self.wasm_size = wasm_size;
         self.wasm_hash = wasm_hash;
@@ -182,7 +188,7 @@ impl PluginConfiguration {
     }
 
     /// Get the full filesystem path to the WASM file
-    pub fn get_wasm_file_path(&self, plugins_dir: &PathBuf) -> Option<PathBuf> {
+    pub fn get_wasm_file_path(&self, plugins_dir: &Path) -> Option<PathBuf> {
         self.wasm_path.as_ref().map(|path| plugins_dir.join(path))
     }
 
@@ -198,170 +204,219 @@ pub fn create_plugins_collection_schema() -> CollectionSchema {
     let mut fields = HashMap::new();
 
     // Plugin name (unique identifier)
-    fields.insert("name".to_string(), FieldDefinition {
-        field_type: FieldType::Text,
-        required: true,
-        unique: true,
-        default: None,
-        validation: None,
-        index: true,
-    });
+    fields.insert(
+        "name".to_string(),
+        FieldDefinition {
+            field_type: FieldType::Text,
+            required: true,
+            unique: true,
+            default: None,
+            validation: None,
+            index: true,
+        },
+    );
 
     // Plugin version
-    fields.insert("version".to_string(), FieldDefinition {
-        field_type: FieldType::Text,
-        required: true,
-        unique: false,
-        default: Some(serde_json::json!("1.0.0")),
-        validation: None,
-        index: false,
-    });
+    fields.insert(
+        "version".to_string(),
+        FieldDefinition {
+            field_type: FieldType::Text,
+            required: true,
+            unique: false,
+            default: Some(serde_json::json!("1.0.0")),
+            validation: None,
+            index: false,
+        },
+    );
 
     // Plugin description
-    fields.insert("description".to_string(), FieldDefinition {
-        field_type: FieldType::Text,
-        required: false,
-        unique: false,
-        default: None,
-        validation: None,
-        index: false,
-    });
+    fields.insert(
+        "description".to_string(),
+        FieldDefinition {
+            field_type: FieldType::Text,
+            required: false,
+            unique: false,
+            default: None,
+            validation: None,
+            index: false,
+        },
+    );
 
     // Plugin author
-    fields.insert("author".to_string(), FieldDefinition {
-        field_type: FieldType::Text,
-        required: false,
-        unique: false,
-        default: Some(serde_json::json!("Unknown")),
-        validation: None,
-        index: false,
-    });
+    fields.insert(
+        "author".to_string(),
+        FieldDefinition {
+            field_type: FieldType::Text,
+            required: false,
+            unique: false,
+            default: Some(serde_json::json!("Unknown")),
+            validation: None,
+            index: false,
+        },
+    );
 
     // Plugin status
-    fields.insert("status".to_string(), FieldDefinition {
-        field_type: FieldType::Text,
-        required: true,
-        unique: false,
-        default: Some(serde_json::json!("Enabled")),
-        validation: None,
-        index: false,
-    });
+    fields.insert(
+        "status".to_string(),
+        FieldDefinition {
+            field_type: FieldType::Text,
+            required: true,
+            unique: false,
+            default: Some(serde_json::json!("Enabled")),
+            validation: None,
+            index: false,
+        },
+    );
 
     // Trust level
-    fields.insert("trust_level".to_string(), FieldDefinition {
-        field_type: FieldType::Text,
-        required: true,
-        unique: false,
-        default: Some(serde_json::json!("Untrusted")),
-        validation: None,
-        index: false,
-    });
+    fields.insert(
+        "trust_level".to_string(),
+        FieldDefinition {
+            field_type: FieldType::Text,
+            required: true,
+            unique: false,
+            default: Some(serde_json::json!("Untrusted")),
+            validation: None,
+            index: false,
+        },
+    );
 
     // Capabilities (stored as JSON array)
-    fields.insert("capabilities".to_string(), FieldDefinition {
-        field_type: FieldType::Json,
-        required: false,
-        unique: false,
-        default: Some(serde_json::json!([])),
-        validation: None,
-        index: false,
-    });
+    fields.insert(
+        "capabilities".to_string(),
+        FieldDefinition {
+            field_type: FieldType::Json,
+            required: false,
+            unique: false,
+            default: Some(serde_json::json!([])),
+            validation: None,
+            index: false,
+        },
+    );
 
     // Resource limits (stored as JSON object)
-    fields.insert("resource_limits".to_string(), FieldDefinition {
-        field_type: FieldType::Json,
-        required: false,
-        unique: false,
-        default: None,
-        validation: None,
-        index: false,
-    });
+    fields.insert(
+        "resource_limits".to_string(),
+        FieldDefinition {
+            field_type: FieldType::Json,
+            required: false,
+            unique: false,
+            default: None,
+            validation: None,
+            index: false,
+        },
+    );
 
     // Plugin metadata
-    fields.insert("metadata".to_string(), FieldDefinition {
-        field_type: FieldType::Json,
-        required: false,
-        unique: false,
-        default: Some(serde_json::json!({})),
-        validation: None,
-        index: false,
-    });
+    fields.insert(
+        "metadata".to_string(),
+        FieldDefinition {
+            field_type: FieldType::Json,
+            required: false,
+            unique: false,
+            default: Some(serde_json::json!({})),
+            validation: None,
+            index: false,
+        },
+    );
 
     // WASM file path (relative to plugins directory)
-    fields.insert("wasm_path".to_string(), FieldDefinition {
-        field_type: FieldType::Text,
-        required: false,
-        unique: false,
-        default: None,
-        validation: None,
-        index: false,
-    });
+    fields.insert(
+        "wasm_path".to_string(),
+        FieldDefinition {
+            field_type: FieldType::Text,
+            required: false,
+            unique: false,
+            default: None,
+            validation: None,
+            index: false,
+        },
+    );
 
     // Plugin directory path (relative to plugins base directory)
-    fields.insert("plugin_directory".to_string(), FieldDefinition {
-        field_type: FieldType::Text,
-        required: false,
-        unique: false,
-        default: None,
-        validation: None,
-        index: false,
-    });
+    fields.insert(
+        "plugin_directory".to_string(),
+        FieldDefinition {
+            field_type: FieldType::Text,
+            required: false,
+            unique: false,
+            default: None,
+            validation: None,
+            index: false,
+        },
+    );
 
     // WASM file size in bytes
-    fields.insert("wasm_size".to_string(), FieldDefinition {
-        field_type: FieldType::Number,
-        required: false,
-        unique: false,
-        default: None,
-        validation: None,
-        index: false,
-    });
+    fields.insert(
+        "wasm_size".to_string(),
+        FieldDefinition {
+            field_type: FieldType::Number,
+            required: false,
+            unique: false,
+            default: None,
+            validation: None,
+            index: false,
+        },
+    );
 
     // WASM file hash for integrity verification
-    fields.insert("wasm_hash".to_string(), FieldDefinition {
-        field_type: FieldType::Text,
-        required: false,
-        unique: false,
-        default: None,
-        validation: None,
-        index: false,
-    });
+    fields.insert(
+        "wasm_hash".to_string(),
+        FieldDefinition {
+            field_type: FieldType::Text,
+            required: false,
+            unique: false,
+            default: None,
+            validation: None,
+            index: false,
+        },
+    );
 
     // Whether plugin is enabled
-    fields.insert("enabled".to_string(), FieldDefinition {
-        field_type: FieldType::Boolean,
-        required: true,
-        unique: false,
-        default: Some(serde_json::json!(true)),
-        validation: None,
-        index: false,
-    });
+    fields.insert(
+        "enabled".to_string(),
+        FieldDefinition {
+            field_type: FieldType::Boolean,
+            required: true,
+            unique: false,
+            default: Some(serde_json::json!(true)),
+            validation: None,
+            index: false,
+        },
+    );
 
     // Installation timestamp
-    fields.insert("installed_at".to_string(), FieldDefinition {
-        field_type: FieldType::Number,
-        required: true,
-        unique: false,
-        default: None,
-        validation: None,
-        index: false,
-    });
+    fields.insert(
+        "installed_at".to_string(),
+        FieldDefinition {
+            field_type: FieldType::Number,
+            required: true,
+            unique: false,
+            default: None,
+            validation: None,
+            index: false,
+        },
+    );
 
     schema.fields = fields;
     schema
 }
 
 /// Convert a PluginConfiguration to a JSON record for database storage
-pub fn plugin_config_to_record(config: &PluginConfiguration) -> Result<serde_json::Value, serde_json::Error> {
+pub fn plugin_config_to_record(
+    config: &PluginConfiguration,
+) -> Result<serde_json::Value, serde_json::Error> {
     serde_json::to_value(config)
 }
 
 /// Convert a JSON record from database to PluginConfiguration
-pub fn record_to_plugin_config(record: &serde_json::Value) -> Result<PluginConfiguration, serde_json::Error> {
-    use tracing::{warn, debug};
-    
+pub fn record_to_plugin_config(
+    record: &serde_json::Value,
+) -> Result<PluginConfiguration, serde_json::Error> {
+    use tracing::{debug, warn};
+
     debug!("Converting database record to plugin config: {}", record);
-    
+
     // Handle comprehensive field mapping and type conversion
     let mut record = record.clone();
     if let Some(obj) = record.as_object_mut() {
@@ -374,16 +429,23 @@ pub fn record_to_plugin_config(record: &serde_json::Value) -> Result<PluginConfi
             // Add missing capabilities field with default empty array
             obj.insert("capabilities".to_string(), serde_json::json!([]));
         }
-        
+
         if let Some(resource_limits) = obj.get("resource_limits") {
             if resource_limits.is_string() && resource_limits.as_str() == Some("") {
-                obj.insert("resource_limits".to_string(), serde_json::to_value(crate::plugin_security::ResourceLimits::default()).unwrap());
+                obj.insert(
+                    "resource_limits".to_string(),
+                    serde_json::to_value(crate::plugin_security::ResourceLimits::default())
+                        .unwrap(),
+                );
             }
         } else {
             // Add missing resource_limits field with defaults
-            obj.insert("resource_limits".to_string(), serde_json::to_value(crate::plugin_security::ResourceLimits::default()).unwrap());
+            obj.insert(
+                "resource_limits".to_string(),
+                serde_json::to_value(crate::plugin_security::ResourceLimits::default()).unwrap(),
+            );
         }
-        
+
         if let Some(metadata) = obj.get("metadata") {
             if metadata.is_string() && metadata.as_str() == Some("") {
                 obj.insert("metadata".to_string(), serde_json::json!({}));
@@ -392,14 +454,14 @@ pub fn record_to_plugin_config(record: &serde_json::Value) -> Result<PluginConfi
             // Add missing metadata field with empty object
             obj.insert("metadata".to_string(), serde_json::json!({}));
         }
-        
+
         // Fix floating point numbers that should be integers
         if let Some(installed_at) = obj.get("installed_at") {
             if let Some(f) = installed_at.as_f64() {
                 obj.insert("installed_at".to_string(), serde_json::json!(f as i64));
             }
         }
-        
+
         // Handle updated_at field - might be stored as created_at or missing
         if let Some(updated_at) = obj.get("updated_at") {
             if let Some(f) = updated_at.as_f64() {
@@ -422,45 +484,45 @@ pub fn record_to_plugin_config(record: &serde_json::Value) -> Result<PluginConfi
                 .as_secs() as i64;
             obj.insert("updated_at".to_string(), serde_json::json!(now));
         }
-        
+
         if let Some(wasm_size) = obj.get("wasm_size") {
             if let Some(f) = wasm_size.as_f64() {
                 obj.insert("wasm_size".to_string(), serde_json::json!(f as u64));
             }
         }
-        
+
         // Fix boolean fields that might be stored as integers
         if let Some(enabled) = obj.get("enabled") {
             if let Some(i) = enabled.as_i64() {
                 obj.insert("enabled".to_string(), serde_json::json!(i != 0));
             }
         }
-        
+
         // Handle missing optional fields
         if !obj.contains_key("description") {
             obj.insert("description".to_string(), serde_json::json!(""));
         }
-        
+
         if !obj.contains_key("author") {
             obj.insert("author".to_string(), serde_json::json!("Unknown"));
         }
-        
+
         if !obj.contains_key("version") {
             obj.insert("version".to_string(), serde_json::json!("1.0.0"));
         }
-        
+
         if !obj.contains_key("status") {
             obj.insert("status".to_string(), serde_json::json!("Enabled"));
         }
-        
+
         if !obj.contains_key("trust_level") {
             obj.insert("trust_level".to_string(), serde_json::json!("Untrusted"));
         }
-        
+
         if !obj.contains_key("enabled") {
             obj.insert("enabled".to_string(), serde_json::json!(true));
         }
-        
+
         if !obj.contains_key("installed_at") {
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -469,9 +531,9 @@ pub fn record_to_plugin_config(record: &serde_json::Value) -> Result<PluginConfi
             obj.insert("installed_at".to_string(), serde_json::json!(now));
         }
     }
-    
+
     debug!("Converted record for deserialization: {}", record);
-    
+
     serde_json::from_value(record).map_err(|e| {
         warn!("Failed to deserialize plugin config: {}", e);
         e
@@ -481,14 +543,14 @@ pub fn record_to_plugin_config(record: &serde_json::Value) -> Result<PluginConfi
 /// Utility functions for plugin file management
 pub mod filesystem {
     use super::*;
+    use sha2::{Digest, Sha256};
     use std::fs;
     use std::io::{self, Write};
     use std::path::Path;
-    use sha2::{Sha256, Digest};
 
     /// Save WASM data to filesystem and return the path, size, and hash
     pub fn save_wasm_file(
-        plugins_dir: &PathBuf,
+        plugins_dir: &Path,
         plugin_name: &str,
         version: &str,
         wasm_data: &[u8],
@@ -516,13 +578,13 @@ pub mod filesystem {
     }
 
     /// Load WASM data from filesystem
-    pub fn load_wasm_file(plugins_dir: &PathBuf, wasm_path: &str) -> io::Result<Vec<u8>> {
+    pub fn load_wasm_file(plugins_dir: &Path, wasm_path: &str) -> io::Result<Vec<u8>> {
         let file_path = plugins_dir.join(wasm_path);
         fs::read(file_path)
     }
 
     /// Delete WASM file from filesystem
-    pub fn delete_wasm_file(plugins_dir: &PathBuf, wasm_path: &str) -> io::Result<()> {
+    pub fn delete_wasm_file(plugins_dir: &Path, wasm_path: &str) -> io::Result<()> {
         let file_path = plugins_dir.join(wasm_path);
         if file_path.exists() {
             fs::remove_file(file_path)?;
@@ -531,9 +593,13 @@ pub mod filesystem {
     }
 
     /// Verify WASM file integrity using hash
-    pub fn verify_wasm_file(plugins_dir: &PathBuf, wasm_path: &str, expected_hash: &str) -> io::Result<bool> {
+    pub fn verify_wasm_file(
+        plugins_dir: &Path,
+        wasm_path: &str,
+        expected_hash: &str,
+    ) -> io::Result<bool> {
         let wasm_data = load_wasm_file(plugins_dir, wasm_path)?;
-        
+
         let mut hasher = Sha256::new();
         hasher.update(&wasm_data);
         let actual_hash = format!("{:x}", hasher.finalize());
@@ -542,14 +608,14 @@ pub mod filesystem {
     }
 
     /// List all WASM files in the plugins directory
-    pub fn list_wasm_files(plugins_dir: &PathBuf) -> io::Result<Vec<String>> {
+    pub fn list_wasm_files(plugins_dir: &Path) -> io::Result<Vec<String>> {
         let mut files = Vec::new();
-        
+
         if plugins_dir.exists() {
             for entry in fs::read_dir(plugins_dir)? {
                 let entry = entry?;
                 let path = entry.path();
-                
+
                 if path.is_file() {
                     if let Some(extension) = path.extension() {
                         if extension == "wasm" {
@@ -563,13 +629,13 @@ pub mod filesystem {
                 }
             }
         }
-        
+
         Ok(files)
     }
 
     /// Create a plugin directory for a specific plugin version
     pub fn create_plugin_directory(
-        plugins_dir: &PathBuf,
+        plugins_dir: &Path,
         plugin_name: &str,
         version: &str,
     ) -> io::Result<PathBuf> {
@@ -579,35 +645,31 @@ pub mod filesystem {
         // Create plugin-specific directory: {plugin_name}-{version}
         let plugin_dir_name = format!("{}-{}", plugin_name, version);
         let plugin_dir = plugins_dir.join(&plugin_dir_name);
-        
+
         // Create the plugin directory
         fs::create_dir_all(&plugin_dir)?;
-        
+
         Ok(plugin_dir)
     }
 
     /// Remove a plugin directory and all its contents
     pub fn remove_plugin_directory(
-        plugins_dir: &PathBuf,
+        plugins_dir: &Path,
         plugin_name: &str,
         version: &str,
     ) -> io::Result<()> {
         let plugin_dir_name = format!("{}-{}", plugin_name, version);
         let plugin_dir = plugins_dir.join(&plugin_dir_name);
-        
+
         if plugin_dir.exists() {
             fs::remove_dir_all(plugin_dir)?;
         }
-        
+
         Ok(())
     }
 
     /// Get the path to a plugin directory
-    pub fn get_plugin_directory(
-        plugins_dir: &PathBuf,
-        plugin_name: &str,
-        version: &str,
-    ) -> PathBuf {
+    pub fn get_plugin_directory(plugins_dir: &Path, plugin_name: &str, version: &str) -> PathBuf {
         let plugin_dir_name = format!("{}-{}", plugin_name, version);
         plugins_dir.join(&plugin_dir_name)
     }
@@ -628,11 +690,7 @@ pub mod filesystem {
     }
 
     /// Check if a plugin directory exists
-    pub fn plugin_directory_exists(
-        plugins_dir: &PathBuf,
-        plugin_name: &str,
-        version: &str,
-    ) -> bool {
+    pub fn plugin_directory_exists(plugins_dir: &Path, plugin_name: &str, version: &str) -> bool {
         let plugin_dir = get_plugin_directory(plugins_dir, plugin_name, version);
         plugin_dir.exists() && plugin_dir.is_dir()
     }
@@ -660,7 +718,7 @@ mod tests {
 
         assert_eq!(config.name, "test_plugin");
         assert_eq!(config.version, "1.0.0");
-        assert_eq!(config.enabled, true);
+        assert!(config.enabled);
         assert!(config.has_wasm_file());
     }
 
@@ -707,12 +765,8 @@ mod tests {
         let wasm_data = b"test wasm data";
 
         // Save WASM file
-        let (filename, size, hash) = filesystem::save_wasm_file(
-            &plugins_dir,
-            "test_plugin",
-            "1.0.0",
-            wasm_data,
-        ).unwrap();
+        let (filename, size, hash) =
+            filesystem::save_wasm_file(&plugins_dir, "test_plugin", "1.0.0", wasm_data).unwrap();
 
         assert_eq!(filename, "test_plugin-1.0.0.wasm");
         assert_eq!(size, wasm_data.len() as u64);
@@ -735,4 +789,4 @@ mod tests {
         let files_after_delete = filesystem::list_wasm_files(&plugins_dir).unwrap();
         assert!(!files_after_delete.contains(&filename));
     }
-} 
+}

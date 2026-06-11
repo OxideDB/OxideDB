@@ -4,35 +4,35 @@
 //! with WASM files stored on the filesystem for better performance and scalability.
 
 use oxide_core::{
-    AppError,
     plugin_config::{
-        PluginConfiguration, PluginStatus, plugin_config_to_record, record_to_plugin_config,
-        filesystem as plugin_fs
+        filesystem as plugin_fs, plugin_config_to_record, record_to_plugin_config,
+        PluginConfiguration, PluginStatus,
     },
     plugin_security::{PluginCapability, PluginTrustLevel, ResourceLimits},
+    AppError,
 };
-use oxide_db::{Db, db::ListParams};
-use std::path::PathBuf;
+use oxide_db::{db::ListParams, Db};
+use std::path::{Component, PathBuf};
 use std::sync::Arc;
-use tracing::{debug, info, warn, error};
+use tracing::{debug, error, info, warn};
 
 /// Recursively copy a directory and all its contents
 fn copy_dir_recursive(source: &std::path::Path, dest: &std::path::Path) -> std::io::Result<()> {
     std::fs::create_dir_all(dest)?;
-    
+
     for entry in std::fs::read_dir(source)? {
         let entry = entry?;
         let source_path = entry.path();
         let file_name = entry.file_name();
         let dest_path = dest.join(&file_name);
-        
+
         if source_path.is_file() {
             std::fs::copy(&source_path, &dest_path)?;
         } else if source_path.is_dir() {
             copy_dir_recursive(&source_path, &dest_path)?;
         }
     }
-    
+
     Ok(())
 }
 
@@ -49,6 +49,7 @@ impl PluginConfigService {
     }
 
     /// Install a new plugin with WASM data
+    #[allow(clippy::too_many_arguments)]
     pub async fn install_plugin(
         &self,
         name: String,
@@ -65,7 +66,10 @@ impl PluginConfigService {
 
         // Check if plugin already exists
         if self.plugin_exists(&name).await? {
-            return Err(AppError::conflict(format!("Plugin '{}' already exists", name)));
+            return Err(AppError::conflict(format!(
+                "Plugin '{}' already exists",
+                name
+            )));
         }
 
         // Save WASM file to filesystem
@@ -105,6 +109,7 @@ impl PluginConfigService {
     }
 
     /// Install a new plugin from extracted directory
+    #[allow(clippy::too_many_arguments)]
     pub async fn install_plugin_from_directory(
         &self,
         name: String,
@@ -122,7 +127,10 @@ impl PluginConfigService {
 
         // Check if plugin already exists
         if self.plugin_exists(&name).await? {
-            return Err(AppError::conflict(format!("Plugin '{}' already exists", name)));
+            return Err(AppError::conflict(format!(
+                "Plugin '{}' already exists",
+                name
+            )));
         }
 
         // Create permanent plugin directory
@@ -145,19 +153,19 @@ impl PluginConfigService {
                 let source_path = entry.path();
                 let file_name = entry.file_name();
                 let dest_path = plugin_dir_clone.join(&file_name);
-                
+
                 if source_path.is_file() {
                     std::fs::copy(&source_path, &dest_path)?;
                 } else if source_path.is_dir() {
                     copy_dir_recursive(&source_path, &dest_path)?;
                 }
             }
-            
+
             // Clean up temporary directory
             if temp_path_clone.exists() {
                 std::fs::remove_dir_all(&temp_path_clone)?;
             }
-            
+
             Ok(())
         })
         .await
@@ -166,20 +174,21 @@ impl PluginConfigService {
 
         // Read WASM file for size and hash calculation
         let wasm_path = plugin_dir.join(&wasm_filename);
-        let (wasm_size, wasm_hash) = tokio::task::spawn_blocking(move || -> Result<(u64, String), std::io::Error> {
-            let wasm_data = std::fs::read(&wasm_path)?;
-            let wasm_size = wasm_data.len() as u64;
-            
-            use sha2::{Sha256, Digest};
-            let mut hasher = Sha256::new();
-            hasher.update(&wasm_data);
-            let wasm_hash = format!("{:x}", hasher.finalize());
-            
-            Ok((wasm_size, wasm_hash))
-        })
-        .await
-        .map_err(|e| AppError::internal(format!("Failed to spawn blocking task: {}", e)))?
-        .map_err(|e| AppError::internal(format!("Failed to read WASM file: {}", e)))?;
+        let (wasm_size, wasm_hash) =
+            tokio::task::spawn_blocking(move || -> Result<(u64, String), std::io::Error> {
+                let wasm_data = std::fs::read(&wasm_path)?;
+                let wasm_size = wasm_data.len() as u64;
+
+                use sha2::{Digest, Sha256};
+                let mut hasher = Sha256::new();
+                hasher.update(&wasm_data);
+                let wasm_hash = format!("{:x}", hasher.finalize());
+
+                Ok((wasm_size, wasm_hash))
+            })
+            .await
+            .map_err(|e| AppError::internal(format!("Failed to spawn blocking task: {}", e)))?
+            .map_err(|e| AppError::internal(format!("Failed to read WASM file: {}", e)))?;
 
         // Create relative paths
         let plugin_dir_name = format!("{}-{}", name, version);
@@ -209,7 +218,10 @@ impl PluginConfigService {
         // Save to database
         let record_id = self.save_plugin_config(&config).await?;
 
-        info!("✅ Successfully installed plugin from directory: {}", config.name);
+        info!(
+            "✅ Successfully installed plugin from directory: {}",
+            config.name
+        );
         Ok(record_id)
     }
 
@@ -231,7 +243,9 @@ impl PluginConfigService {
                 let plugins_dir = self.plugins_dir.clone();
                 let old_wasm_path = old_wasm_path.clone();
                 move || plugin_fs::delete_wasm_file(&plugins_dir, &old_wasm_path)
-            }).await {
+            })
+            .await
+            {
                 warn!("Failed to delete old WASM file: {}", e);
             }
         }
@@ -263,31 +277,58 @@ impl PluginConfigService {
         debug!("Loading plugin WASM: {}", plugin_name);
 
         let config = self.get_plugin_config(plugin_name).await?;
-        
-        let wasm_path = config.wasm_path.ok_or_else(|| {
-            AppError::not_found("wasm_file", plugin_name)
-        })?;
+
+        let wasm_path = config
+            .wasm_path
+            .ok_or_else(|| AppError::not_found("wasm_file", plugin_name))?;
 
         let wasm_data = if let Some(plugin_directory) = &config.plugin_directory {
             // Load from plugin directory structure
             debug!("Loading WASM from plugin directory: {}", plugin_directory);
+
+            let stored_wasm_path = PathBuf::from(&wasm_path);
+            let wasm_relative_path = stored_wasm_path
+                .strip_prefix(plugin_directory)
+                .unwrap_or(stored_wasm_path.as_path())
+                .to_path_buf();
+
+            if wasm_relative_path.as_os_str().is_empty()
+                || wasm_relative_path
+                    .components()
+                    .any(|component| !matches!(component, Component::Normal(_)))
+            {
+                return Err(AppError::internal(format!(
+                    "Invalid plugin WASM path stored for '{}': {}",
+                    plugin_name, wasm_path
+                )));
+            }
+
             tokio::task::spawn_blocking({
                 let plugins_dir = self.plugins_dir.clone();
                 let plugin_directory = plugin_directory.clone();
-                let wasm_filename = std::path::Path::new(&wasm_path)
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .unwrap_or(&wasm_path)
-                    .to_string();
-                
+                let wasm_relative_path = wasm_relative_path.clone();
+
                 move || {
                     let plugin_dir = plugins_dir.join(&plugin_directory);
-                    plugin_fs::load_wasm_from_plugin_dir(&plugin_dir, &wasm_filename)
+                    let wasm_path = plugin_dir.join(&wasm_relative_path);
+                    let canonical_plugin_dir = plugin_dir.canonicalize()?;
+                    let canonical_wasm_path = wasm_path.canonicalize()?;
+
+                    if !canonical_wasm_path.starts_with(&canonical_plugin_dir) {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::PermissionDenied,
+                            "Plugin WASM path escapes plugin directory",
+                        ));
+                    }
+
+                    std::fs::read(canonical_wasm_path)
                 }
             })
             .await
             .map_err(|e| AppError::internal(format!("Failed to spawn blocking task: {}", e)))?
-            .map_err(|e| AppError::internal(format!("Failed to load WASM from plugin directory: {}", e)))?
+            .map_err(|e| {
+                AppError::internal(format!("Failed to load WASM from plugin directory: {}", e))
+            })?
         } else {
             // Load from legacy flat file structure
             debug!("Loading WASM from legacy path: {}", wasm_path);
@@ -307,7 +348,7 @@ impl PluginConfigService {
                 let wasm_data_copy = wasm_data.clone();
                 let expected_hash = expected_hash.clone();
                 move || {
-                    use sha2::{Sha256, Digest};
+                    use sha2::{Digest, Sha256};
                     let mut hasher = Sha256::new();
                     hasher.update(&wasm_data_copy);
                     let actual_hash = format!("{:x}", hasher.finalize());
@@ -318,7 +359,10 @@ impl PluginConfigService {
             .map_err(|e| AppError::internal(format!("Failed to spawn blocking task: {}", e)))?;
 
             if !is_valid {
-                error!("WASM file integrity check failed for plugin: {}", plugin_name);
+                error!(
+                    "WASM file integrity check failed for plugin: {}",
+                    plugin_name
+                );
                 return Err(AppError::internal("WASM file integrity check failed"));
             }
         }
@@ -349,7 +393,9 @@ impl PluginConfigService {
                         Ok(())
                     }
                 }
-            }).await {
+            })
+            .await
+            {
                 warn!("Failed to delete plugin directory during uninstall: {}", e);
             }
         } else if let Some(wasm_path) = &config.wasm_path {
@@ -359,7 +405,9 @@ impl PluginConfigService {
                 let plugins_dir = self.plugins_dir.clone();
                 let wasm_path = wasm_path.clone();
                 move || plugin_fs::delete_wasm_file(&plugins_dir, &wasm_path)
-            }).await {
+            })
+            .await
+            {
                 warn!("Failed to delete WASM file during uninstall: {}", e);
             }
         }
@@ -413,7 +461,9 @@ impl PluginConfigService {
                 let plugins_dir = self.plugins_dir.clone();
                 let file = file.clone();
                 move || plugin_fs::delete_wasm_file(&plugins_dir, &file)
-            }).await {
+            })
+            .await
+            {
                 warn!("Failed to delete orphaned WASM file {}: {}", file, e);
             } else {
                 cleaned_count += 1;
@@ -426,7 +476,10 @@ impl PluginConfigService {
     }
 
     /// Save a plugin configuration to the database
-    pub async fn save_plugin_config(&self, config: &PluginConfiguration) -> Result<String, AppError> {
+    pub async fn save_plugin_config(
+        &self,
+        config: &PluginConfiguration,
+    ) -> Result<String, AppError> {
         debug!("Saving plugin configuration: {}", config.name);
 
         // Convert plugin config to record data
@@ -436,7 +489,10 @@ impl PluginConfigService {
         // Check if plugin already exists
         if let Ok(existing_record) = self.get_plugin_config(&config.name).await {
             // Update existing plugin
-            let record = self.db.update_record("_plugins", &existing_record.name, record_data).await?;
+            let record = self
+                .db
+                .update_record("_plugins", &existing_record.name, record_data)
+                .await?;
             info!("✅ Updated plugin configuration: {}", config.name);
             Ok(record.id)
         } else {
@@ -448,7 +504,10 @@ impl PluginConfigService {
     }
 
     /// Get a plugin configuration by name
-    pub async fn get_plugin_config(&self, plugin_name: &str) -> Result<PluginConfiguration, AppError> {
+    pub async fn get_plugin_config(
+        &self,
+        plugin_name: &str,
+    ) -> Result<PluginConfiguration, AppError> {
         debug!("Getting plugin configuration: {}", plugin_name);
 
         // List all plugins and find by name (since we need to search by name, not ID)
@@ -479,7 +538,10 @@ impl PluginConfigService {
             match record_to_plugin_config(&record.data) {
                 Ok(config) => configs.push(config),
                 Err(e) => {
-                    warn!("Failed to deserialize plugin config from record {}: {}", record.id, e);
+                    warn!(
+                        "Failed to deserialize plugin config from record {}: {}",
+                        record.id, e
+                    );
                 }
             }
         }
@@ -494,7 +556,7 @@ impl PluginConfigService {
 
         // Get existing record to verify it exists
         let _existing_config = self.get_plugin_config(&config.name).await?;
-        
+
         // Convert to record data
         let record_data = plugin_config_to_record(config)
             .map_err(|e| AppError::internal(format!("Failed to serialize plugin config: {}", e)))?;
@@ -506,7 +568,9 @@ impl PluginConfigService {
         for record in records {
             if let Ok(existing) = record_to_plugin_config(&record.data) {
                 if existing.name == config.name {
-                    self.db.update_record("_plugins", &record.id, record_data).await?;
+                    self.db
+                        .update_record("_plugins", &record.id, record_data)
+                        .await?;
                     info!("✅ Updated plugin configuration: {}", config.name);
                     return Ok(());
                 }
@@ -562,7 +626,11 @@ impl PluginConfigService {
     }
 
     /// Update plugin status
-    pub async fn update_plugin_status(&self, plugin_name: &str, status: PluginStatus) -> Result<(), AppError> {
+    pub async fn update_plugin_status(
+        &self,
+        plugin_name: &str,
+        status: PluginStatus,
+    ) -> Result<(), AppError> {
         debug!("Updating plugin status: {} -> {:?}", plugin_name, status);
 
         let mut config = self.get_plugin_config(plugin_name).await?;
@@ -574,8 +642,15 @@ impl PluginConfigService {
     }
 
     /// Add capability to a plugin
-    pub async fn add_plugin_capability(&self, plugin_name: &str, capability: PluginCapability) -> Result<(), AppError> {
-        debug!("Adding capability to plugin: {} -> {:?}", plugin_name, capability);
+    pub async fn add_plugin_capability(
+        &self,
+        plugin_name: &str,
+        capability: PluginCapability,
+    ) -> Result<(), AppError> {
+        debug!(
+            "Adding capability to plugin: {} -> {:?}",
+            plugin_name, capability
+        );
 
         let mut config = self.get_plugin_config(plugin_name).await?;
         config.add_capability(capability);
@@ -586,8 +661,15 @@ impl PluginConfigService {
     }
 
     /// Remove capability from a plugin
-    pub async fn remove_plugin_capability(&self, plugin_name: &str, capability: &PluginCapability) -> Result<(), AppError> {
-        debug!("Removing capability from plugin: {} -> {:?}", plugin_name, capability);
+    pub async fn remove_plugin_capability(
+        &self,
+        plugin_name: &str,
+        capability: &PluginCapability,
+    ) -> Result<(), AppError> {
+        debug!(
+            "Removing capability from plugin: {} -> {:?}",
+            plugin_name, capability
+        );
 
         let mut config = self.get_plugin_config(plugin_name).await?;
         config.remove_capability(capability);
@@ -598,8 +680,15 @@ impl PluginConfigService {
     }
 
     /// Update plugin trust level
-    pub async fn update_plugin_trust_level(&self, plugin_name: &str, trust_level: PluginTrustLevel) -> Result<(), AppError> {
-        debug!("Updating plugin trust level: {} -> {:?}", plugin_name, trust_level);
+    pub async fn update_plugin_trust_level(
+        &self,
+        plugin_name: &str,
+        trust_level: PluginTrustLevel,
+    ) -> Result<(), AppError> {
+        debug!(
+            "Updating plugin trust level: {} -> {:?}",
+            plugin_name, trust_level
+        );
 
         let mut config = self.get_plugin_config(plugin_name).await?;
         config.set_trust_level(trust_level);
@@ -610,7 +699,11 @@ impl PluginConfigService {
     }
 
     /// Update plugin resource limits
-    pub async fn update_plugin_resource_limits(&self, plugin_name: &str, resource_limits: ResourceLimits) -> Result<(), AppError> {
+    pub async fn update_plugin_resource_limits(
+        &self,
+        plugin_name: &str,
+        resource_limits: ResourceLimits,
+    ) -> Result<(), AppError> {
         debug!("Updating plugin resource limits: {}", plugin_name);
 
         let mut config = self.get_plugin_config(plugin_name).await?;
@@ -655,7 +748,11 @@ impl PluginConfigService {
     }
 
     /// Update plugin metadata with extracted information from the plugin runtime
-    pub async fn update_plugin_metadata(&self, plugin_name: &str, metadata: serde_json::Value) -> Result<(), AppError> {
+    pub async fn update_plugin_metadata(
+        &self,
+        plugin_name: &str,
+        metadata: serde_json::Value,
+    ) -> Result<(), AppError> {
         debug!("Updating plugin metadata: {}", plugin_name);
 
         let mut config = self.get_plugin_config(plugin_name).await?;
@@ -665,4 +762,4 @@ impl PluginConfigService {
         info!("✅ Updated plugin metadata: {}", plugin_name);
         Ok(())
     }
-} 
+}

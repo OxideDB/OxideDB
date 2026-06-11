@@ -1,6 +1,6 @@
 //! HTTP utilities for plugin HTTP request handling
 
-use crate::{PluginResult, PluginError, HttpRequestContext, HttpResponse, Host};
+use crate::{Host, HttpRequestContext, HttpResponse, PluginError, PluginResult};
 
 /// HTTP utilities for plugins
 pub struct Http;
@@ -35,8 +35,10 @@ impl Http {
     }
 
     /// Parse JSON from request body
-    pub fn parse_json<T: for<'de> serde::Deserialize<'de>>(request: &HttpRequestContext) -> PluginResult<T> {
-        request.body_json().map_err(|e| PluginError::JsonError(e))
+    pub fn parse_json<T: for<'de> serde::Deserialize<'de>>(
+        request: &HttpRequestContext,
+    ) -> PluginResult<T> {
+        request.body_json().map_err(PluginError::JsonError)
     }
 
     /// Check if request has JSON content type
@@ -51,7 +53,7 @@ impl Http {
 }
 
 /// Trait for HTTP route handlers
-/// 
+///
 /// Implement this trait for different types of HTTP handlers
 pub trait HttpHandler {
     /// Handle an HTTP request
@@ -93,7 +95,7 @@ impl JsonResponseBuilder {
     pub fn new() -> Self {
         let mut headers = std::collections::HashMap::new();
         headers.insert("Content-Type".to_string(), "application/json".to_string());
-        
+
         Self {
             status_code: 200,
             headers,
@@ -127,4 +129,4 @@ impl Default for JsonResponseBuilder {
     fn default() -> Self {
         Self::new()
     }
-} 
+}

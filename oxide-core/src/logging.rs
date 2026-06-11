@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
+use std::str::FromStr;
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -45,7 +46,7 @@ impl LogLevel {
     pub fn as_str(&self) -> &'static str {
         match self {
             LogLevel::Error => "ERROR",
-            LogLevel::Warn => "WARN", 
+            LogLevel::Warn => "WARN",
             LogLevel::Info => "INFO",
             LogLevel::Debug => "DEBUG",
             LogLevel::Trace => "TRACE",
@@ -53,14 +54,25 @@ impl LogLevel {
     }
 
     /// Parse from string
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn parse(s: &str) -> Option<Self> {
+        s.parse().ok()
+    }
+}
+
+impl FromStr for LogLevel {
+    type Err = AppError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_uppercase().as_str() {
-            "ERROR" => Some(LogLevel::Error),
-            "WARN" | "WARNING" => Some(LogLevel::Warn),
-            "INFO" => Some(LogLevel::Info),
-            "DEBUG" => Some(LogLevel::Debug),
-            "TRACE" => Some(LogLevel::Trace),
-            _ => None,
+            "ERROR" => Ok(LogLevel::Error),
+            "WARN" | "WARNING" => Ok(LogLevel::Warn),
+            "INFO" => Ok(LogLevel::Info),
+            "DEBUG" => Ok(LogLevel::Debug),
+            "TRACE" => Ok(LogLevel::Trace),
+            _ => Err(AppError::validation(
+                "level".to_string(),
+                format!("Invalid log level: {s}"),
+            )),
         }
     }
 }
@@ -103,7 +115,7 @@ impl AuditEventType {
 }
 
 /// Context information for log entries
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct LogContext {
     /// User ID if available
     pub user_id: Option<String>,
@@ -121,21 +133,6 @@ pub struct LogContext {
     pub user_agent: Option<String>,
     /// Additional custom metadata
     pub metadata: HashMap<String, serde_json::Value>,
-}
-
-impl Default for LogContext {
-    fn default() -> Self {
-        Self {
-            user_id: None,
-            session_id: None,
-            collection: None,
-            record_id: None,
-            operation: None,
-            client_ip: None,
-            user_agent: None,
-            metadata: HashMap::new(),
-        }
-    }
 }
 
 impl LogContext {
@@ -199,19 +196,39 @@ pub trait ApplicationLogger: Send + Sync {
     type CorrelationId: CorrelationIdTrait;
 
     /// Log an informational message
-    fn info(&self, message: String, module: String) -> Pin<Box<dyn Future<Output = LoggingResult<()>> + Send + '_>>;
+    fn info(
+        &self,
+        message: String,
+        module: String,
+    ) -> Pin<Box<dyn Future<Output = LoggingResult<()>> + Send + '_>>;
 
     /// Log a warning message
-    fn warn(&self, message: String, module: String) -> Pin<Box<dyn Future<Output = LoggingResult<()>> + Send + '_>>;
+    fn warn(
+        &self,
+        message: String,
+        module: String,
+    ) -> Pin<Box<dyn Future<Output = LoggingResult<()>> + Send + '_>>;
 
     /// Log an error message
-    fn error(&self, message: String, module: String) -> Pin<Box<dyn Future<Output = LoggingResult<()>> + Send + '_>>;
+    fn error(
+        &self,
+        message: String,
+        module: String,
+    ) -> Pin<Box<dyn Future<Output = LoggingResult<()>> + Send + '_>>;
 
     /// Log a debug message
-    fn debug(&self, message: String, module: String) -> Pin<Box<dyn Future<Output = LoggingResult<()>> + Send + '_>>;
+    fn debug(
+        &self,
+        message: String,
+        module: String,
+    ) -> Pin<Box<dyn Future<Output = LoggingResult<()>> + Send + '_>>;
 
     /// Log a trace message
-    fn trace(&self, message: String, module: String) -> Pin<Box<dyn Future<Output = LoggingResult<()>> + Send + '_>>;
+    fn trace(
+        &self,
+        message: String,
+        module: String,
+    ) -> Pin<Box<dyn Future<Output = LoggingResult<()>> + Send + '_>>;
 
     /// Log with context
     fn log_with_context(
@@ -328,7 +345,9 @@ pub trait SecurityAuditor: Send + Sync {
 /// Combined logging service that provides both application logging and security auditing
 pub trait LoggingService: ApplicationLogger + SecurityAuditor + Send + Sync {
     /// Get logging metrics
-    fn get_metrics(&self) -> Pin<Box<dyn Future<Output = LoggingResult<LoggingMetrics>> + Send + '_>>;
+    fn get_metrics(
+        &self,
+    ) -> Pin<Box<dyn Future<Output = LoggingResult<LoggingMetrics>> + Send + '_>>;
 
     /// Shutdown the logging service gracefully
     fn shutdown(self: Arc<Self>) -> Pin<Box<dyn Future<Output = LoggingResult<()>> + Send>>;
@@ -353,35 +372,74 @@ pub struct NoOpLogger;
 impl ApplicationLogger for NoOpLogger {
     type CorrelationId = NoOpCorrelationId;
 
-    fn info(&self, _message: String, _module: String) -> Pin<Box<dyn Future<Output = LoggingResult<()>> + Send + '_>> {
+    fn info(
+        &self,
+        _message: String,
+        _module: String,
+    ) -> Pin<Box<dyn Future<Output = LoggingResult<()>> + Send + '_>> {
         Box::pin(async { Ok(()) })
     }
 
-    fn warn(&self, _message: String, _module: String) -> Pin<Box<dyn Future<Output = LoggingResult<()>> + Send + '_>> {
+    fn warn(
+        &self,
+        _message: String,
+        _module: String,
+    ) -> Pin<Box<dyn Future<Output = LoggingResult<()>> + Send + '_>> {
         Box::pin(async { Ok(()) })
     }
 
-    fn error(&self, _message: String, _module: String) -> Pin<Box<dyn Future<Output = LoggingResult<()>> + Send + '_>> {
+    fn error(
+        &self,
+        _message: String,
+        _module: String,
+    ) -> Pin<Box<dyn Future<Output = LoggingResult<()>> + Send + '_>> {
         Box::pin(async { Ok(()) })
     }
 
-    fn debug(&self, _message: String, _module: String) -> Pin<Box<dyn Future<Output = LoggingResult<()>> + Send + '_>> {
+    fn debug(
+        &self,
+        _message: String,
+        _module: String,
+    ) -> Pin<Box<dyn Future<Output = LoggingResult<()>> + Send + '_>> {
         Box::pin(async { Ok(()) })
     }
 
-    fn trace(&self, _message: String, _module: String) -> Pin<Box<dyn Future<Output = LoggingResult<()>> + Send + '_>> {
+    fn trace(
+        &self,
+        _message: String,
+        _module: String,
+    ) -> Pin<Box<dyn Future<Output = LoggingResult<()>> + Send + '_>> {
         Box::pin(async { Ok(()) })
     }
 
-    fn log_with_context(&self, _level: LogLevel, _message: String, _module: String, _context: LogContext) -> Pin<Box<dyn Future<Output = LoggingResult<()>> + Send + '_>> {
+    fn log_with_context(
+        &self,
+        _level: LogLevel,
+        _message: String,
+        _module: String,
+        _context: LogContext,
+    ) -> Pin<Box<dyn Future<Output = LoggingResult<()>> + Send + '_>> {
         Box::pin(async { Ok(()) })
     }
 
-    fn log_with_correlation(&self, _level: LogLevel, _message: String, _module: String, _correlation_id: Self::CorrelationId) -> Pin<Box<dyn Future<Output = LoggingResult<()>> + Send + '_>> {
+    fn log_with_correlation(
+        &self,
+        _level: LogLevel,
+        _message: String,
+        _module: String,
+        _correlation_id: Self::CorrelationId,
+    ) -> Pin<Box<dyn Future<Output = LoggingResult<()>> + Send + '_>> {
         Box::pin(async { Ok(()) })
     }
 
-    fn log_with_context_and_correlation(&self, _level: LogLevel, _message: String, _module: String, _context: LogContext, _correlation_id: Self::CorrelationId) -> Pin<Box<dyn Future<Output = LoggingResult<()>> + Send + '_>> {
+    fn log_with_context_and_correlation(
+        &self,
+        _level: LogLevel,
+        _message: String,
+        _module: String,
+        _context: LogContext,
+        _correlation_id: Self::CorrelationId,
+    ) -> Pin<Box<dyn Future<Output = LoggingResult<()>> + Send + '_>> {
         Box::pin(async { Ok(()) })
     }
 
@@ -393,41 +451,93 @@ impl ApplicationLogger for NoOpLogger {
 impl SecurityAuditor for NoOpLogger {
     type CorrelationId = NoOpCorrelationId;
 
-    fn log_authentication(&self, _actor: String, _action: String, _result: String, _context: LogContext, _risk_score: Option<u8>) -> Pin<Box<dyn Future<Output = LoggingResult<Uuid>> + Send + '_>> {
+    fn log_authentication(
+        &self,
+        _actor: String,
+        _action: String,
+        _result: String,
+        _context: LogContext,
+        _risk_score: Option<u8>,
+    ) -> Pin<Box<dyn Future<Output = LoggingResult<Uuid>> + Send + '_>> {
         Box::pin(async { Ok(Uuid::new_v4()) })
     }
 
-    fn log_authorization(&self, _actor: String, _target: String, _action: String, _result: String, _context: LogContext, _risk_score: Option<u8>) -> Pin<Box<dyn Future<Output = LoggingResult<Uuid>> + Send + '_>> {
+    fn log_authorization(
+        &self,
+        _actor: String,
+        _target: String,
+        _action: String,
+        _result: String,
+        _context: LogContext,
+        _risk_score: Option<u8>,
+    ) -> Pin<Box<dyn Future<Output = LoggingResult<Uuid>> + Send + '_>> {
         Box::pin(async { Ok(Uuid::new_v4()) })
     }
 
-    fn log_data_access(&self, _actor: String, _target: String, _action: String, _context: LogContext) -> Pin<Box<dyn Future<Output = LoggingResult<Uuid>> + Send + '_>> {
+    fn log_data_access(
+        &self,
+        _actor: String,
+        _target: String,
+        _action: String,
+        _context: LogContext,
+    ) -> Pin<Box<dyn Future<Output = LoggingResult<Uuid>> + Send + '_>> {
         Box::pin(async { Ok(Uuid::new_v4()) })
     }
 
-    fn log_data_modification(&self, _actor: String, _target: String, _action: String, _context: LogContext) -> Pin<Box<dyn Future<Output = LoggingResult<Uuid>> + Send + '_>> {
+    fn log_data_modification(
+        &self,
+        _actor: String,
+        _target: String,
+        _action: String,
+        _context: LogContext,
+    ) -> Pin<Box<dyn Future<Output = LoggingResult<Uuid>> + Send + '_>> {
         Box::pin(async { Ok(Uuid::new_v4()) })
     }
 
-    fn log_configuration_change(&self, _actor: String, _target: String, _action: String, _context: LogContext) -> Pin<Box<dyn Future<Output = LoggingResult<Uuid>> + Send + '_>> {
+    fn log_configuration_change(
+        &self,
+        _actor: String,
+        _target: String,
+        _action: String,
+        _context: LogContext,
+    ) -> Pin<Box<dyn Future<Output = LoggingResult<Uuid>> + Send + '_>> {
         Box::pin(async { Ok(Uuid::new_v4()) })
     }
 
-    fn log_security_violation(&self, _actor: String, _violation_type: String, _description: String, _context: LogContext) -> Pin<Box<dyn Future<Output = LoggingResult<Uuid>> + Send + '_>> {
+    fn log_security_violation(
+        &self,
+        _actor: String,
+        _violation_type: String,
+        _description: String,
+        _context: LogContext,
+    ) -> Pin<Box<dyn Future<Output = LoggingResult<Uuid>> + Send + '_>> {
         Box::pin(async { Ok(Uuid::new_v4()) })
     }
 
-    fn log_plugin_event(&self, _plugin_name: String, _action: String, _result: String, _context: LogContext) -> Pin<Box<dyn Future<Output = LoggingResult<Uuid>> + Send + '_>> {
+    fn log_plugin_event(
+        &self,
+        _plugin_name: String,
+        _action: String,
+        _result: String,
+        _context: LogContext,
+    ) -> Pin<Box<dyn Future<Output = LoggingResult<Uuid>> + Send + '_>> {
         Box::pin(async { Ok(Uuid::new_v4()) })
     }
 
-    fn log_system_event(&self, _event_type: String, _description: String, _context: LogContext) -> Pin<Box<dyn Future<Output = LoggingResult<Uuid>> + Send + '_>> {
+    fn log_system_event(
+        &self,
+        _event_type: String,
+        _description: String,
+        _context: LogContext,
+    ) -> Pin<Box<dyn Future<Output = LoggingResult<Uuid>> + Send + '_>> {
         Box::pin(async { Ok(Uuid::new_v4()) })
     }
 }
 
 impl LoggingService for NoOpLogger {
-    fn get_metrics(&self) -> Pin<Box<dyn Future<Output = LoggingResult<LoggingMetrics>> + Send + '_>> {
+    fn get_metrics(
+        &self,
+    ) -> Pin<Box<dyn Future<Output = LoggingResult<LoggingMetrics>> + Send + '_>> {
         Box::pin(async {
             Ok(LoggingMetrics {
                 total_entries: 0,
@@ -465,4 +575,4 @@ impl std::fmt::Display for NoOpCorrelationId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "noop")
     }
-} 
+}

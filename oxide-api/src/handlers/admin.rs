@@ -12,9 +12,9 @@ use axum::{
 };
 use include_dir::{include_dir, Dir};
 use mime_guess::from_path;
-use tracing::{debug, warn, error};
-use std::path::PathBuf;
+use std::path::{Path as FsPath, PathBuf};
 use tokio::fs;
+use tracing::{debug, error, warn};
 
 // Embed the UI files at compile time
 static UI_DIR: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/../ui/dist");
@@ -81,8 +81,11 @@ pub async fn serve_admin_static(Path(path): Path<String>) -> impl IntoResponse {
             }
         }
         None => {
-            debug!("Embedded static file not found: {}, serving index.html for SPA routing", clean_path);
-            
+            debug!(
+                "Embedded static file not found: {}, serving index.html for SPA routing",
+                clean_path
+            );
+
             // For SPA routing, serve index.html for any unmatched routes
             match UI_DIR.get_file("index.html") {
                 Some(file) => match file.contents_utf8() {
@@ -125,7 +128,10 @@ pub async fn serve_admin_static(Path(path): Path<String>) -> impl IntoResponse {
 /// GET /admin (external mode)
 pub async fn serve_external_admin_ui(admin_path: PathBuf) -> impl IntoResponse {
     let index_path = admin_path.join("index.html");
-    debug!("Serving external admin UI index page from: {:?}", index_path);
+    debug!(
+        "Serving external admin UI index page from: {:?}",
+        index_path
+    );
 
     match fs::read_to_string(&index_path).await {
         Ok(content) => {
@@ -133,7 +139,10 @@ pub async fn serve_external_admin_ui(admin_path: PathBuf) -> impl IntoResponse {
             Html(content).into_response()
         }
         Err(e) => {
-            error!("Failed to read external index.html from {:?}: {}", index_path, e);
+            error!(
+                "Failed to read external index.html from {:?}: {}",
+                index_path, e
+            );
             (
                 StatusCode::NOT_FOUND,
                 "External admin UI index.html not found",
@@ -146,7 +155,10 @@ pub async fn serve_external_admin_ui(admin_path: PathBuf) -> impl IntoResponse {
 /// Serve static files for the admin UI from external filesystem
 ///
 /// GET /admin/*path (external mode)
-pub async fn serve_external_admin_static(admin_path: PathBuf, Path(path): Path<String>) -> impl IntoResponse {
+pub async fn serve_external_admin_static(
+    admin_path: PathBuf,
+    Path(path): Path<String>,
+) -> impl IntoResponse {
     // Remove leading slash if present
     let clean_path = path.strip_prefix('/').unwrap_or(&path);
     let file_path = admin_path.join(clean_path);
@@ -184,8 +196,11 @@ pub async fn serve_external_admin_static(admin_path: PathBuf, Path(path): Path<S
             }
         }
         Err(_) => {
-            debug!("External static file not found: {:?}, serving index.html for SPA routing", file_path);
-            
+            debug!(
+                "External static file not found: {:?}, serving index.html for SPA routing",
+                file_path
+            );
+
             // For SPA routing, serve index.html for any unmatched routes
             let index_path = admin_path.join("index.html");
             match fs::read_to_string(&index_path).await {
@@ -206,7 +221,10 @@ pub async fn serve_external_admin_static(admin_path: PathBuf, Path(path): Path<S
                     }
                 }
                 Err(e) => {
-                    error!("Failed to read external index.html for SPA fallback from {:?}: {}", index_path, e);
+                    error!(
+                        "Failed to read external index.html for SPA fallback from {:?}: {}",
+                        index_path, e
+                    );
                     (StatusCode::NOT_FOUND, "External admin UI not found").into_response()
                 }
             }
@@ -220,7 +238,7 @@ pub fn is_admin_ui_available() -> bool {
 }
 
 /// Check if external admin UI is available
-pub async fn is_external_admin_ui_available(admin_path: &PathBuf) -> bool {
+pub async fn is_external_admin_ui_available(admin_path: &FsPath) -> bool {
     let index_path = admin_path.join("index.html");
     tokio::fs::metadata(&index_path).await.is_ok()
 }
@@ -238,7 +256,10 @@ pub fn get_admin_ui_info() -> Option<AdminUiInfo> {
         .and_then(|content| {
             serde_json::from_str::<serde_json::Value>(content)
                 .ok()
-                .and_then(|v| v.get("build_time").and_then(|t| t.as_str().map(String::from)))
+                .and_then(|v| {
+                    v.get("build_time")
+                        .and_then(|t| t.as_str().map(String::from))
+                })
         });
 
     Some(AdminUiInfo {
@@ -251,7 +272,7 @@ pub fn get_admin_ui_info() -> Option<AdminUiInfo> {
 }
 
 /// Get external admin UI build information
-pub async fn get_external_admin_ui_info(admin_path: &PathBuf) -> Option<AdminUiInfo> {
+pub async fn get_external_admin_ui_info(admin_path: &FsPath) -> Option<AdminUiInfo> {
     if !is_external_admin_ui_available(admin_path).await {
         return None;
     }
@@ -261,7 +282,10 @@ pub async fn get_external_admin_ui_info(admin_path: &PathBuf) -> Option<AdminUiI
     let build_time = if let Ok(content) = tokio::fs::read_to_string(&build_info_path).await {
         serde_json::from_str::<serde_json::Value>(&content)
             .ok()
-            .and_then(|v| v.get("build_time").and_then(|t| t.as_str().map(String::from)))
+            .and_then(|v| {
+                v.get("build_time")
+                    .and_then(|t| t.as_str().map(String::from))
+            })
     } else {
         None
     };
@@ -274,14 +298,14 @@ pub async fn get_external_admin_ui_info(admin_path: &PathBuf) -> Option<AdminUiI
         mode: AdminUiMode::External,
         build_time,
         file_count,
-        path: Some(admin_path.clone()),
+        path: Some(admin_path.to_path_buf()),
     })
 }
 
 /// Count files in a directory recursively
-async fn count_files_in_directory(path: &PathBuf) -> Option<usize> {
+async fn count_files_in_directory(path: &FsPath) -> Option<usize> {
     let mut count = 0;
-    let mut stack = vec![path.clone()];
+    let mut stack = vec![path.to_path_buf()];
 
     while let Some(current_path) = stack.pop() {
         if let Ok(mut entries) = tokio::fs::read_dir(&current_path).await {

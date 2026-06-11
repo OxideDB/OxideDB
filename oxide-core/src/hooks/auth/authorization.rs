@@ -156,8 +156,13 @@ impl AuthorizationHook {
             None, // Record ID - could be extracted from path if needed
         )
         .with_metadata(metadata);
-        warn!("🔍 Permission context: {:?}", permission_context);
-        warn!("🔍 Permissions: {:?}", permissions);
+        debug!(
+            "Authorization context prepared: collection='{}', operation='{}', authenticated={}, metadata_keys={:?}",
+            permission_context.collection,
+            permission_context.operation,
+            permission_context.user_claims.is_some(),
+            permission_context.metadata.keys().collect::<Vec<_>>()
+        );
 
         // Check permission using the permission service
         debug!("🔍 Authorization: About to call permission_service.check_permission");

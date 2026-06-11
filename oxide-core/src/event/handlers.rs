@@ -8,11 +8,13 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use super::context::{BeforeEventContext, AfterEventContext};
+use super::context::{AfterEventContext, BeforeEventContext};
 
 /// Handler for Before events that can modify the context
 pub type BeforeEventHandler = Arc<
-    dyn Fn(&mut BeforeEventContext) -> Pin<Box<dyn Future<Output = Result<(), AppError>> + Send + '_>>
+    dyn Fn(
+            &mut BeforeEventContext,
+        ) -> Pin<Box<dyn Future<Output = Result<(), AppError>> + Send + '_>>
         + Send
         + Sync,
 >;
@@ -204,7 +206,11 @@ impl HandlerExecutionResult {
 /// Filter for determining which handlers should execute for an event
 pub trait EventFilter: Send + Sync {
     /// Check if a Before handler should execute for the given context
-    fn should_execute_before(&self, handler: &HandlerMetadata, context: &BeforeEventContext) -> bool;
+    fn should_execute_before(
+        &self,
+        handler: &HandlerMetadata,
+        context: &BeforeEventContext,
+    ) -> bool;
 
     /// Check if an After handler should execute for the given context
     fn should_execute_after(&self, handler: &HandlerMetadata, context: &AfterEventContext) -> bool;
@@ -258,11 +264,19 @@ impl CollectionFilter {
 }
 
 impl EventFilter for CollectionFilter {
-    fn should_execute_before(&self, _handler: &HandlerMetadata, context: &BeforeEventContext) -> bool {
+    fn should_execute_before(
+        &self,
+        _handler: &HandlerMetadata,
+        context: &BeforeEventContext,
+    ) -> bool {
         self.should_execute_for_collection(&context.collection)
     }
 
-    fn should_execute_after(&self, _handler: &HandlerMetadata, context: &AfterEventContext) -> bool {
+    fn should_execute_after(
+        &self,
+        _handler: &HandlerMetadata,
+        context: &AfterEventContext,
+    ) -> bool {
         match context {
             AfterEventContext::RecordCreated { collection, .. }
             | AfterEventContext::RecordUpdated { collection, .. }
@@ -302,7 +316,11 @@ impl TagFilter {
         }
     }
 
-    fn should_execute_for_tags(&self, handler_tags: &std::collections::HashMap<String, String>, context_tags: &std::collections::HashMap<String, String>) -> bool {
+    fn should_execute_for_tags(
+        &self,
+        handler_tags: &std::collections::HashMap<String, String>,
+        context_tags: &std::collections::HashMap<String, String>,
+    ) -> bool {
         // Check required tags
         for (key, value) in &self.required_tags {
             if let Some(handler_value) = handler_tags.get(key) {
@@ -337,11 +355,19 @@ impl TagFilter {
 }
 
 impl EventFilter for TagFilter {
-    fn should_execute_before(&self, handler: &HandlerMetadata, context: &BeforeEventContext) -> bool {
+    fn should_execute_before(
+        &self,
+        handler: &HandlerMetadata,
+        context: &BeforeEventContext,
+    ) -> bool {
         self.should_execute_for_tags(&handler.tags, &context.tags)
     }
 
-    fn should_execute_after(&self, handler: &HandlerMetadata, _context: &AfterEventContext) -> bool {
+    fn should_execute_after(
+        &self,
+        handler: &HandlerMetadata,
+        _context: &AfterEventContext,
+    ) -> bool {
         // After events don't have tags directly, so only check handler tags against required/forbidden
         self.should_execute_for_tags(&handler.tags, &std::collections::HashMap::new())
     }
@@ -374,12 +400,20 @@ impl Default for CompositeFilter {
 }
 
 impl EventFilter for CompositeFilter {
-    fn should_execute_before(&self, handler: &HandlerMetadata, context: &BeforeEventContext) -> bool {
-        self.filters.iter().all(|filter| filter.should_execute_before(handler, context))
+    fn should_execute_before(
+        &self,
+        handler: &HandlerMetadata,
+        context: &BeforeEventContext,
+    ) -> bool {
+        self.filters
+            .iter()
+            .all(|filter| filter.should_execute_before(handler, context))
     }
 
     fn should_execute_after(&self, handler: &HandlerMetadata, context: &AfterEventContext) -> bool {
-        self.filters.iter().all(|filter| filter.should_execute_after(handler, context))
+        self.filters
+            .iter()
+            .all(|filter| filter.should_execute_after(handler, context))
     }
 }
 
@@ -388,10 +422,7 @@ impl EventFilter for CompositeFilter {
 macro_rules! before_handler {
     ($name:expr, $handler:expr) => {
         ManagedBeforeHandler {
-            metadata: HandlerMetadata::new(
-                uuid::Uuid::new_v4().to_string(),
-                $name.to_string(),
-            ),
+            metadata: HandlerMetadata::new(uuid::Uuid::new_v4().to_string(), $name.to_string()),
             handler: std::sync::Arc::new($handler),
         }
     };
@@ -407,10 +438,7 @@ macro_rules! before_handler {
 macro_rules! after_handler {
     ($name:expr, $handler:expr) => {
         ManagedAfterHandler {
-            metadata: HandlerMetadata::new(
-                uuid::Uuid::new_v4().to_string(),
-                $name.to_string(),
-            ),
+            metadata: HandlerMetadata::new(uuid::Uuid::new_v4().to_string(), $name.to_string()),
             handler: std::sync::Arc::new($handler),
         }
     };
@@ -449,9 +477,11 @@ mod tests {
     fn test_collection_filter() {
         let filter = CollectionFilter::allow(vec!["users".to_string(), "posts".to_string()]);
         let metadata = HandlerMetadata::new("test".to_string(), "test".to_string());
-        
-        let context_users = BeforeEventContext::new_create("users".to_string(), serde_json::json!({}));
-        let context_admin = BeforeEventContext::new_create("admin".to_string(), serde_json::json!({}));
+
+        let context_users =
+            BeforeEventContext::new_create("users".to_string(), serde_json::json!({}));
+        let context_admin =
+            BeforeEventContext::new_create("admin".to_string(), serde_json::json!({}));
 
         assert!(filter.should_execute_before(&metadata, &context_users));
         assert!(!filter.should_execute_before(&metadata, &context_admin));
@@ -485,4 +515,4 @@ mod tests {
         assert_eq!(result.retry_attempts, 2);
         assert_eq!(result.metadata.get("cache_hit").unwrap(), "true");
     }
-} 
+}

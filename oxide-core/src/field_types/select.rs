@@ -143,11 +143,7 @@ impl FieldTypeDefinition for SelectFieldType {
     }
 
     fn sql_type(&self) -> &'static str {
-        if self.config.multiple {
-            "TEXT" // Store as JSON array
-        } else {
-            "TEXT" // Store as single string
-        }
+        "TEXT"
     }
 }
 
@@ -191,11 +187,17 @@ mod tests {
 
         // Valid multiple selections
         assert!(field_type.validate("test", &json!(["tag1"])).is_ok());
-        assert!(field_type.validate("test", &json!(["tag1", "tag2"])).is_ok());
-        assert!(field_type.validate("test", &json!(["tag1", "tag2", "tag3"])).is_ok());
+        assert!(field_type
+            .validate("test", &json!(["tag1", "tag2"]))
+            .is_ok());
+        assert!(field_type
+            .validate("test", &json!(["tag1", "tag2", "tag3"]))
+            .is_ok());
 
         // Invalid options in array
-        assert!(field_type.validate("test", &json!(["tag1", "invalid"])).is_err());
+        assert!(field_type
+            .validate("test", &json!(["tag1", "invalid"]))
+            .is_err());
 
         // Wrong type
         assert!(field_type.validate("test", &json!("tag1")).is_err());
@@ -208,8 +210,8 @@ mod tests {
 
     #[test]
     fn test_select_with_no_empty_allowed() {
-        let field_type = SelectFieldType::single(vec!["option1".to_string()])
-            .with_allow_empty(false);
+        let field_type =
+            SelectFieldType::single(vec!["option1".to_string()]).with_allow_empty(false);
 
         // Valid option
         assert!(field_type.validate("test", &json!("option1")).is_ok());
@@ -238,7 +240,7 @@ mod tests {
     fn test_select_convert_value() {
         let field_type = SelectFieldType::single(vec!["option1".to_string()]);
         let value = json!("option1");
-        
+
         // Select fields don't do conversion, they return the value as-is
         assert_eq!(field_type.convert_value(&value).unwrap(), value);
     }

@@ -7,4 +7,4 @@ pub mod activity_logger;
 pub mod security_audit;
 
 pub use activity_logger::ActivityLoggerHook;
-pub use security_audit::SecurityAuditHook; 
+pub use security_audit::SecurityAuditHook;

@@ -1,24 +1,25 @@
 //! Macros for simplifying plugin development
 
 /// Macro to export the main plugin functions with minimal boilerplate
-/// 
+///
 /// This macro generates all the required WASM exports for the plugin,
 /// handling the low-level FFI and calling the appropriate methods on your plugin.
-/// 
+///
 /// # Example
-/// 
+///
 /// ```rust
 /// use oxide_plugin_sdk::prelude::*;
-/// 
+///
+/// #[derive(Default)]
 /// struct MyPlugin;
-/// 
+///
 /// impl PluginEventHandler for MyPlugin {
 ///     fn on_before_create(&mut self, event: &EventPayload) -> PluginResult<PluginResponse> {
 ///         log_info!("Creating record in collection: {}", event.collection);
 ///         Ok(PluginResponse::allow())
 ///     }
 /// }
-/// 
+///
 /// export_plugin!(MyPlugin);
 /// ```
 #[macro_export]
@@ -29,12 +30,12 @@ macro_rules! export_plugin {
         pub extern "C" fn plugin_init() -> i32 {
             use $crate::memory::MemoryManager;
             use $crate::{init_plugin, PluginEventHandler};
-            
+
             MemoryManager::init();
-            
+
             let plugin = <$plugin_type>::default();
             init_plugin(plugin);
-            
+
             // Call the plugin's on_init method
             match $crate::with_plugin(|p| p.on_init()) {
                 Ok(()) => {
@@ -95,27 +96,29 @@ macro_rules! export_plugin {
 }
 
 /// Macro to export a plugin with HTTP handling capabilities
-/// 
+///
 /// This macro is like `export_plugin!` but also generates HTTP handler exports.
 /// Your plugin struct must implement both `PluginEventHandler` and `PluginHttpHandler`.
-/// 
+///
 /// # Example
-/// 
+///
 /// ```rust
 /// use oxide_plugin_sdk::prelude::*;
-/// 
+/// use oxide_plugin_sdk::{HttpRequestContext, HttpResponse, PluginHttpHandler};
+///
+/// #[derive(Default)]
 /// struct MyPlugin;
-/// 
+///
 /// impl PluginEventHandler for MyPlugin {
 ///     // ... event handler methods
 /// }
-/// 
+///
 /// impl PluginHttpHandler for MyPlugin {
 ///     fn handle_request(&mut self, request: &HttpRequestContext) -> PluginResult<HttpResponse> {
-///         HttpResponse::json(&serde_json::json!({"message": "Hello World"}))
+///         Ok(HttpResponse::json(&serde_json::json!({"message": "Hello World"}))?)
 ///     }
 /// }
-/// 
+///
 /// export_http_plugin!(MyPlugin);
 /// ```
 #[cfg(feature = "http")]
@@ -126,15 +129,15 @@ macro_rules! export_http_plugin {
         #[no_mangle]
         pub extern "C" fn plugin_init() -> i32 {
             use $crate::memory::MemoryManager;
-            use $crate::{init_plugin, init_http_handler, PluginEventHandler, PluginHttpHandler};
-            
+            use $crate::{init_http_handler, init_plugin, PluginEventHandler, PluginHttpHandler};
+
             $crate::log_info!("Starting plugin initialization...");
             MemoryManager::init();
-            
+
             // Create a single plugin instance and clone it for both handlers
             $crate::log_info!("Creating plugin instances...");
             let mut event_plugin = <$plugin_type>::default();
-            
+
             // Call the plugin's on_init method to register routes FIRST
             match event_plugin.on_init() {
                 Ok(()) => {
@@ -145,12 +148,12 @@ macro_rules! export_http_plugin {
                     return 1;
                 }
             }
-            
+
             // Initialize event handler
             $crate::log_info!("Initializing event handler...");
             init_plugin(event_plugin);
             $crate::log_info!("Event handler initialized successfully");
-            
+
             // Create HTTP handler instance
             #[cfg(feature = "http")]
             {
@@ -164,7 +167,7 @@ macro_rules! export_http_plugin {
                 $crate::log_error!("HTTP feature not enabled - HTTP handler not initialized");
                 return 1;
             }
-            
+
             $crate::log_info!("Plugin initialization completed successfully with HTTP support");
             0
         }
@@ -230,10 +233,12 @@ macro_rules! export_http_plugin {
 }
 
 /// Macro to easily register HTTP routes during plugin initialization
-/// 
+///
 /// # Example
-/// 
+///
 /// ```rust
+/// use oxide_plugin_sdk::register_routes;
+///
 /// register_routes! {
 ///     GET "/api/items" => handle_get_items,
 ///     POST "/api/items" => handle_create_item,
@@ -257,13 +262,19 @@ macro_rules! register_routes {
 }
 
 /// Macro for easy JSON responses in HTTP handlers
-/// 
+///
 /// # Example
-/// 
+///
 /// ```rust
-/// fn handle_get_items(&mut self, _request: &HttpRequestContext) -> PluginResult<HttpResponse> {
-///     let items = vec!["item1", "item2", "item3"];
-///     json_response!(items)
+/// use oxide_plugin_sdk::{json_response, HttpRequestContext, HttpResponse, PluginResult};
+///
+/// struct MyPlugin;
+///
+/// impl MyPlugin {
+///     fn handle_get_items(&mut self, _request: &HttpRequestContext) -> PluginResult<HttpResponse> {
+///         let items = vec!["item1", "item2", "item3"];
+///         json_response!(items)
+///     }
 /// }
 /// ```
 #[macro_export]
@@ -274,15 +285,21 @@ macro_rules! json_response {
 }
 
 /// Macro for easy error responses in HTTP handlers
-/// 
+///
 /// # Example
-/// 
+///
 /// ```rust
-/// fn handle_request(&mut self, request: &HttpRequestContext) -> PluginResult<HttpResponse> {
-///     if request.method != "GET" {
-///         return error_response!(405, "Method not allowed");
+/// use oxide_plugin_sdk::{error_response, HttpRequestContext, HttpResponse, PluginResult};
+///
+/// struct MyPlugin;
+///
+/// impl MyPlugin {
+///     fn handle_request(&mut self, request: &HttpRequestContext) -> PluginResult<HttpResponse> {
+///         if request.method != "GET" {
+///             return error_response!(405, "Method not allowed");
+///         }
+///         Ok(HttpResponse::text("ok"))
 ///     }
-///     // ... handle GET request
 /// }
 /// ```
 #[macro_export]
@@ -298,4 +315,4 @@ macro_rules! text_response {
     ($text:expr) => {
         Ok($crate::HttpResponse::text($text))
     };
-} 
+}

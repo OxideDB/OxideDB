@@ -89,7 +89,7 @@ impl LogBuilder {
     /// Emit the log message
     pub fn emit(self) {
         let mut log_message = self.message;
-        
+
         if !self.fields.is_empty() {
             log_message.push_str(" [");
             for (i, (key, value)) in self.fields.iter().enumerate() {
@@ -103,4 +103,4 @@ impl LogBuilder {
 
         Logger::log(self.level, &log_message);
     }
-} 
+}

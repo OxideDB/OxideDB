@@ -4,10 +4,7 @@
 //! maintaining security by preventing direct filesystem access.
 
 use crate::host_state::HostStateRef;
-use oxide_core::{
-    FileWriteRequest, FileReadRequest, FileIdentifier,
-    FileListRequest
-};
+use oxide_core::{FileIdentifier, FileListRequest, FileReadRequest, FileWriteRequest};
 use wasmtime::{Caller, Linker};
 
 /// Write a file to the VFS
@@ -20,7 +17,8 @@ pub fn vfs_write_file(
 ) -> wasmtime::Result<i64> {
     caller.data().lock().unwrap().record_host_call();
 
-    let memory = caller.get_export("memory")
+    let memory = caller
+        .get_export("memory")
         .and_then(|e| e.into_memory())
         .ok_or_else(|| wasmtime::Error::msg("failed to find host memory"))?;
 
@@ -48,8 +46,11 @@ pub fn vfs_write_file(
 
     // Execute VFS operation
     let result = rt.block_on(async {
-        let state_guard = state.lock().unwrap();
-        if let Some(vfs_bridge) = &state_guard.vfs_bridge {
+        let vfs_bridge = {
+            let state_guard = state.lock().unwrap();
+            state_guard.vfs_bridge.clone()
+        };
+        if let Some(vfs_bridge) = vfs_bridge {
             vfs_bridge.vfs().write_file(&namespace, request).await
         } else {
             Err(oxide_core::vfs::VfsError::IoError {
@@ -86,7 +87,8 @@ pub fn vfs_read_file(
 ) -> wasmtime::Result<i64> {
     caller.data().lock().unwrap().record_host_call();
 
-    let memory = caller.get_export("memory")
+    let memory = caller
+        .get_export("memory")
         .and_then(|e| e.into_memory())
         .ok_or_else(|| wasmtime::Error::msg("failed to find host memory"))?;
 
@@ -114,8 +116,11 @@ pub fn vfs_read_file(
 
     // Execute VFS operation
     let result = rt.block_on(async {
-        let state_guard = state.lock().unwrap();
-        if let Some(vfs_bridge) = &state_guard.vfs_bridge {
+        let vfs_bridge = {
+            let state_guard = state.lock().unwrap();
+            state_guard.vfs_bridge.clone()
+        };
+        if let Some(vfs_bridge) = vfs_bridge {
             vfs_bridge.vfs().read_file(&namespace, request).await
         } else {
             Err(oxide_core::vfs::VfsError::IoError {
@@ -152,7 +157,8 @@ pub fn vfs_delete_file(
 ) -> wasmtime::Result<i64> {
     caller.data().lock().unwrap().record_host_call();
 
-    let memory = caller.get_export("memory")
+    let memory = caller
+        .get_export("memory")
         .and_then(|e| e.into_memory())
         .ok_or_else(|| wasmtime::Error::msg("failed to find host memory"))?;
 
@@ -180,8 +186,11 @@ pub fn vfs_delete_file(
 
     // Execute VFS operation
     let result = rt.block_on(async {
-        let state_guard = state.lock().unwrap();
-        if let Some(vfs_bridge) = &state_guard.vfs_bridge {
+        let vfs_bridge = {
+            let state_guard = state.lock().unwrap();
+            state_guard.vfs_bridge.clone()
+        };
+        if let Some(vfs_bridge) = vfs_bridge {
             vfs_bridge.vfs().delete_file(&namespace, identifier).await
         } else {
             Err(oxide_core::vfs::VfsError::IoError {
@@ -214,7 +223,8 @@ pub fn vfs_list_files(
 ) -> wasmtime::Result<i64> {
     caller.data().lock().unwrap().record_host_call();
 
-    let memory = caller.get_export("memory")
+    let memory = caller
+        .get_export("memory")
         .and_then(|e| e.into_memory())
         .ok_or_else(|| wasmtime::Error::msg("failed to find host memory"))?;
 
@@ -242,8 +252,11 @@ pub fn vfs_list_files(
 
     // Execute VFS operation
     let result = rt.block_on(async {
-        let state_guard = state.lock().unwrap();
-        if let Some(vfs_bridge) = &state_guard.vfs_bridge {
+        let vfs_bridge = {
+            let state_guard = state.lock().unwrap();
+            state_guard.vfs_bridge.clone()
+        };
+        if let Some(vfs_bridge) = vfs_bridge {
             vfs_bridge.vfs().list_files(&namespace, request).await
         } else {
             Err(oxide_core::vfs::VfsError::IoError {
@@ -278,7 +291,8 @@ pub fn vfs_get_usage_stats(
 ) -> wasmtime::Result<i64> {
     caller.data().lock().unwrap().record_host_call();
 
-    let memory = caller.get_export("memory")
+    let memory = caller
+        .get_export("memory")
         .and_then(|e| e.into_memory())
         .ok_or_else(|| wasmtime::Error::msg("failed to find host memory"))?;
 
@@ -296,8 +310,11 @@ pub fn vfs_get_usage_stats(
 
     // Execute VFS operation
     let result = rt.block_on(async {
-        let state_guard = state.lock().unwrap();
-        if let Some(vfs_bridge) = &state_guard.vfs_bridge {
+        let vfs_bridge = {
+            let state_guard = state.lock().unwrap();
+            state_guard.vfs_bridge.clone()
+        };
+        if let Some(vfs_bridge) = vfs_bridge {
             vfs_bridge.vfs().get_usage_stats(&namespace).await
         } else {
             Err(oxide_core::vfs::VfsError::IoError {

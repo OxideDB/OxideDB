@@ -18,8 +18,10 @@ import {
 import type {
   CrudOperation,
   AuthOperation,
-  PermissionLevel
-} from '@/types/generated';
+  PermissionLevel,
+  CrudOperationRule,
+  AuthOperationRule
+} from '@/types/api';
 
 export const getPermissionLevelDisplay = (level: PermissionLevel): { 
   text: string; 
@@ -108,10 +110,12 @@ export const getOperationColor = (operation: string) => {
 };
 
 // Helper function to sort CRUD operations in a consistent order
-export const sortCrudOperations = (operations: Record<string, any>) => {
+export const sortCrudOperations = (
+  operations: Partial<Record<CrudOperation, CrudOperationRule>>
+): Array<[CrudOperation, CrudOperationRule]> => {
   if (!operations) return [];
   const operationOrder = ['create', 'read', 'update', 'delete', 'list'];
-  return Object.entries(operations).sort(([a], [b]) => {
+  return (Object.entries(operations) as Array<[CrudOperation, CrudOperationRule]>).sort(([a], [b]) => {
     const indexA = operationOrder.indexOf(a);
     const indexB = operationOrder.indexOf(b);
     // If operation not in order list, put it at the end
@@ -123,7 +127,9 @@ export const sortCrudOperations = (operations: Record<string, any>) => {
 };
 
 // Helper function to sort Auth operations in a consistent order
-export const sortAuthOperations = (operations: Record<string, any>) => {
+export const sortAuthOperations = (
+  operations: Partial<Record<AuthOperation, AuthOperationRule>>
+): Array<[AuthOperation, AuthOperationRule]> => {
   if (!operations) return [];
   const operationOrder = [
     'register', 
@@ -134,7 +140,7 @@ export const sortAuthOperations = (operations: Record<string, any>) => {
     'list_auth_collections', 
     'logout'
   ];
-  return Object.entries(operations).sort(([a], [b]) => {
+  return (Object.entries(operations) as Array<[AuthOperation, AuthOperationRule]>).sort(([a], [b]) => {
     const indexA = operationOrder.indexOf(a);
     const indexB = operationOrder.indexOf(b);
     // If operation not in order list, put it at the end

@@ -14,7 +14,7 @@ import type { FieldType } from '../types/api';
 export function parseFieldDefaultValue(
   defaultValueString: string | undefined,
   fieldType: FieldType
-): any {
+): unknown {
   if (!defaultValueString || !defaultValueString.trim()) {
     return null;
   }
@@ -31,15 +31,17 @@ export function parseFieldDefaultValue(
         // For text-based fields, use the value as-is (string)
         return value;
 
-      case 'number':
+      case 'number': {
         // For number fields, parse as number
         const numValue = parseFloat(value);
         return isNaN(numValue) ? null : numValue;
+      }
 
-      case 'boolean':
+      case 'boolean': {
         // For boolean fields, parse as boolean
         const boolValue = value.toLowerCase();
         return boolValue === 'true' || boolValue === '1' || boolValue === 'yes' || boolValue === 'on';
+      }
 
       case 'date':
         // For date fields, validate and use as string (ISO format expected)
@@ -56,7 +58,7 @@ export function parseFieldDefaultValue(
         }
         return value;
 
-      case 'relationship':
+      case 'relationship': {
         // For relationship fields, could be ID or array of IDs
         if (value.startsWith('[') && value.endsWith(']')) {
           return JSON.parse(value);
@@ -64,6 +66,7 @@ export function parseFieldDefaultValue(
         // Try to parse as number (ID), fallback to string
         const idValue = parseFloat(value);
         return isNaN(idValue) ? value : idValue;
+      }
 
       case 'file':
         // For file fields, typically null or file metadata
@@ -97,7 +100,7 @@ export function parseFieldDefaultValue(
  * @returns A string representation suitable for input fields
  */
 export function formatFieldDefaultValue(
-  value: any,
+  value: unknown,
   fieldType: FieldType
 ): string {
   if (value === null || value === undefined) {

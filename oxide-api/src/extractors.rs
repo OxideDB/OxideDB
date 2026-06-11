@@ -3,11 +3,7 @@
 //! This module provides custom extractors for common request data like
 //! authenticated user information, request IDs, etc.
 
-use axum::{
-    async_trait,
-    extract::FromRequestParts,
-    http::request::Parts,
-};
+use axum::{async_trait, extract::FromRequestParts, http::request::Parts};
 use oxide_core::Claims;
 
 use crate::{errors::ApiError, middleware::ClaimsExtension};

@@ -2,14 +2,14 @@
 //!
 //! Shared utility functions used across the plugin runtime implementation.
 
-use wasmtime::Caller;
-use std::sync::{Arc, Mutex};
 use crate::host_state::HostState;
+use std::sync::{Arc, Mutex};
+use wasmtime::Caller;
 
 /// Helper function to allocate plugin memory and copy data.
-/// 
+///
 /// This function allocates memory in the plugin's WebAssembly linear memory
-/// and copies the provided data into that memory space. It returns the 
+/// and copies the provided data into that memory space. It returns the
 /// pointer and length of the allocated memory.
 ///
 /// # Arguments
@@ -65,7 +65,7 @@ pub fn read_string_from_plugin_memory(
         let data = memory.data(caller);
         let start = ptr as usize;
         let end = start + len as usize;
-        
+
         if end <= data.len() {
             std::str::from_utf8(&data[start..end])
                 .map(|s| s.to_string())
@@ -106,4 +106,4 @@ pub fn create_success_response(data: serde_json::Value) -> Vec<u8> {
         "data": data
     });
     response.to_string().into_bytes()
-} 
+}

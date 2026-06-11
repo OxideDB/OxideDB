@@ -116,13 +116,11 @@ impl FieldTypeDefinition for RelationshipFieldType {
 
     fn validate(&self, field_name: &str, value: &JsonValue) -> Result<(), String> {
         if self.config.multiple {
-            self.validate_multiple_ids(value).map_err(|e| {
-                format!("Field '{}': {}", field_name, e)
-            })
+            self.validate_multiple_ids(value)
+                .map_err(|e| format!("Field '{}': {}", field_name, e))
         } else {
-            self.validate_single_id(value).map_err(|e| {
-                format!("Field '{}': {}", field_name, e)
-            })
+            self.validate_single_id(value)
+                .map_err(|e| format!("Field '{}': {}", field_name, e))
         }
     }
 
@@ -134,11 +132,7 @@ impl FieldTypeDefinition for RelationshipFieldType {
     }
 
     fn sql_type(&self) -> &'static str {
-        if self.config.multiple {
-            "TEXT" // Store as JSON array of IDs
-        } else {
-            "TEXT" // Store as single ID string
-        }
+        "TEXT"
     }
 }
 
@@ -150,20 +144,20 @@ mod tests {
     #[test]
     fn test_single_relationship_validation() {
         let field = RelationshipFieldType::single("users".to_string());
-        
+
         // Valid single ID
         assert!(field.validate("test", &json!("user-123")).is_ok());
-        
+
         // Null is allowed for optional relationships
         assert!(field.validate("test", &JsonValue::Null).is_ok());
-        
+
         // Invalid types
         assert!(field.validate("test", &json!(123)).is_err());
         assert!(field.validate("test", &json!(["id1", "id2"])).is_err());
-        
+
         // Empty string
         assert!(field.validate("test", &json!("")).is_err());
-        
+
         // Too short ID
         assert!(field.validate("test", &json!("123")).is_err());
     }
@@ -171,20 +165,22 @@ mod tests {
     #[test]
     fn test_multiple_relationship_validation() {
         let field = RelationshipFieldType::multiple("users".to_string());
-        
+
         // Valid multiple IDs
-        assert!(field.validate("test", &json!(["user-123", "user-456"])).is_ok());
-        
+        assert!(field
+            .validate("test", &json!(["user-123", "user-456"]))
+            .is_ok());
+
         // Empty array is valid
         assert!(field.validate("test", &json!([])).is_ok());
-        
+
         // Null is allowed for optional relationships
         assert!(field.validate("test", &JsonValue::Null).is_ok());
-        
+
         // Invalid types
         assert!(field.validate("test", &json!("single-id")).is_err());
         assert!(field.validate("test", &json!(123)).is_err());
-        
+
         // Array with invalid ID
         assert!(field.validate("test", &json!(["user-123", ""])).is_err());
         assert!(field.validate("test", &json!(["user-123", 456])).is_err());
@@ -195,14 +191,17 @@ mod tests {
         let single_field = RelationshipFieldType::single("posts".to_string());
         assert!(!single_field.config.multiple);
         assert_eq!(single_field.config.target_collection, "posts");
-        
+
         let multiple_field = RelationshipFieldType::multiple("tags".to_string())
             .with_cascade_delete(true)
             .with_display_field(Some("name".to_string()));
-        
+
         assert!(multiple_field.config.multiple);
         assert!(multiple_field.config.cascade_delete);
-        assert_eq!(multiple_field.config.display_field, Some("name".to_string()));
+        assert_eq!(
+            multiple_field.config.display_field,
+            Some("name".to_string())
+        );
     }
 
     #[test]
@@ -215,8 +214,8 @@ mod tests {
     fn test_sql_type() {
         let single_field = RelationshipFieldType::single("users".to_string());
         assert_eq!(single_field.sql_type(), "TEXT");
-        
+
         let multiple_field = RelationshipFieldType::multiple("users".to_string());
         assert_eq!(multiple_field.sql_type(), "TEXT");
     }
-} 
+}

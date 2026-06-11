@@ -41,7 +41,7 @@ const PageHeader: React.FC<PageHeaderProps> = ({ title, description, children, l
         
         {/* Actions area */}
         {children && (
-          <div className="flex items-center gap-2 flex-shrink-0 lg:ml-4">
+          <div className="flex w-full flex-wrap items-center gap-2 lg:ml-4 lg:w-auto lg:flex-nowrap">
             {children}
           </div>
         )}

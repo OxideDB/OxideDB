@@ -3,9 +3,9 @@
 //! This module provides the permission system for controlling access to collections
 //! and operations, including permission rules, contexts, and service traits.
 
-use crate::AppError;
-use super::types::{CrudOperation, AuthOperation, Operation, PermissionLevel, UserRole};
 use super::jwt::Claims;
+use super::types::{AuthOperation, CrudOperation, Operation, PermissionLevel, UserRole};
+use crate::AppError;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -74,16 +74,23 @@ impl CollectionPermissions {
             .as_secs() as i64;
 
         let mut crud_rules = HashMap::new();
-        
+
         // Default CRUD rules: superuser only for all operations
         for operation in [
-            CrudOperation::Create, CrudOperation::Read, CrudOperation::Update, CrudOperation::Delete, CrudOperation::List,
+            CrudOperation::Create,
+            CrudOperation::Read,
+            CrudOperation::Update,
+            CrudOperation::Delete,
+            CrudOperation::List,
         ] {
-            crud_rules.insert(operation.clone(), CrudOperationRule {
-                operation: operation.clone(),
-                permission: PermissionLevel::SuperuserOnly,
-                filter: None,
-            });
+            crud_rules.insert(
+                operation.clone(),
+                CrudOperationRule {
+                    operation: operation.clone(),
+                    permission: PermissionLevel::SuperuserOnly,
+                    filter: None,
+                },
+            );
         }
 
         Self {
@@ -106,61 +113,91 @@ impl CollectionPermissions {
 
         let mut crud_rules = HashMap::new();
         let mut auth_rules = HashMap::new();
-        
+
         // CRUD operations: superuser only by default for auth collections
-        for operation in [CrudOperation::Create, CrudOperation::Read, CrudOperation::Update, CrudOperation::Delete, CrudOperation::List] {
-            crud_rules.insert(operation.clone(), CrudOperationRule {
-                operation: operation.clone(),
-                permission: PermissionLevel::SuperuserOnly,
-                filter: None,
-            });
+        for operation in [
+            CrudOperation::Create,
+            CrudOperation::Read,
+            CrudOperation::Update,
+            CrudOperation::Delete,
+            CrudOperation::List,
+        ] {
+            crud_rules.insert(
+                operation.clone(),
+                CrudOperationRule {
+                    operation: operation.clone(),
+                    permission: PermissionLevel::SuperuserOnly,
+                    filter: None,
+                },
+            );
         }
 
         // Auth operations: more permissive defaults for auth collections
         // Login and register should be public so users can authenticate
-        auth_rules.insert(AuthOperation::Login, AuthOperationRule {
-            operation: AuthOperation::Login,
-            permission: PermissionLevel::Public,
-            filter: None,
-        });
-        auth_rules.insert(AuthOperation::Register, AuthOperationRule {
-            operation: AuthOperation::Register,
-            permission: PermissionLevel::Public,
-            filter: None,
-        });
-        
+        auth_rules.insert(
+            AuthOperation::Login,
+            AuthOperationRule {
+                operation: AuthOperation::Login,
+                permission: PermissionLevel::Public,
+                filter: None,
+            },
+        );
+        auth_rules.insert(
+            AuthOperation::Register,
+            AuthOperationRule {
+                operation: AuthOperation::Register,
+                permission: PermissionLevel::Public,
+                filter: None,
+            },
+        );
+
         // Token operations should be public for proper auth flow
-        auth_rules.insert(AuthOperation::TokenValidation, AuthOperationRule {
-            operation: AuthOperation::TokenValidation,
-            permission: PermissionLevel::Public,
-            filter: None,
-        });
-        auth_rules.insert(AuthOperation::TokenRefresh, AuthOperationRule {
-            operation: AuthOperation::TokenRefresh,
-            permission: PermissionLevel::Public,
-            filter: None,
-        });
-        
+        auth_rules.insert(
+            AuthOperation::TokenValidation,
+            AuthOperationRule {
+                operation: AuthOperation::TokenValidation,
+                permission: PermissionLevel::Public,
+                filter: None,
+            },
+        );
+        auth_rules.insert(
+            AuthOperation::TokenRefresh,
+            AuthOperationRule {
+                operation: AuthOperation::TokenRefresh,
+                permission: PermissionLevel::Public,
+                filter: None,
+            },
+        );
+
         // Logout should be accessible to authenticated users
-        auth_rules.insert(AuthOperation::Logout, AuthOperationRule {
-            operation: AuthOperation::Logout,
-            permission: PermissionLevel::AuthenticatedOnly,
-            filter: None,
-        });
-        
+        auth_rules.insert(
+            AuthOperation::Logout,
+            AuthOperationRule {
+                operation: AuthOperation::Logout,
+                permission: PermissionLevel::AuthenticatedOnly,
+                filter: None,
+            },
+        );
+
         // GetCurrentUser should be accessible to authenticated users
-        auth_rules.insert(AuthOperation::GetCurrentUser, AuthOperationRule {
-            operation: AuthOperation::GetCurrentUser,
-            permission: PermissionLevel::AuthenticatedOnly,
-            filter: None,
-        });
+        auth_rules.insert(
+            AuthOperation::GetCurrentUser,
+            AuthOperationRule {
+                operation: AuthOperation::GetCurrentUser,
+                permission: PermissionLevel::AuthenticatedOnly,
+                filter: None,
+            },
+        );
 
         // ListAuthCollections should be public so users can see available auth collections
-        auth_rules.insert(AuthOperation::ListAuthCollections, AuthOperationRule {
-            operation: AuthOperation::ListAuthCollections,
-            permission: PermissionLevel::Public,
-            filter: None,
-        });
+        auth_rules.insert(
+            AuthOperation::ListAuthCollections,
+            AuthOperationRule {
+                operation: AuthOperation::ListAuthCollections,
+                permission: PermissionLevel::Public,
+                filter: None,
+            },
+        );
 
         Self {
             collection,
@@ -181,28 +218,43 @@ impl CollectionPermissions {
 
         let mut crud_rules = HashMap::new();
         let mut auth_rules = HashMap::new();
-        
+
         // Public CRUD rules: allow all operations for everyone
         for operation in [
-            CrudOperation::Create, CrudOperation::Read, CrudOperation::Update, CrudOperation::Delete, CrudOperation::List,
+            CrudOperation::Create,
+            CrudOperation::Read,
+            CrudOperation::Update,
+            CrudOperation::Delete,
+            CrudOperation::List,
         ] {
-            crud_rules.insert(operation.clone(), CrudOperationRule {
-                operation: operation.clone(),
-                permission: PermissionLevel::Public,
-                filter: None,
-            });
+            crud_rules.insert(
+                operation.clone(),
+                CrudOperationRule {
+                    operation: operation.clone(),
+                    permission: PermissionLevel::Public,
+                    filter: None,
+                },
+            );
         }
 
         // Public auth rules: allow all auth operations for everyone
         for operation in [
-            AuthOperation::Login, AuthOperation::Register, AuthOperation::TokenValidation, 
-            AuthOperation::TokenRefresh, AuthOperation::Logout, AuthOperation::GetCurrentUser, AuthOperation::ListAuthCollections
+            AuthOperation::Login,
+            AuthOperation::Register,
+            AuthOperation::TokenValidation,
+            AuthOperation::TokenRefresh,
+            AuthOperation::Logout,
+            AuthOperation::GetCurrentUser,
+            AuthOperation::ListAuthCollections,
         ] {
-            auth_rules.insert(operation.clone(), AuthOperationRule {
-                operation: operation.clone(),
-                permission: PermissionLevel::Public,
-                filter: None,
-            });
+            auth_rules.insert(
+                operation.clone(),
+                AuthOperationRule {
+                    operation: operation.clone(),
+                    permission: PermissionLevel::Public,
+                    filter: None,
+                },
+            );
         }
 
         Self {
@@ -228,20 +280,16 @@ impl CollectionPermissions {
     /// Get the operation rule for any operation (CRUD or Auth)
     pub fn get_operation_rule(&self, operation: &Operation) -> Option<OperationRule> {
         match operation {
-            Operation::Crud(crud_op) => {
-                self.crud_rules.get(crud_op).map(|rule| OperationRule {
-                    operation: Operation::Crud(rule.operation.clone()),
-                    permission: rule.permission.clone(),
-                    filter: rule.filter.clone(),
-                })
-            }
-            Operation::Auth(auth_op) => {
-                self.auth_rules.get(auth_op).map(|rule| OperationRule {
-                    operation: Operation::Auth(rule.operation.clone()),
-                    permission: rule.permission.clone(),
-                    filter: rule.filter.clone(),
-                })
-            }
+            Operation::Crud(crud_op) => self.crud_rules.get(crud_op).map(|rule| OperationRule {
+                operation: Operation::Crud(rule.operation.clone()),
+                permission: rule.permission.clone(),
+                filter: rule.filter.clone(),
+            }),
+            Operation::Auth(auth_op) => self.auth_rules.get(auth_op).map(|rule| OperationRule {
+                operation: Operation::Auth(rule.operation.clone()),
+                permission: rule.permission.clone(),
+                filter: rule.filter.clone(),
+            }),
         }
     }
 
@@ -325,7 +373,8 @@ impl PermissionContext {
 
     /// Get the user's role if authenticated
     pub fn user_role(&self) -> Option<UserRole> {
-        self.user_claims.as_ref()
+        self.user_claims
+            .as_ref()
             .and_then(|claims| claims.user_role().ok())
     }
 
@@ -338,7 +387,7 @@ impl PermissionContext {
     pub fn is_superuser(&self) -> bool {
         let user_role = self.user_role();
         let is_super = matches!(user_role, Some(UserRole::Superuser));
-        
+
         // Enhanced debug logging for superuser check
         if let Some(claims) = &self.user_claims {
             tracing::debug!(
@@ -349,7 +398,7 @@ impl PermissionContext {
                 is_super
             );
         }
-        
+
         is_super
     }
 }
@@ -361,13 +410,20 @@ pub trait PermissionService: Send + Sync {
     fn check_authentication(&self, context: &PermissionContext) -> Result<bool, AppError>;
 
     /// Check if a user can perform an operation on a collection
-    fn check_permission(&self, permissions: &CollectionPermissions, context: &PermissionContext) -> Result<bool, AppError>;
+    fn check_permission(
+        &self,
+        permissions: &CollectionPermissions,
+        context: &PermissionContext,
+    ) -> Result<bool, AppError>;
 
     /// Store permissions for a collection
     async fn store_permissions(&self, permissions: &CollectionPermissions) -> Result<(), AppError>;
 
     /// Get permissions for a collection
-    async fn get_permissions(&self, collection: &str) -> Result<Option<CollectionPermissions>, AppError>;
+    async fn get_permissions(
+        &self,
+        collection: &str,
+    ) -> Result<Option<CollectionPermissions>, AppError>;
 
     /// Delete permissions for a collection (revert to defaults)
     async fn delete_permissions(&self, collection: &str) -> Result<(), AppError>;
@@ -382,10 +438,7 @@ pub struct DefaultPermissionService;
 #[async_trait]
 impl PermissionService for DefaultPermissionService {
     /// Check if a user is authenticated
-    fn check_authentication(
-        &self,
-        context: &PermissionContext,
-    ) -> Result<bool, AppError> {
+    fn check_authentication(&self, context: &PermissionContext) -> Result<bool, AppError> {
         Ok(context.user_claims.is_some())
     }
 
@@ -406,7 +459,7 @@ impl PermissionService for DefaultPermissionService {
                     return Ok(true);
                 }
             };
-            
+
             // Only deny superuser access if explicitly set to None
             if matches!(rule.permission, PermissionLevel::None) {
                 return Ok(false);
@@ -438,22 +491,32 @@ impl PermissionService for DefaultPermissionService {
     }
 
     /// Store permissions for a collection (default implementation returns error)
-    async fn store_permissions(&self, _permissions: &CollectionPermissions) -> Result<(), AppError> {
-        Err(AppError::internal("Permission storage not implemented in default service"))
+    async fn store_permissions(
+        &self,
+        _permissions: &CollectionPermissions,
+    ) -> Result<(), AppError> {
+        Err(AppError::internal(
+            "Permission storage not implemented in default service",
+        ))
     }
 
     /// Get permissions for a collection (default implementation returns None)
-    async fn get_permissions(&self, _collection: &str) -> Result<Option<CollectionPermissions>, AppError> {
+    async fn get_permissions(
+        &self,
+        _collection: &str,
+    ) -> Result<Option<CollectionPermissions>, AppError> {
         Ok(None)
     }
 
     /// Delete permissions for a collection (default implementation returns error)
     async fn delete_permissions(&self, _collection: &str) -> Result<(), AppError> {
-        Err(AppError::internal("Permission deletion not implemented in default service"))
+        Err(AppError::internal(
+            "Permission deletion not implemented in default service",
+        ))
     }
 
     /// List all collections that have custom permissions (default implementation returns empty)
     async fn list_collections_with_permissions(&self) -> Result<Vec<String>, AppError> {
         Ok(Vec::new())
     }
-} 
+}

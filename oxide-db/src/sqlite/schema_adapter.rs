@@ -19,6 +19,10 @@ impl SqliteSchemaAdapter {
     }
 }
 
+pub(crate) fn quote_identifier(identifier: &str) -> String {
+    format!("\"{}\"", identifier.replace('"', "\"\""))
+}
+
 impl Default for SqliteSchemaAdapter {
     fn default() -> Self {
         Self::new()
@@ -34,22 +38,29 @@ impl SchemaAdapter for SqliteSchemaAdapter {
     /// Generate SQL DDL for creating a collection's table
     fn generate_create_table_sql(&self, schema: &CollectionSchema) -> String {
         let table_name = self.get_table_name(&schema.name);
-        let mut sql = format!("CREATE TABLE IF NOT EXISTS {} (\n", table_name);
-        
+        let mut sql = format!(
+            "CREATE TABLE IF NOT EXISTS {} (\n",
+            quote_identifier(&table_name)
+        );
+
         // Always include the primary key and metadata columns
-        sql.push_str("    id TEXT PRIMARY KEY,\n");
-        sql.push_str("    created_at INTEGER NOT NULL,\n");
-        sql.push_str("    updated_at INTEGER NOT NULL");
+        sql.push_str("    \"id\" TEXT PRIMARY KEY,\n");
+        sql.push_str("    \"created_at\" INTEGER NOT NULL,\n");
+        sql.push_str("    \"updated_at\" INTEGER NOT NULL");
 
         // Add schema-defined fields
         for (field_name, field_def) in &schema.fields {
             sql.push_str(",\n    ");
-            sql.push_str(&format!("{} {}", field_name, self.field_type_to_sql(&field_def.field_type)));
-            
+            sql.push_str(&format!(
+                "{} {}",
+                quote_identifier(field_name),
+                self.field_type_to_sql(&field_def.field_type)
+            ));
+
             if field_def.required {
                 sql.push_str(" NOT NULL");
             }
-            
+
             if field_def.unique {
                 sql.push_str(" UNIQUE");
             }
@@ -61,7 +72,10 @@ impl SchemaAdapter for SqliteSchemaAdapter {
                             sql.push_str(&format!(" DEFAULT '{}'", s.replace('\'', "''")));
                         } else {
                             // For JSON fields, serialize the default value
-                            sql.push_str(&format!(" DEFAULT '{}'", default.to_string().replace('\'', "''")));
+                            sql.push_str(&format!(
+                                " DEFAULT '{}'",
+                                default.to_string().replace('\'', "''")
+                            ));
                         }
                     }
                     "REAL" => {
@@ -80,7 +94,10 @@ impl SchemaAdapter for SqliteSchemaAdapter {
                     }
                     _ => {
                         // Fallback to text representation
-                        sql.push_str(&format!(" DEFAULT '{}'", default.to_string().replace('\'', "''")));
+                        sql.push_str(&format!(
+                            " DEFAULT '{}'",
+                            default.to_string().replace('\'', "''")
+                        ));
                     }
                 }
             }
@@ -96,27 +113,45 @@ impl SchemaAdapter for SqliteSchemaAdapter {
         let mut index_statements = Vec::new();
 
         // Always create index on created_at for sorting
+        let created_at_index_name = format!("idx_{}_{}", table_name, "created_at");
         index_statements.push(format!(
-            "CREATE INDEX IF NOT EXISTS idx_{}_{} ON {}({})",
-            table_name, "created_at", table_name, "created_at"
+            "CREATE INDEX IF NOT EXISTS {} ON {}({})",
+            quote_identifier(&created_at_index_name),
+            quote_identifier(&table_name),
+            quote_identifier("created_at")
         ));
 
         // Create indexes defined in schema
         for index_def in &schema.indexes {
-            let index_type = if index_def.unique { "UNIQUE INDEX" } else { "INDEX" };
-            let fields_str = index_def.fields.join(", ");
+            let index_type = if index_def.unique {
+                "UNIQUE INDEX"
+            } else {
+                "INDEX"
+            };
+            let fields_str = index_def
+                .fields
+                .iter()
+                .map(|field| quote_identifier(field))
+                .collect::<Vec<_>>()
+                .join(", ");
             index_statements.push(format!(
                 "CREATE {} IF NOT EXISTS {} ON {}({})",
-                index_type, index_def.name, table_name, fields_str
+                index_type,
+                quote_identifier(&index_def.name),
+                quote_identifier(&table_name),
+                fields_str
             ));
         }
 
         // Create unique indexes for fields marked as unique
         for (field_name, field_def) in &schema.fields {
             if field_def.unique {
+                let index_name = format!("idx_{}_unique_{}", table_name, field_name);
                 index_statements.push(format!(
-                    "CREATE UNIQUE INDEX IF NOT EXISTS idx_{}_unique_{} ON {}({})",
-                    table_name, field_name, table_name, field_name
+                    "CREATE UNIQUE INDEX IF NOT EXISTS {} ON {}({})",
+                    quote_identifier(&index_name),
+                    quote_identifier(&table_name),
+                    quote_identifier(field_name)
                 ));
             }
         }
@@ -129,12 +164,16 @@ impl SchemaAdapter for SqliteSchemaAdapter {
         // Use the new extensible field type system
         field_type.sql_type()
     }
-    
+
     /// Generate SQL statements to migrate a table from old schema to new schema
-    fn generate_migration_sql(&self, old_schema: &CollectionSchema, new_schema: &CollectionSchema) -> Vec<String> {
+    fn generate_migration_sql(
+        &self,
+        old_schema: &CollectionSchema,
+        new_schema: &CollectionSchema,
+    ) -> Vec<String> {
         let table_name = self.get_table_name(&new_schema.name);
         let mut migration_statements = Vec::new();
-        
+
         // Detect breaking changes: removed fields or type changes
         let mut has_breaking_change = false;
 
@@ -159,9 +198,10 @@ impl SchemaAdapter for SqliteSchemaAdapter {
             let temp_table_name = format!("{}_new_v{}", table_name, new_schema.version);
 
             // 1. Create new table with desired schema
-            let create_sql = self
-                .generate_create_table_sql(new_schema)
-                .replace(&table_name, &temp_table_name);
+            let create_sql = self.generate_create_table_sql(new_schema).replace(
+                &quote_identifier(&table_name),
+                &quote_identifier(&temp_table_name),
+            );
             migration_statements.push(create_sql);
 
             // 2. Copy intersecting fields from old table to new table
@@ -169,27 +209,34 @@ impl SchemaAdapter for SqliteSchemaAdapter {
                 .into_iter()
                 .map(String::from)
                 .collect::<Vec<_>>();
-            for (field_name, _) in &new_schema.fields {
+            for field_name in new_schema.fields.keys() {
                 if old_schema.fields.contains_key(field_name) {
                     common_fields.push(field_name.clone());
                 }
             }
-            let fields_str = common_fields.join(", ");
+            let fields_str = common_fields
+                .iter()
+                .map(|field| quote_identifier(field))
+                .collect::<Vec<_>>()
+                .join(", ");
             migration_statements.push(format!(
                 "INSERT INTO {temp} ({fields}) SELECT {fields} FROM {orig}",
-                temp = temp_table_name,
+                temp = quote_identifier(&temp_table_name),
                 fields = fields_str,
-                orig = table_name
+                orig = quote_identifier(&table_name)
             ));
 
             // 3. Drop old table
-            migration_statements.push(format!("DROP TABLE {orig}", orig = table_name));
+            migration_statements.push(format!(
+                "DROP TABLE {orig}",
+                orig = quote_identifier(&table_name)
+            ));
 
             // 4. Rename new table
             migration_statements.push(format!(
                 "ALTER TABLE {temp} RENAME TO {orig}",
-                temp = temp_table_name,
-                orig = table_name
+                temp = quote_identifier(&temp_table_name),
+                orig = quote_identifier(&table_name)
             ));
 
             // 5. Recreate indexes for the new schema
@@ -204,13 +251,20 @@ impl SchemaAdapter for SqliteSchemaAdapter {
         for (field_name, field_def) in &new_schema.fields {
             if !old_schema.fields.contains_key(field_name) {
                 // This is a new field, generate ALTER TABLE ADD COLUMN statement
-                let mut column_def = format!("{} {}", field_name, self.field_type_to_sql(&field_def.field_type));
+                let mut column_def = format!(
+                    "{} {}",
+                    quote_identifier(field_name),
+                    self.field_type_to_sql(&field_def.field_type)
+                );
 
                 // Handle unique constraints via separate indexes (SQLite limitation)
                 if field_def.unique {
+                    let index_name = format!("idx_{}_unique_{}", table_name, field_name);
                     migration_statements.push(format!(
-                        "CREATE UNIQUE INDEX IF NOT EXISTS idx_{}_unique_{} ON {}({})",
-                        table_name, field_name, table_name, field_name
+                        "CREATE UNIQUE INDEX IF NOT EXISTS {} ON {}({})",
+                        quote_identifier(&index_name),
+                        quote_identifier(&table_name),
+                        quote_identifier(field_name)
                     ));
                 }
 
@@ -219,9 +273,13 @@ impl SchemaAdapter for SqliteSchemaAdapter {
                     match field_def.field_type.sql_type() {
                         "TEXT" => {
                             if let Some(s) = default.as_str() {
-                                column_def.push_str(&format!(" DEFAULT '{}'", s.replace('\'', "''")));
+                                column_def
+                                    .push_str(&format!(" DEFAULT '{}'", s.replace('\'', "''")));
                             } else {
-                                column_def.push_str(&format!(" DEFAULT '{}'", default.to_string().replace('\'', "''")));
+                                column_def.push_str(&format!(
+                                    " DEFAULT '{}'",
+                                    default.to_string().replace('\'', "''")
+                                ));
                             }
                         }
                         "REAL" => {
@@ -232,19 +290,27 @@ impl SchemaAdapter for SqliteSchemaAdapter {
                         "INTEGER" => {
                             if default.is_boolean() {
                                 if let Some(b) = default.as_bool() {
-                                    column_def.push_str(&format!(" DEFAULT {}", if b { 1 } else { 0 }));
+                                    column_def
+                                        .push_str(&format!(" DEFAULT {}", if b { 1 } else { 0 }));
                                 }
                             } else if let Some(i) = default.as_i64() {
                                 column_def.push_str(&format!(" DEFAULT {}", i));
                             }
                         }
                         _ => {
-                            column_def.push_str(&format!(" DEFAULT '{}'", default.to_string().replace('\'', "''")));
+                            column_def.push_str(&format!(
+                                " DEFAULT '{}'",
+                                default.to_string().replace('\'', "''")
+                            ));
                         }
                     }
                 }
 
-                migration_statements.push(format!("ALTER TABLE {} ADD COLUMN {}", table_name, column_def));
+                migration_statements.push(format!(
+                    "ALTER TABLE {} ADD COLUMN {}",
+                    quote_identifier(&table_name),
+                    column_def
+                ));
             }
         }
 
@@ -255,11 +321,23 @@ impl SchemaAdapter for SqliteSchemaAdapter {
                 .iter()
                 .any(|field| !old_schema.fields.contains_key(field));
             if has_new_fields {
-                let index_type = if index_def.unique { "UNIQUE INDEX" } else { "INDEX" };
-                let fields_str = index_def.fields.join(", ");
+                let index_type = if index_def.unique {
+                    "UNIQUE INDEX"
+                } else {
+                    "INDEX"
+                };
+                let fields_str = index_def
+                    .fields
+                    .iter()
+                    .map(|field| quote_identifier(field))
+                    .collect::<Vec<_>>()
+                    .join(", ");
                 migration_statements.push(format!(
                     "CREATE {} IF NOT EXISTS {} ON {}({})",
-                    index_type, index_def.name, table_name, fields_str
+                    index_type,
+                    quote_identifier(&index_def.name),
+                    quote_identifier(&table_name),
+                    fields_str
                 ));
             }
         }
@@ -271,13 +349,16 @@ impl SchemaAdapter for SqliteSchemaAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use oxide_core::{CollectionType, FieldDefinition};
     use oxide_core::collection::IndexDefinition;
+    use oxide_core::{CollectionType, FieldDefinition};
 
     #[test]
     fn test_table_name_generation() {
         let adapter = SqliteSchemaAdapter::new();
-        assert_eq!(adapter.get_table_name("my_collection"), "collection_my_collection");
+        assert_eq!(
+            adapter.get_table_name("my_collection"),
+            "collection_my_collection"
+        );
     }
 
     #[test]
@@ -297,7 +378,7 @@ mod tests {
     fn test_sql_generation() {
         let adapter = SqliteSchemaAdapter::new();
         let mut schema = CollectionSchema::new("users".to_string(), CollectionType::Base);
-        
+
         schema.add_field(
             "email".to_string(),
             FieldDefinition {
@@ -322,9 +403,9 @@ mod tests {
         );
 
         let sql = adapter.generate_create_table_sql(&schema);
-        assert!(sql.contains("CREATE TABLE IF NOT EXISTS collection_users"));
-        assert!(sql.contains("email TEXT NOT NULL UNIQUE"));
-        assert!(sql.contains("verified INTEGER DEFAULT 0"));
+        assert!(sql.contains("CREATE TABLE IF NOT EXISTS \"collection_users\""));
+        assert!(sql.contains("\"email\" TEXT NOT NULL UNIQUE"));
+        assert!(sql.contains("\"verified\" INTEGER DEFAULT 0"));
 
         let indexes = adapter.generate_index_sql(&schema);
         assert!(!indexes.is_empty());
@@ -333,7 +414,7 @@ mod tests {
     #[test]
     fn test_migration_sql_generation() {
         let adapter = SqliteSchemaAdapter::new();
-        
+
         // Create original schema
         let mut old_schema = CollectionSchema::new("users".to_string(), CollectionType::Base);
         old_schema.add_field(
@@ -347,7 +428,7 @@ mod tests {
                 index: false,
             },
         );
-        
+
         // Create new schema with additional field
         let mut new_schema = old_schema.clone();
         new_schema.add_field(
@@ -372,20 +453,23 @@ mod tests {
                 index: false,
             },
         );
-        
+
         let migration_sql = adapter.generate_migration_sql(&old_schema, &new_schema);
-        
+
         // Should generate ALTER TABLE statements for new fields
         assert!(migration_sql.len() >= 2); // At least two new fields
-        assert!(migration_sql.iter().any(|sql| sql.contains("ALTER TABLE collection_users ADD COLUMN age REAL DEFAULT 0")));
-        assert!(migration_sql.iter().any(|sql| sql.contains("ALTER TABLE collection_users ADD COLUMN verified INTEGER DEFAULT 0")));
+        assert!(migration_sql.iter().any(|sql| sql
+            .contains("ALTER TABLE \"collection_users\" ADD COLUMN \"age\" REAL DEFAULT 0")));
+        assert!(migration_sql.iter().any(|sql| sql.contains(
+            "ALTER TABLE \"collection_users\" ADD COLUMN \"verified\" INTEGER DEFAULT 0"
+        )));
     }
 
     #[test]
     fn test_password_field_sql_generation() {
         let adapter = SqliteSchemaAdapter::new();
         let mut schema = CollectionSchema::new("users".to_string(), CollectionType::Base);
-        
+
         schema.add_field(
             "email".to_string(),
             FieldDefinition {
@@ -422,16 +506,16 @@ mod tests {
 
         // Test SQL generation includes password fields
         let sql = adapter.generate_create_table_sql(&schema);
-        assert!(sql.contains("CREATE TABLE IF NOT EXISTS collection_users"));
-        assert!(sql.contains("password TEXT NOT NULL"));
-        assert!(sql.contains("backup_password TEXT"));
+        assert!(sql.contains("CREATE TABLE IF NOT EXISTS \"collection_users\""));
+        assert!(sql.contains("\"password\" TEXT NOT NULL"));
+        assert!(sql.contains("\"backup_password\" TEXT"));
     }
 
     #[test]
     fn test_index_generation() {
         let adapter = SqliteSchemaAdapter::new();
         let mut schema = CollectionSchema::new("posts".to_string(), CollectionType::Base);
-        
+
         // Add a field with unique constraint
         schema.add_field(
             "slug".to_string(),
@@ -453,17 +537,23 @@ mod tests {
         });
 
         let indexes = adapter.generate_index_sql(&schema);
-        
+
         // Should have created_at index, unique field index, and custom index
         assert!(indexes.len() >= 3);
-        
+
         // Check for created_at index
-        assert!(indexes.iter().any(|sql| sql.contains("idx_collection_posts_created_at")));
-        
+        assert!(indexes
+            .iter()
+            .any(|sql| sql.contains("idx_collection_posts_created_at")));
+
         // Check for unique field index
-        assert!(indexes.iter().any(|sql| sql.contains("idx_collection_posts_unique_slug")));
-        
+        assert!(indexes
+            .iter()
+            .any(|sql| sql.contains("idx_collection_posts_unique_slug")));
+
         // Check for custom index
-        assert!(indexes.iter().any(|sql| sql.contains("idx_posts_title_author")));
+        assert!(indexes
+            .iter()
+            .any(|sql| sql.contains("idx_posts_title_author")));
     }
-} 
+}

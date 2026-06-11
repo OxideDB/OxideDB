@@ -1,9 +1,9 @@
 import type { 
+  CollectionSchema,
   CollectionType,
+  DbRecord,
   FieldDefinition,
-  IndexDefinition,
-  DashboardStats,
-  SystemStats
+  IndexDefinition
 } from './generated';
 
 // Import auto-generated types from the generated types file
@@ -131,6 +131,132 @@ export interface CollectionPermissionsInfo {
 }
 
 export type PermissionPresetType = 'public' | 'authenticated_only' | 'superuser_only' | 'read_only';
+
+export type ApiKeyOperationType = 'crud' | 'auth';
+
+export interface ApiKeyCollectionOption {
+  name: string;
+  collection_type: CollectionType;
+}
+
+export interface ApiKeyRuleInfo {
+  collection: string;
+  collection_type: CollectionType;
+  operation_type: ApiKeyOperationType;
+  operation: CrudOperation | AuthOperation;
+  rule: string;
+  exact_key?: string | null;
+  key_hash?: string | null;
+  key_preview?: string | null;
+  hashed: boolean;
+  legacy_plaintext: boolean;
+}
+
+export interface ApiKeyRulesResponse {
+  rules: ApiKeyRuleInfo[];
+  collections: ApiKeyCollectionOption[];
+  total_rules: number;
+  protected_collections: number;
+  exact_key_rules: number;
+  hashed_key_rules: number;
+  wildcard_key_rules: number;
+}
+
+export interface UpsertApiKeyRuleRequest {
+  collection: string;
+  operation_type: ApiKeyOperationType;
+  operation: CrudOperation | AuthOperation;
+  key?: string;
+}
+
+export interface UpsertApiKeyRuleResponse {
+  rule: ApiKeyRuleInfo;
+  api_key: string;
+  summary: ApiKeyRulesResponse;
+}
+
+export interface RevokeApiKeyRuleRequest {
+  collection: string;
+  operation_type: ApiKeyOperationType;
+  operation: CrudOperation | AuthOperation;
+  fallback_permission?: PermissionLevel;
+}
+
+export interface BackupCollectionSummary {
+  name: string;
+  collection_type: CollectionType;
+  schema_version: number;
+  record_count: number;
+  size_kb: number;
+  included: boolean;
+  excluded_reason?: string | null;
+}
+
+export interface BackupManifestResponse {
+  generated_at: string;
+  total_collections: number;
+  included_collections: number;
+  total_records: number;
+  total_size_kb: number;
+  include_system: boolean;
+  collections: BackupCollectionSummary[];
+}
+
+export interface BackupCollectionExport {
+  schema: CollectionSchema;
+  records: DbRecord[];
+  record_count: number;
+}
+
+export interface BackupExportResponse {
+  format_version: number;
+  generated_at: string;
+  include_system: boolean;
+  total_collections: number;
+  total_records: number;
+  collections: BackupCollectionExport[];
+}
+
+export interface BackupQueryOptions {
+  include_system?: boolean;
+  collections?: string[];
+}
+
+export interface BackupRestoreRequest {
+  snapshot: BackupExportResponse;
+  dry_run?: boolean;
+  include_system?: boolean;
+  replace_existing?: boolean;
+}
+
+export interface BackupRestoreCollectionResult {
+  name: string;
+  collection_type: CollectionType;
+  status: string;
+  source_records: number;
+  records_created: number;
+  records_updated: number;
+  records_skipped: number;
+  warnings: string[];
+}
+
+export interface BackupRestoreResponse {
+  dry_run: boolean;
+  generated_at: string;
+  source_generated_at: string;
+  include_system: boolean;
+  replace_existing: boolean;
+  total_collections: number;
+  total_records: number;
+  created_collections: number;
+  replaced_collections: number;
+  skipped_collections: number;
+  created_records: number;
+  updated_records: number;
+  skipped_records: number;
+  collections: BackupRestoreCollectionResult[];
+  warnings: string[];
+}
 
 // API Response wrapper
 export interface ApiResponse<T> {
@@ -414,9 +540,134 @@ export const createCapability = {
     ({ DeleteRecords: { collections } }),
 };
 
+function splitCapabilityArgs(input: string): string[] {
+  const parts: string[] = [];
+  let current = '';
+  let bracketDepth = 0;
+  let braceDepth = 0;
+  let parenDepth = 0;
+  let quote: string | null = null;
+  let escaped = false;
+
+  for (const char of input) {
+    if (escaped) {
+      current += char;
+      escaped = false;
+      continue;
+    }
+
+    if (char === '\\') {
+      current += char;
+      escaped = true;
+      continue;
+    }
+
+    if (quote) {
+      if (char === quote) quote = null;
+      current += char;
+      continue;
+    }
+
+    if (char === '"' || char === "'") {
+      quote = char;
+      current += char;
+    } else if (char === '[') {
+      bracketDepth += 1;
+      current += char;
+    } else if (char === ']') {
+      bracketDepth -= 1;
+      current += char;
+    } else if (char === '{') {
+      braceDepth += 1;
+      current += char;
+    } else if (char === '}') {
+      braceDepth -= 1;
+      current += char;
+    } else if (char === '(') {
+      parenDepth += 1;
+      current += char;
+    } else if (char === ')') {
+      parenDepth -= 1;
+      current += char;
+    } else if (char === ',' && bracketDepth === 0 && braceDepth === 0 && parenDepth === 0) {
+      if (current.trim()) parts.push(current.trim());
+      current = '';
+    } else {
+      current += char;
+    }
+  }
+
+  if (current.trim()) parts.push(current.trim());
+  return parts;
+}
+
+function parseCapabilityValue(raw: string): unknown {
+  const value = raw.trim();
+
+  try {
+    return JSON.parse(value);
+  } catch {
+    // Continue with the small manifest shorthand parser below.
+  }
+
+  if (value.startsWith('[') && value.endsWith(']')) {
+    const inner = value.slice(1, -1);
+    return inner.trim() ? splitCapabilityArgs(inner).map(parseCapabilityValue) : [];
+  }
+
+  if (/^\d+$/.test(value)) return Number(value);
+  if (value === 'true') return true;
+  if (value === 'false') return false;
+  return value.replace(/^['"]|['"]$/g, '');
+}
+
+function parseCapabilityInvocation(input: string): { name: string; args: Record<string, unknown> } {
+  const trimmed = input.trim();
+  const openParen = trimmed.indexOf('(');
+
+  if (openParen === -1 || !trimmed.endsWith(')')) {
+    return { name: trimmed.split('(')[0], args: {} };
+  }
+
+  const args: Record<string, unknown> = {};
+  for (const segment of splitCapabilityArgs(trimmed.slice(openParen + 1, -1))) {
+    const equalIndex = segment.indexOf('=');
+    if (equalIndex === -1) continue;
+
+    const key = segment.slice(0, equalIndex).trim();
+    const value = segment.slice(equalIndex + 1);
+    if (key) args[key] = parseCapabilityValue(value);
+  }
+
+  return { name: trimmed.slice(0, openParen).trim(), args };
+}
+
+function stringArrayArg(args: Record<string, unknown>, key: string, fallback: string[]): string[] {
+  const value = args[key];
+  if (value === undefined) return fallback;
+  if (Array.isArray(value)) return value.map(String);
+  return [String(value)];
+}
+
+function numberArg(args: Record<string, unknown>, key: string, fallback: number): number {
+  const value = args[key];
+  if (value === undefined) return fallback;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
 // Function to convert capability names to capability objects
 export function capabilityNameToObject(capabilityName: string): PluginCapability {
-  const normalizedCapability = capabilityName.trim().split('(')[0];
+  try {
+    const parsed = JSON.parse(capabilityName);
+    if (typeof parsed === 'string' || (parsed && typeof parsed === 'object')) {
+      return parsed as PluginCapability;
+    }
+  } catch {
+    // Continue with named capability parsing.
+  }
+
+  const { name: normalizedCapability, args } = parseCapabilityInvocation(capabilityName);
 
   switch (normalizedCapability) {
     case "LogInfo": return createCapability.LogInfo();
@@ -426,16 +677,28 @@ export function capabilityNameToObject(capabilityName: string): PluginCapability
     case "BlockOperations": return createCapability.BlockOperations();
     case "ScheduleTasks": return createCapability.ScheduleTasks();
     case "HandleHttpRequests": return createCapability.HandleHttpRequests();
-    case "ReadConfig": return createCapability.ReadConfig();
-    case "AccessCollection": return createCapability.AccessCollection();
-    case "HttpRequest": return createCapability.HttpRequest();
-    case "PersistentStorage": return createCapability.PersistentStorage();
-    case "EmitEvents": return createCapability.EmitEvents();
-    case "RegisterHttpRoutes": return createCapability.RegisterHttpRoutes();
-    case "CreateRecords": return createCapability.CreateRecords();
-    case "ReadRecords": return createCapability.ReadRecords();
-    case "UpdateRecords": return createCapability.UpdateRecords();
-    case "DeleteRecords": return createCapability.DeleteRecords();
+    case "ReadConfig": return createCapability.ReadConfig(stringArrayArg(args, "keys", ["*"]));
+    case "AccessCollection": return createCapability.AccessCollection(
+      String(args.collection ?? "*"),
+      stringArrayArg(args, "operations", ["Read"]) as PluginCrudOperation[]
+    );
+    case "HttpRequest": return createCapability.HttpRequest(
+      stringArrayArg(args, "allowed_urls", ["*"]),
+      numberArg(args, "rate_limit", 60)
+    );
+    case "PersistentStorage": return createCapability.PersistentStorage(
+      numberArg(args, "max_size", 1024 * 1024),
+      stringArrayArg(args, "key_prefixes", ["plugin_*"])
+    );
+    case "EmitEvents": return createCapability.EmitEvents(stringArrayArg(args, "event_types", ["custom.*"]));
+    case "RegisterHttpRoutes": return createCapability.RegisterHttpRoutes(
+      stringArrayArg(args, "path_patterns", ["*"]),
+      stringArrayArg(args, "methods", ["GET", "POST"]).map((method) => method.toUpperCase())
+    );
+    case "CreateRecords": return createCapability.CreateRecords(stringArrayArg(args, "collections", ["*"]));
+    case "ReadRecords": return createCapability.ReadRecords(stringArrayArg(args, "collections", ["*"]));
+    case "UpdateRecords": return createCapability.UpdateRecords(stringArrayArg(args, "collections", ["*"]));
+    case "DeleteRecords": return createCapability.DeleteRecords(stringArrayArg(args, "collections", ["*"]));
     default:
       throw new Error(`Unknown capability: ${capabilityName}`);
   }
@@ -658,40 +921,3 @@ export interface SystemInfoUpdateRequest {
   instance_name?: string;
   license_key?: string;
 }
-
-// Dashboard API functions
-export const dashboardApi = {
-  // Get comprehensive dashboard statistics
-  getDashboardStats: async (): Promise<DashboardStats> => {
-    const response = await fetch('/api/dashboard/stats', {
-      headers: {
-        'Authorization': `Bearer ${localStorage.getItem('authToken')}`,
-        'Content-Type': 'application/json',
-      },
-    });
-    
-    if (!response.ok) {
-      throw new Error(`Failed to fetch dashboard stats: ${response.statusText}`);
-    }
-    
-    const result = await response.json();
-    return result.data;
-  },
-
-  // Get basic system statistics
-  getSystemStats: async (): Promise<SystemStats> => {
-    const response = await fetch('/api/dashboard/system', {
-      headers: {
-        'Authorization': `Bearer ${localStorage.getItem('authToken')}`,
-        'Content-Type': 'application/json',
-      },
-    });
-    
-    if (!response.ok) {
-      throw new Error(`Failed to fetch system stats: ${response.statusText}`);
-    }
-    
-    const result = await response.json();
-    return result.data;
-  },
-};

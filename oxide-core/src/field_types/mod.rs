@@ -25,30 +25,30 @@ use serde_json::Value as JsonValue;
 use ts_rs::TS;
 
 // Field type modules
-pub mod text;
-pub mod number;
 pub mod boolean;
 pub mod date;
-pub mod json;
 pub mod email;
-pub mod url;
+pub mod file;
+pub mod json;
+pub mod number;
 pub mod password;
 pub mod phone;
 pub mod relationship;
-pub mod file;
 pub mod select;
-pub use text::TextFieldType;
-pub use number::NumberFieldType;
+pub mod text;
+pub mod url;
 pub use boolean::BooleanFieldType;
 pub use date::DateFieldType;
-pub use json::JsonFieldType;
 pub use email::EmailFieldType;
-pub use url::UrlFieldType;
+pub use file::{FileFieldConfig, FileFieldType, FileReference};
+pub use json::JsonFieldType;
+pub use number::NumberFieldType;
 pub use password::PasswordFieldType;
 pub use phone::PhoneFieldType;
-pub use relationship::{RelationshipFieldType, RelationshipConfig};
-pub use file::{FileFieldType, FileFieldConfig, FileReference};
-pub use select::{SelectFieldType, SelectConfig};
+pub use relationship::{RelationshipConfig, RelationshipFieldType};
+pub use select::{SelectConfig, SelectFieldType};
+pub use text::TextFieldType;
+pub use url::UrlFieldType;
 
 /// Validation rules that can be applied to field values
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
@@ -134,9 +134,10 @@ impl ValidationRules {
                 match regex::Regex::new(pattern) {
                     Ok(re) => {
                         if !re.is_match(text) {
-                            return Err(self.custom_message(field_name, &format!(
-                                "Field must match pattern: {}", pattern
-                            )));
+                            return Err(self.custom_message(
+                                field_name,
+                                &format!("Field must match pattern: {}", pattern),
+                            ));
                         }
                     }
                     Err(_) => {
@@ -149,28 +150,27 @@ impl ValidationRules {
         // Length/value constraints
         if let Some(min) = self.min {
             match value {
-                JsonValue::String(s) => {
-                    if (s.len() as f64) < min {
-                        return Err(self.custom_message(field_name, &format!(
-                            "Field must be at least {} characters long", min
-                        )));
-                    }
+                JsonValue::String(s) if (s.len() as f64) < min => {
+                    return Err(self.custom_message(
+                        field_name,
+                        &format!("Field must be at least {} characters long", min),
+                    ));
                 }
                 JsonValue::Number(n) => {
                     if let Some(num_val) = n.as_f64() {
                         if num_val < min {
-                            return Err(self.custom_message(field_name, &format!(
-                                "Field must be at least {}", min
-                            )));
+                            return Err(self.custom_message(
+                                field_name,
+                                &format!("Field must be at least {}", min),
+                            ));
                         }
                     }
                 }
-                JsonValue::Array(a) => {
-                    if (a.len() as f64) < min {
-                        return Err(self.custom_message(field_name, &format!(
-                            "Field must have at least {} items", min
-                        )));
-                    }
+                JsonValue::Array(a) if (a.len() as f64) < min => {
+                    return Err(self.custom_message(
+                        field_name,
+                        &format!("Field must have at least {} items", min),
+                    ));
                 }
                 _ => {}
             }
@@ -178,28 +178,27 @@ impl ValidationRules {
 
         if let Some(max) = self.max {
             match value {
-                JsonValue::String(s) => {
-                    if (s.len() as f64) > max {
-                        return Err(self.custom_message(field_name, &format!(
-                            "Field must be at most {} characters long", max
-                        )));
-                    }
+                JsonValue::String(s) if (s.len() as f64) > max => {
+                    return Err(self.custom_message(
+                        field_name,
+                        &format!("Field must be at most {} characters long", max),
+                    ));
                 }
                 JsonValue::Number(n) => {
                     if let Some(num_val) = n.as_f64() {
                         if num_val > max {
-                            return Err(self.custom_message(field_name, &format!(
-                                "Field must be at most {}", max
-                            )));
+                            return Err(self.custom_message(
+                                field_name,
+                                &format!("Field must be at most {}", max),
+                            ));
                         }
                     }
                 }
-                JsonValue::Array(a) => {
-                    if (a.len() as f64) > max {
-                        return Err(self.custom_message(field_name, &format!(
-                            "Field must have at most {} items", max
-                        )));
-                    }
+                JsonValue::Array(a) if (a.len() as f64) > max => {
+                    return Err(self.custom_message(
+                        field_name,
+                        &format!("Field must have at most {} items", max),
+                    ));
                 }
                 _ => {}
             }
@@ -227,29 +226,34 @@ impl Default for ValidationRules {
 pub trait FieldTypeDefinition {
     /// Get the string identifier for this field type
     fn type_name(&self) -> &'static str;
-    
+
     /// Validate a value against this field type
     fn validate(&self, field_name: &str, value: &JsonValue) -> Result<(), String>;
-    
+
     /// Validate a value with additional validation rules
-    fn validate_with_rules(&self, field_name: &str, value: &JsonValue, rules: &ValidationRules) -> Result<(), String> {
+    fn validate_with_rules(
+        &self,
+        field_name: &str,
+        value: &JsonValue,
+        rules: &ValidationRules,
+    ) -> Result<(), String> {
         // First validate against the base field type
         self.validate(field_name, value)?;
         // Then apply additional validation rules
         rules.validate(field_name, value)
     }
-    
+
     /// Check if this field type requires special processing (e.g., hashing)
     fn requires_hashing(&self) -> bool {
         false
     }
-    
+
     /// Convert a value to the expected type (for auto-conversion)
     fn convert_value(&self, value: &JsonValue) -> Result<JsonValue, String> {
         // Default implementation: no conversion
         Ok(value.clone())
     }
-    
+
     /// Get the SQL column type for database storage
     fn sql_type(&self) -> &'static str;
 }
@@ -303,22 +307,22 @@ impl FieldType {
             FieldType::Select(config) => Box::new(SelectFieldType::new(config.clone())),
         }
     }
-    
+
     /// Check if this field type should be automatically hashed
     pub fn requires_hashing(&self) -> bool {
         self.definition().requires_hashing()
     }
-    
+
     /// Validate a value against this field type
     pub fn validate(&self, field_name: &str, value: &JsonValue) -> Result<(), String> {
         self.definition().validate(field_name, value)
     }
-    
+
     /// Convert a value to the expected type
     pub fn convert_value(&self, value: &JsonValue) -> Result<JsonValue, String> {
         self.definition().convert_value(value)
     }
-    
+
     /// Get the SQL column type for database storage
     pub fn sql_type(&self) -> &'static str {
         self.definition().sql_type()
@@ -348,28 +352,32 @@ mod tests {
         assert_eq!(FieldType::Email.to_string(), "email");
         assert_eq!(FieldType::Text.to_string(), "text");
     }
-    
+
     #[test]
     fn test_field_type_validation() {
         use serde_json::json;
-        
+
         // Test text validation
         assert!(FieldType::Text.validate("test", &json!("hello")).is_ok());
         assert!(FieldType::Text.validate("test", &json!(123)).is_err());
-        
+
         // Test number validation
         assert!(FieldType::Number.validate("test", &json!(123)).is_ok());
         assert!(FieldType::Number.validate("test", &json!("hello")).is_err());
-        
+
         // Test email validation
-        assert!(FieldType::Email.validate("test", &json!("test@example.com")).is_ok());
-        assert!(FieldType::Email.validate("test", &json!("invalid-email")).is_err());
+        assert!(FieldType::Email
+            .validate("test", &json!("test@example.com"))
+            .is_ok());
+        assert!(FieldType::Email
+            .validate("test", &json!("invalid-email"))
+            .is_err());
     }
 
     #[test]
     fn test_relationship_field_type() {
         use serde_json::json;
-        
+
         // Test single relationship
         let single_config = RelationshipConfig {
             target_collection: "users".to_string(),
@@ -378,11 +386,15 @@ mod tests {
             display_field: None,
         };
         let single_relationship = FieldType::Relationship(single_config);
-        
+
         assert_eq!(single_relationship.to_string(), "relationship");
-        assert!(single_relationship.validate("test", &json!("user-123")).is_ok());
-        assert!(single_relationship.validate("test", &json!(["id1", "id2"])).is_err());
-        
+        assert!(single_relationship
+            .validate("test", &json!("user-123"))
+            .is_ok());
+        assert!(single_relationship
+            .validate("test", &json!(["id1", "id2"]))
+            .is_err());
+
         // Test multiple relationship
         let multiple_config = RelationshipConfig {
             target_collection: "tags".to_string(),
@@ -391,29 +403,37 @@ mod tests {
             display_field: Some("name".to_string()),
         };
         let multiple_relationship = FieldType::Relationship(multiple_config);
-        
-        assert!(multiple_relationship.validate("test", &json!(["tag-12345678", "tag-87654321"])).is_ok());
-        assert!(multiple_relationship.validate("test", &json!("single-id")).is_err());
+
+        assert!(multiple_relationship
+            .validate("test", &json!(["tag-12345678", "tag-87654321"]))
+            .is_ok());
+        assert!(multiple_relationship
+            .validate("test", &json!("single-id"))
+            .is_err());
     }
 
     #[test]
     fn test_select_field_type() {
         use serde_json::json;
-        
+
         // Test single select
         let single_config = SelectConfig {
-            options: vec!["option1".to_string(), "option2".to_string(), "option3".to_string()],
+            options: vec![
+                "option1".to_string(),
+                "option2".to_string(),
+                "option3".to_string(),
+            ],
             multiple: false,
             allow_empty: true,
         };
         let single_select = FieldType::Select(single_config);
-        
+
         assert_eq!(single_select.to_string(), "select");
         assert!(single_select.validate("test", &json!("option1")).is_ok());
         assert!(single_select.validate("test", &json!("option2")).is_ok());
         assert!(single_select.validate("test", &json!("invalid")).is_err());
         assert!(single_select.validate("test", &json!(["option1"])).is_err());
-        
+
         // Test multiple select
         let multiple_config = SelectConfig {
             options: vec!["tag1".to_string(), "tag2".to_string(), "tag3".to_string()],
@@ -421,86 +441,103 @@ mod tests {
             allow_empty: true,
         };
         let multiple_select = FieldType::Select(multiple_config);
-        
-        assert!(multiple_select.validate("test", &json!(["tag1", "tag2"])).is_ok());
-        assert!(multiple_select.validate("test", &json!(["tag1", "invalid"])).is_err());
+
+        assert!(multiple_select
+            .validate("test", &json!(["tag1", "tag2"]))
+            .is_ok());
+        assert!(multiple_select
+            .validate("test", &json!(["tag1", "invalid"]))
+            .is_err());
         assert!(multiple_select.validate("test", &json!("tag1")).is_err());
     }
 
     #[test]
     fn test_validation_rules_regex() {
         use serde_json::json;
-        
+
         // Test email regex validation
-        let email_rules = ValidationRules::new()
-            .with_regex(r"^[^@]+@[^@]+\.[^@]+$".to_string());
-        
-        assert!(email_rules.validate("email", &json!("user@example.com")).is_ok());
-        assert!(email_rules.validate("email", &json!("test@domain.org")).is_ok());
-        assert!(email_rules.validate("email", &json!("invalid-email")).is_err());
+        let email_rules = ValidationRules::new().with_regex(r"^[^@]+@[^@]+\.[^@]+$".to_string());
+
+        assert!(email_rules
+            .validate("email", &json!("user@example.com"))
+            .is_ok());
+        assert!(email_rules
+            .validate("email", &json!("test@domain.org"))
+            .is_ok());
+        assert!(email_rules
+            .validate("email", &json!("invalid-email"))
+            .is_err());
         assert!(email_rules.validate("email", &json!("no-at-sign")).is_err());
-        
+
         // Test username regex validation
-        let username_rules = ValidationRules::new()
-            .with_regex(r"^[a-zA-Z0-9_]+$".to_string());
-        
-        assert!(username_rules.validate("username", &json!("user123")).is_ok());
-        assert!(username_rules.validate("username", &json!("user_name")).is_ok());
-        assert!(username_rules.validate("username", &json!("user-name")).is_err());
-        assert!(username_rules.validate("username", &json!("user@name")).is_err());
+        let username_rules = ValidationRules::new().with_regex(r"^[a-zA-Z0-9_]+$".to_string());
+
+        assert!(username_rules
+            .validate("username", &json!("user123"))
+            .is_ok());
+        assert!(username_rules
+            .validate("username", &json!("user_name"))
+            .is_ok());
+        assert!(username_rules
+            .validate("username", &json!("user-name"))
+            .is_err());
+        assert!(username_rules
+            .validate("username", &json!("user@name"))
+            .is_err());
     }
 
     #[test]
     fn test_validation_rules_min_max() {
         use serde_json::json;
-        
+
         // Test string length validation
-        let length_rules = ValidationRules::new()
-            .with_min(3.0)
-            .with_max(10.0);
-        
+        let length_rules = ValidationRules::new().with_min(3.0).with_max(10.0);
+
         assert!(length_rules.validate("text", &json!("hello")).is_ok());
         assert!(length_rules.validate("text", &json!("ab")).is_err()); // too short
-        assert!(length_rules.validate("text", &json!("this_is_too_long")).is_err()); // too long
-        
+        assert!(length_rules
+            .validate("text", &json!("this_is_too_long"))
+            .is_err()); // too long
+
         // Test number validation
-        let number_rules = ValidationRules::new()
-            .with_min(0.0)
-            .with_max(100.0);
-        
+        let number_rules = ValidationRules::new().with_min(0.0).with_max(100.0);
+
         assert!(number_rules.validate("score", &json!(50)).is_ok());
         assert!(number_rules.validate("score", &json!(0)).is_ok());
         assert!(number_rules.validate("score", &json!(100)).is_ok());
         assert!(number_rules.validate("score", &json!(-10)).is_err()); // too low
         assert!(number_rules.validate("score", &json!(150)).is_err()); // too high
-        
+
         // Test array length validation
-        let array_rules = ValidationRules::new()
-            .with_min(2.0)
-            .with_max(5.0);
-        
-        assert!(array_rules.validate("tags", &json!(["tag1", "tag2", "tag3"])).is_ok());
+        let array_rules = ValidationRules::new().with_min(2.0).with_max(5.0);
+
+        assert!(array_rules
+            .validate("tags", &json!(["tag1", "tag2", "tag3"]))
+            .is_ok());
         assert!(array_rules.validate("tags", &json!(["tag1"])).is_err()); // too few
-        assert!(array_rules.validate("tags", &json!(["tag1", "tag2", "tag3", "tag4", "tag5", "tag6"])).is_err()); // too many
+        assert!(array_rules
+            .validate(
+                "tags",
+                &json!(["tag1", "tag2", "tag3", "tag4", "tag5", "tag6"])
+            )
+            .is_err()); // too many
     }
 
     #[test]
     fn test_validation_rules_empty_values() {
         use serde_json::json;
-        
+
         // Test allow_empty = false
-        let strict_rules = ValidationRules::new()
-            .with_allow_empty(false);
-        
+        let strict_rules = ValidationRules::new().with_allow_empty(false);
+
         assert!(strict_rules.validate("field", &json!("hello")).is_ok());
         assert!(strict_rules.validate("field", &json!(null)).is_err());
         assert!(strict_rules.validate("field", &json!("")).is_err());
         assert!(strict_rules.validate("field", &json!([])).is_err());
-        
+
         // Test allow_empty = true (default behavior)
-        let permissive_rules = ValidationRules::new()
-            .with_allow_empty(true);
-        
+        let permissive_rules = ValidationRules::new().with_allow_empty(true);
+
         assert!(permissive_rules.validate("field", &json!("hello")).is_ok());
         assert!(permissive_rules.validate("field", &json!(null)).is_ok());
         assert!(permissive_rules.validate("field", &json!("")).is_ok());
@@ -510,11 +547,11 @@ mod tests {
     #[test]
     fn test_validation_rules_custom_message() {
         use serde_json::json;
-        
+
         let rules = ValidationRules::new()
             .with_regex(r"^[A-Z]+$".to_string())
             .with_message("Field {field} must contain only uppercase letters".to_string());
-        
+
         let result = rules.validate("test_field", &json!("lowercase"));
         assert!(result.is_err());
         let error_msg = result.unwrap_err();
@@ -525,39 +562,53 @@ mod tests {
     #[test]
     fn test_validation_rules_combined() {
         use serde_json::json;
-        
+
         // Test combined regex and length validation
         let combined_rules = ValidationRules::new()
             .with_regex(r"^[a-zA-Z0-9_]+$".to_string())
             .with_min(3.0)
             .with_max(20.0)
             .with_message("Username must be 3-20 characters and contain only letters, numbers, and underscores".to_string());
-        
-        assert!(combined_rules.validate("username", &json!("valid_user123")).is_ok());
+
+        assert!(combined_rules
+            .validate("username", &json!("valid_user123"))
+            .is_ok());
         assert!(combined_rules.validate("username", &json!("ab")).is_err()); // too short
-        assert!(combined_rules.validate("username", &json!("this_username_is_way_too_long")).is_err()); // too long
-        assert!(combined_rules.validate("username", &json!("invalid-user")).is_err()); // invalid chars
+        assert!(combined_rules
+            .validate("username", &json!("this_username_is_way_too_long"))
+            .is_err()); // too long
+        assert!(combined_rules
+            .validate("username", &json!("invalid-user"))
+            .is_err()); // invalid chars
     }
 
     #[test]
     fn test_field_type_with_validation_rules() {
         use serde_json::json;
-        
+
         let text_field = TextFieldType;
         let rules = ValidationRules::new()
             .with_min(5.0)
             .with_regex(r"^[A-Z].*".to_string()); // Must start with uppercase
-        
+
         // Valid: starts with uppercase and long enough
-        assert!(text_field.validate_with_rules("title", &json!("Hello World"), &rules).is_ok());
-        
+        assert!(text_field
+            .validate_with_rules("title", &json!("Hello World"), &rules)
+            .is_ok());
+
         // Invalid: doesn't start with uppercase
-        assert!(text_field.validate_with_rules("title", &json!("hello world"), &rules).is_err());
-        
+        assert!(text_field
+            .validate_with_rules("title", &json!("hello world"), &rules)
+            .is_err());
+
         // Invalid: too short
-        assert!(text_field.validate_with_rules("title", &json!("Hi"), &rules).is_err());
-        
+        assert!(text_field
+            .validate_with_rules("title", &json!("Hi"), &rules)
+            .is_err());
+
         // Invalid: wrong type (should fail base validation first)
-        assert!(text_field.validate_with_rules("title", &json!(123), &rules).is_err());
+        assert!(text_field
+            .validate_with_rules("title", &json!(123), &rules)
+            .is_err());
     }
 }

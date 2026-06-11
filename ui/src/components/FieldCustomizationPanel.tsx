@@ -5,9 +5,13 @@ import { Badge } from '@/components/ui/badge';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import type { CollectionSchema } from '../types/api';
 import type { FieldSize } from '../types/fieldCustomization';
+import type { useFieldCustomization } from '../hooks/useFieldCustomization';
+
+type FieldCustomizationController = ReturnType<typeof useFieldCustomization>;
+type CustomizedField = ReturnType<FieldCustomizationController['getAllFieldsWithCustomization']>[number];
 
 interface FieldCustomizationPanelProps {
-  fieldCustomization: any; // Using any for now since the hook type is complex
+  fieldCustomization: FieldCustomizationController;
   schema: CollectionSchema;
 }
 
@@ -17,7 +21,6 @@ interface FieldCustomizationPanelProps {
  */
 export const FieldCustomizationPanel: React.FC<FieldCustomizationPanelProps> = ({
   fieldCustomization,
-  schema,
 }) => {
   return (
     <div className="mb-6 p-4 border rounded-lg bg-muted/50">
@@ -60,7 +63,7 @@ export const FieldCustomizationPanel: React.FC<FieldCustomizationPanelProps> = (
       </div>
       
       <div className="grid gap-2">
-        {fieldCustomization.getAllFieldsWithCustomization().map((field: any) => (
+        {fieldCustomization.getAllFieldsWithCustomization().map((field: CustomizedField) => (
           <div
             key={field.fieldName}
             className="flex items-center gap-2 p-2 bg-background rounded border"

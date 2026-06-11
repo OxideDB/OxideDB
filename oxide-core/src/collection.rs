@@ -1,7 +1,7 @@
 //! Collection schema definitions
 //!
 //! This module defines the data structures for managing collection schemas
-//! in OxideDB. Collections can be either 'base' (user-defined) or 'auth' 
+//! in OxideDB. Collections can be either 'base' (user-defined) or 'auth'
 //! (system authentication collections).
 
 use crate::field_types::{FieldType, ValidationRules};
@@ -34,6 +34,31 @@ impl std::fmt::Display for CollectionType {
 /// that were persisted before versioning was introduced.
 fn default_version() -> u32 {
     1
+}
+
+fn is_valid_identifier(identifier: &str) -> bool {
+    let mut chars = identifier.chars();
+    match chars.next() {
+        Some(first) if first == '_' || first.is_ascii_alphabetic() => {}
+        _ => return false,
+    }
+
+    chars.all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
+}
+
+fn validate_identifier(kind: &str, identifier: &str) -> Result<(), String> {
+    if identifier.is_empty() {
+        return Err(format!("{} identifier cannot be empty", kind));
+    }
+
+    if !is_valid_identifier(identifier) {
+        return Err(format!(
+            "{} identifier '{}' must start with a letter or underscore and contain only letters, numbers, and underscores",
+            kind, identifier
+        ));
+    }
+
+    Ok(())
 }
 
 /// Index definition for database optimization
@@ -120,12 +145,17 @@ impl FieldDefinition {
 
         // Check if required field is missing/null
         if self.required && value.is_null() {
-            return Err(format!("Required field '{}' is missing or null", field_name));
+            return Err(format!(
+                "Required field '{}' is missing or null",
+                field_name
+            ));
         }
 
         // Validate against field type and validation rules
         if let Some(validation_rules) = &self.validation {
-            self.field_type.definition().validate_with_rules(field_name, value, validation_rules)
+            self.field_type
+                .definition()
+                .validate_with_rules(field_name, value, validation_rules)
         } else {
             self.field_type.validate(field_name, value)
         }
@@ -199,6 +229,46 @@ impl CollectionSchema {
         self.update_timestamp();
     }
 
+    /// Validate collection, field, and index identifiers before they are used
+    /// by storage adapters.
+    pub fn validate_identifiers(&self) -> Result<(), String> {
+        validate_identifier("Collection", &self.name)?;
+
+        for field_name in self.fields.keys() {
+            validate_identifier("Field", field_name)?;
+
+            if matches!(field_name.as_str(), "id" | "created_at" | "updated_at") {
+                return Err(format!(
+                    "Field name '{}' is reserved for record metadata",
+                    field_name
+                ));
+            }
+        }
+
+        for index in &self.indexes {
+            validate_identifier("Index", &index.name)?;
+
+            if index.fields.is_empty() {
+                return Err(format!(
+                    "Index '{}' must include at least one field",
+                    index.name
+                ));
+            }
+
+            for field_name in &index.fields {
+                validate_identifier("Index field", field_name)?;
+                if !self.fields.contains_key(field_name) {
+                    return Err(format!(
+                        "Index '{}' references unknown field '{}'",
+                        index.name, field_name
+                    ));
+                }
+            }
+        }
+
+        Ok(())
+    }
+
     /// Remove a field from the schema
     pub fn remove_field(&mut self, name: &str) -> bool {
         let removed = self.fields.remove(name).is_some();
@@ -251,8 +321,12 @@ impl CollectionSchema {
         for (field_name, value) in data_obj {
             if let Some(field_def) = self.fields.get(field_name) {
                 field_def.validate_value(field_name, value)?;
+            } else {
+                return Err(format!(
+                    "Unknown field '{}' is not defined in schema '{}'",
+                    field_name, self.name
+                ));
             }
-            // Note: We allow extra fields not defined in schema (for flexibility)
         }
 
         Ok(())
@@ -346,6 +420,45 @@ mod tests {
     }
 
     #[test]
+    fn test_unknown_fields_are_rejected() {
+        let mut schema = CollectionSchema::new("users".to_string(), CollectionType::Base);
+        schema.add_field("name".to_string(), FieldDefinition::new(FieldType::Text));
+
+        let invalid_data = serde_json::json!({
+            "name": "John Doe",
+            "unexpected": "this would not be persisted"
+        });
+
+        assert!(schema.validate_data(&invalid_data).is_err());
+    }
+
+    #[test]
+    fn test_identifier_validation() {
+        let mut schema = CollectionSchema::new("_users".to_string(), CollectionType::Auth);
+        schema.add_field(
+            "email_address".to_string(),
+            FieldDefinition::new(FieldType::Email),
+        );
+        schema.add_index(IndexDefinition {
+            name: "idx_users_email".to_string(),
+            fields: vec!["email_address".to_string()],
+            unique: true,
+        });
+
+        assert!(schema.validate_identifiers().is_ok());
+
+        let mut invalid_schema =
+            CollectionSchema::new("users; DROP TABLE users".to_string(), CollectionType::Base);
+        invalid_schema.add_field("name".to_string(), FieldDefinition::new(FieldType::Text));
+        assert!(invalid_schema.validate_identifiers().is_err());
+
+        let mut reserved_field =
+            CollectionSchema::new("profiles".to_string(), CollectionType::Base);
+        reserved_field.add_field("id".to_string(), FieldDefinition::new(FieldType::Text));
+        assert!(reserved_field.validate_identifiers().is_err());
+    }
+
+    #[test]
     fn test_password_field_type() {
         let mut schema = CollectionSchema::new("users".to_string(), CollectionType::Base);
         schema.add_field(
@@ -387,12 +500,12 @@ mod tests {
         use crate::field_types::ValidationRules;
 
         let mut schema = CollectionSchema::new("users".to_string(), CollectionType::Base);
-        
+
         // Add field with regex validation
         let email_validation = ValidationRules::new()
             .with_regex(r"^[^@]+@[^@]+\.[^@]+$".to_string())
             .with_message("Please enter a valid email address".to_string());
-        
+
         schema.add_field(
             "email".to_string(),
             FieldDefinition::new(FieldType::Text)
@@ -405,7 +518,7 @@ mod tests {
             .with_min(3.0)
             .with_max(20.0)
             .with_regex(r"^[a-zA-Z0-9_]+$".to_string());
-        
+
         schema.add_field(
             "username".to_string(),
             FieldDefinition::new(FieldType::Text)
@@ -446,28 +559,26 @@ mod tests {
     #[test]
     fn test_default_values() {
         let mut schema = CollectionSchema::new("posts".to_string(), CollectionType::Base);
-        
+
         schema.add_field(
             "title".to_string(),
             FieldDefinition::new(FieldType::Text).required(),
         );
-        
+
         schema.add_field(
             "status".to_string(),
-            FieldDefinition::new(FieldType::Text)
-                .with_default(serde_json::json!("draft")),
+            FieldDefinition::new(FieldType::Text).with_default(serde_json::json!("draft")),
         );
-        
+
         schema.add_field(
             "views".to_string(),
-            FieldDefinition::new(FieldType::Number)
-                .with_default(serde_json::json!(0)),
+            FieldDefinition::new(FieldType::Number).with_default(serde_json::json!(0)),
         );
 
         // Test applying defaults
         let mut data = serde_json::json!({"title": "My Post"});
         assert!(schema.apply_defaults(&mut data).is_ok());
-        
+
         let expected = serde_json::json!({
             "title": "My Post",
             "status": "draft",
@@ -485,17 +596,17 @@ mod tests {
     #[test]
     fn test_indexed_and_unique_fields() {
         let mut schema = CollectionSchema::new("products".to_string(), CollectionType::Base);
-        
+
         schema.add_field(
             "name".to_string(),
             FieldDefinition::new(FieldType::Text).required().indexed(),
         );
-        
+
         schema.add_field(
             "sku".to_string(),
             FieldDefinition::new(FieldType::Text).required().unique(),
         );
-        
+
         schema.add_field(
             "category".to_string(),
             FieldDefinition::new(FieldType::Text).indexed(),
@@ -518,11 +629,9 @@ mod tests {
         use crate::field_types::ValidationRules;
 
         let mut schema = CollectionSchema::new("products".to_string(), CollectionType::Base);
-        
-        let price_validation = ValidationRules::new()
-            .with_min(0.0)
-            .with_max(10000.0);
-        
+
+        let price_validation = ValidationRules::new().with_min(0.0).with_max(10000.0);
+
         schema.add_field(
             "price".to_string(),
             FieldDefinition::new(FieldType::Number)
@@ -542,4 +651,4 @@ mod tests {
         let invalid_high = serde_json::json!({"price": 15000.0});
         assert!(schema.validate_data(&invalid_high).is_err());
     }
-} 
+}

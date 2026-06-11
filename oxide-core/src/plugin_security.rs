@@ -13,11 +13,11 @@
 //! - Capabilities can be revoked at runtime
 //! - All plugin operations are audited
 
-use crate::{AppError, auth::CrudOperation};
+use crate::{auth::CrudOperation, AppError};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::time::{SystemTime, UNIX_EPOCH};
-use tracing::{debug, warn, error};
+use tracing::{debug, error, warn};
 use ts_rs::TS;
 
 /// Capability types that can be granted to plugins
@@ -96,6 +96,232 @@ pub enum PluginCapability {
     },
     /// Allow plugin to handle HTTP requests
     HandleHttpRequests,
+}
+
+impl PluginCapability {
+    /// Return true when this granted capability covers the requested capability.
+    ///
+    /// Structured capabilities are intentionally treated as scoped grants: a
+    /// grant for `["*"]` covers every requested collection, while a grant for
+    /// `["posts"]` only covers requests scoped to `posts`.
+    pub fn grants(&self, requested: &PluginCapability) -> bool {
+        use PluginCapability::*;
+
+        match (self, requested) {
+            (LogInfo, LogInfo)
+            | (LogError, LogError)
+            | (ReadEventData, ReadEventData)
+            | (ModifyEventData, ModifyEventData)
+            | (BlockOperations, BlockOperations)
+            | (ScheduleTasks, ScheduleTasks)
+            | (HandleHttpRequests, HandleHttpRequests) => true,
+            (ReadConfig { keys: granted }, ReadConfig { keys: requested }) => {
+                string_patterns_cover(granted, requested, false)
+            }
+            (
+                AccessCollection {
+                    collection: granted_collection,
+                    operations: granted_operations,
+                },
+                AccessCollection {
+                    collection: requested_collection,
+                    operations: requested_operations,
+                },
+            ) => {
+                string_pattern_matches(granted_collection, requested_collection, false)
+                    && requested_operations
+                        .iter()
+                        .all(|operation| granted_operations.contains(operation))
+            }
+            (
+                HttpRequest {
+                    allowed_urls: granted_urls,
+                    rate_limit: granted_rate_limit,
+                },
+                HttpRequest {
+                    allowed_urls: requested_urls,
+                    rate_limit: requested_rate_limit,
+                },
+            ) => {
+                granted_rate_limit >= requested_rate_limit
+                    && string_patterns_cover(granted_urls, requested_urls, false)
+            }
+            (
+                PersistentStorage {
+                    max_size: granted_max_size,
+                    key_prefixes: granted_prefixes,
+                },
+                PersistentStorage {
+                    max_size: requested_max_size,
+                    key_prefixes: requested_prefixes,
+                },
+            ) => {
+                granted_max_size >= requested_max_size
+                    && string_patterns_cover(granted_prefixes, requested_prefixes, false)
+            }
+            (
+                EmitEvents {
+                    event_types: granted_event_types,
+                },
+                EmitEvents {
+                    event_types: requested_event_types,
+                },
+            ) => string_patterns_cover(granted_event_types, requested_event_types, false),
+            (
+                RegisterHttpRoutes {
+                    path_patterns: granted_paths,
+                    methods: granted_methods,
+                },
+                RegisterHttpRoutes {
+                    path_patterns: requested_paths,
+                    methods: requested_methods,
+                },
+            ) => {
+                string_patterns_cover(granted_paths, requested_paths, false)
+                    && string_patterns_cover(granted_methods, requested_methods, true)
+            }
+            (
+                CreateRecords {
+                    collections: granted,
+                },
+                CreateRecords {
+                    collections: requested,
+                },
+            )
+            | (
+                ReadRecords {
+                    collections: granted,
+                },
+                ReadRecords {
+                    collections: requested,
+                },
+            )
+            | (
+                UpdateRecords {
+                    collections: granted,
+                },
+                UpdateRecords {
+                    collections: requested,
+                },
+            )
+            | (
+                DeleteRecords {
+                    collections: granted,
+                },
+                DeleteRecords {
+                    collections: requested,
+                },
+            ) => string_patterns_cover(granted, requested, false),
+            (_, CreateRecords { collections }) => collections
+                .iter()
+                .all(|collection| self.allows_record_operation(&CrudOperation::Create, collection)),
+            (_, ReadRecords { collections }) => collections.iter().all(|collection| {
+                self.allows_record_operation(&CrudOperation::Read, collection)
+                    || self.allows_record_operation(&CrudOperation::List, collection)
+            }),
+            (_, UpdateRecords { collections }) => collections
+                .iter()
+                .all(|collection| self.allows_record_operation(&CrudOperation::Update, collection)),
+            (_, DeleteRecords { collections }) => collections
+                .iter()
+                .all(|collection| self.allows_record_operation(&CrudOperation::Delete, collection)),
+            _ => false,
+        }
+    }
+
+    /// Return true when this capability allows a CRUD operation on a collection.
+    pub fn allows_record_operation(&self, operation: &CrudOperation, collection: &str) -> bool {
+        match self {
+            PluginCapability::AccessCollection {
+                collection: granted_collection,
+                operations,
+            } => {
+                string_pattern_matches(granted_collection, collection, false)
+                    && operations.contains(operation)
+            }
+            PluginCapability::CreateRecords { collections } => {
+                *operation == CrudOperation::Create
+                    && string_patterns_cover(collections, &[collection.to_string()], false)
+            }
+            PluginCapability::ReadRecords { collections } => {
+                matches!(operation, CrudOperation::Read | CrudOperation::List)
+                    && string_patterns_cover(collections, &[collection.to_string()], false)
+            }
+            PluginCapability::UpdateRecords { collections } => {
+                *operation == CrudOperation::Update
+                    && string_patterns_cover(collections, &[collection.to_string()], false)
+            }
+            PluginCapability::DeleteRecords { collections } => {
+                *operation == CrudOperation::Delete
+                    && string_patterns_cover(collections, &[collection.to_string()], false)
+            }
+            _ => false,
+        }
+    }
+
+    /// Return true when this capability allows registering the HTTP route.
+    pub fn allows_http_route(&self, method: &str, path: &str) -> bool {
+        match self {
+            PluginCapability::RegisterHttpRoutes {
+                path_patterns,
+                methods,
+            } => {
+                string_patterns_cover(path_patterns, &[path.to_string()], false)
+                    && string_patterns_cover(methods, &[method.to_string()], true)
+            }
+            _ => false,
+        }
+    }
+}
+
+fn string_patterns_cover(
+    granted_patterns: &[String],
+    requested_values: &[String],
+    case_insensitive: bool,
+) -> bool {
+    granted_patterns.iter().any(|pattern| pattern == "*")
+        || requested_values.iter().all(|requested| {
+            granted_patterns
+                .iter()
+                .any(|pattern| string_pattern_matches(pattern, requested, case_insensitive))
+        })
+}
+
+fn string_pattern_matches(pattern: &str, value: &str, case_insensitive: bool) -> bool {
+    let (pattern, value) = if case_insensitive {
+        (pattern.to_uppercase(), value.to_uppercase())
+    } else {
+        (pattern.to_string(), value.to_string())
+    };
+
+    if pattern == "*" || pattern == value {
+        return true;
+    }
+
+    let mut remaining = value.as_str();
+    let mut first = true;
+
+    for part in pattern.split('*') {
+        if part.is_empty() {
+            first = false;
+            continue;
+        }
+
+        if first && !pattern.starts_with('*') {
+            if !remaining.starts_with(part) {
+                return false;
+            }
+            remaining = &remaining[part.len()..];
+        } else if let Some(index) = remaining.find(part) {
+            remaining = &remaining[index + part.len()..];
+        } else {
+            return false;
+        }
+
+        first = false;
+    }
+
+    pattern.ends_with('*') || remaining.is_empty()
 }
 
 /// Security context for a plugin execution
@@ -182,9 +408,7 @@ pub enum SecurityViolation {
         required_capability: PluginCapability,
     },
     /// Malicious behavior detected
-    MaliciousBehavior {
-        description: String,
-    },
+    MaliciousBehavior { description: String },
 }
 
 /// Plugin security manager
@@ -250,9 +474,9 @@ impl Default for ResourceLimits {
     fn default() -> Self {
         Self {
             max_memory: 16 * 1024 * 1024, // 16MB
-            max_execution_time: 5000,      // 5 seconds
-            max_host_calls: 1000,          // 1000 calls per execution
-            rate_limit: 60,                // 60 executions per minute
+            max_execution_time: 5000,     // 5 seconds
+            max_host_calls: 1000,         // 1000 calls per execution
+            rate_limit: 60,               // 60 executions per minute
         }
     }
 }
@@ -261,10 +485,10 @@ impl ResourceLimits {
     /// Create conservative resource limits for strict security
     pub fn conservative() -> Self {
         Self {
-            max_memory: 4 * 1024 * 1024,  // 4MB
-            max_execution_time: 1000,     // 1 second
-            max_host_calls: 50,           // 50 calls per execution
-            rate_limit: 10,               // 10 executions per minute
+            max_memory: 4 * 1024 * 1024, // 4MB
+            max_execution_time: 1000,    // 1 second
+            max_host_calls: 50,          // 50 calls per execution
+            rate_limit: 10,              // 10 executions per minute
         }
     }
 
@@ -316,6 +540,11 @@ impl PluginSecurityManager {
         }
     }
 
+    /// Get the active security policies.
+    pub fn policies(&self) -> &SecurityPolicies {
+        &self.policies
+    }
+
     /// Register a new plugin with security context
     pub fn register_plugin(
         &mut self,
@@ -359,7 +588,9 @@ impl PluginSecurityManager {
     ) -> Result<(), AppError> {
         // First check if capability is allowed for this trust level
         let trust_level = {
-            let context = self.contexts.get(plugin_name)
+            let context = self
+                .contexts
+                .get(plugin_name)
                 .ok_or_else(|| AppError::Plugin {
                     plugin_name: plugin_name.to_string(),
                     message: "Plugin not registered".to_string(),
@@ -377,7 +608,9 @@ impl PluginSecurityManager {
         }
 
         // Now get mutable reference and add capability
-        let context = self.contexts.get_mut(plugin_name)
+        let context = self
+            .contexts
+            .get_mut(plugin_name)
             .ok_or_else(|| AppError::Plugin {
                 plugin_name: plugin_name.to_string(),
                 message: "Plugin not registered".to_string(),
@@ -390,7 +623,10 @@ impl PluginSecurityManager {
             serde_json::json!({ "capability": capability }),
         );
 
-        debug!("Granted capability {:?} to plugin {}", capability, plugin_name);
+        debug!(
+            "Granted capability {:?} to plugin {}",
+            capability, plugin_name
+        );
         Ok(())
     }
 
@@ -400,7 +636,9 @@ impl PluginSecurityManager {
         plugin_name: &str,
         capability: &PluginCapability,
     ) -> Result<(), AppError> {
-        let context = self.contexts.get_mut(plugin_name)
+        let context = self
+            .contexts
+            .get_mut(plugin_name)
             .ok_or_else(|| AppError::Plugin {
                 plugin_name: plugin_name.to_string(),
                 message: "Plugin not registered".to_string(),
@@ -413,7 +651,10 @@ impl PluginSecurityManager {
             serde_json::json!({ "capability": capability }),
         );
 
-        debug!("Revoked capability {:?} from plugin {}", capability, plugin_name);
+        debug!(
+            "Revoked capability {:?} from plugin {}",
+            capability, plugin_name
+        );
         Ok(())
     }
 
@@ -423,7 +664,9 @@ impl PluginSecurityManager {
         plugin_name: &str,
         capability: &PluginCapability,
     ) -> Result<bool, AppError> {
-        let context = self.contexts.get(plugin_name)
+        let context = self
+            .contexts
+            .get(plugin_name)
             .ok_or_else(|| AppError::Plugin {
                 plugin_name: plugin_name.to_string(),
                 message: "Plugin not registered".to_string(),
@@ -433,7 +676,10 @@ impl PluginSecurityManager {
             return Ok(false);
         }
 
-        Ok(context.capabilities.contains(capability))
+        Ok(context
+            .capabilities
+            .iter()
+            .any(|granted| granted.grants(capability)))
     }
 
     /// Validate a host function call
@@ -478,7 +724,9 @@ impl PluginSecurityManager {
         host_function_calls: u64,
         peak_memory_usage: u64,
     ) -> Result<(), AppError> {
-        let context = self.contexts.get_mut(plugin_name)
+        let context = self
+            .contexts
+            .get_mut(plugin_name)
             .ok_or_else(|| AppError::Plugin {
                 plugin_name: plugin_name.to_string(),
                 message: "Plugin not registered".to_string(),
@@ -505,7 +753,9 @@ impl PluginSecurityManager {
 
     /// Get execution statistics for a plugin.
     pub fn get_execution_stats(&self, plugin_name: &str) -> Option<ExecutionStats> {
-        self.contexts.get(plugin_name).map(|context| context.stats.clone())
+        self.contexts
+            .get(plugin_name)
+            .map(|context| context.stats.clone())
     }
 
     /// Record a security violation
@@ -514,10 +764,15 @@ impl PluginSecurityManager {
         plugin_name: &str,
         violation: SecurityViolation,
     ) -> Result<(), AppError> {
-        warn!("Security violation by plugin {}: {:?}", plugin_name, violation);
+        warn!(
+            "Security violation by plugin {}: {:?}",
+            plugin_name, violation
+        );
 
         let should_suspend = {
-            let context = self.contexts.get_mut(plugin_name)
+            let context = self
+                .contexts
+                .get_mut(plugin_name)
                 .ok_or_else(|| AppError::Plugin {
                     plugin_name: plugin_name.to_string(),
                     message: "Plugin not registered".to_string(),
@@ -544,7 +799,9 @@ impl PluginSecurityManager {
     /// Suspend a plugin due to security violations
     pub fn suspend_plugin(&mut self, plugin_name: &str) -> Result<(), AppError> {
         let violations_count = {
-            let context = self.contexts.get_mut(plugin_name)
+            let context = self
+                .contexts
+                .get_mut(plugin_name)
                 .ok_or_else(|| AppError::Plugin {
                     plugin_name: plugin_name.to_string(),
                     message: "Plugin not registered".to_string(),
@@ -560,13 +817,18 @@ impl PluginSecurityManager {
             serde_json::json!({ "violations": violations_count }),
         );
 
-        error!("Plugin {} suspended due to {} security violations", plugin_name, violations_count);
+        error!(
+            "Plugin {} suspended due to {} security violations",
+            plugin_name, violations_count
+        );
         Ok(())
     }
 
     /// Resume a suspended plugin
     pub fn resume_plugin(&mut self, plugin_name: &str) -> Result<(), AppError> {
-        let context = self.contexts.get_mut(plugin_name)
+        let context = self
+            .contexts
+            .get_mut(plugin_name)
             .ok_or_else(|| AppError::Plugin {
                 plugin_name: plugin_name.to_string(),
                 message: "Plugin not registered".to_string(),
@@ -612,13 +874,16 @@ impl PluginSecurityManager {
     }
 
     /// Get resource limits based on trust level
-    fn get_resource_limits_for_trust_level(&self, trust_level: &PluginTrustLevel) -> ResourceLimits {
+    fn get_resource_limits_for_trust_level(
+        &self,
+        trust_level: &PluginTrustLevel,
+    ) -> ResourceLimits {
         match trust_level {
             PluginTrustLevel::Untrusted => ResourceLimits {
-                max_memory: 8 * 1024 * 1024,  // 8MB
-                max_execution_time: 1000,     // 1 second
-                max_host_calls: 100,          // 100 calls
-                rate_limit: 10,               // 10 executions per minute
+                max_memory: 8 * 1024 * 1024, // 8MB
+                max_execution_time: 1000,    // 1 second
+                max_host_calls: 100,         // 100 calls
+                rate_limit: 10,              // 10 executions per minute
             },
             PluginTrustLevel::PartiallyTrusted => ResourceLimits {
                 max_memory: 32 * 1024 * 1024, // 32MB
@@ -633,10 +898,10 @@ impl PluginSecurityManager {
                 rate_limit: 120,               // 120 executions per minute
             },
             PluginTrustLevel::System => ResourceLimits {
-                max_memory: u64::MAX,          // Unlimited
-                max_execution_time: u64::MAX,  // Unlimited
-                max_host_calls: u32::MAX,      // Unlimited
-                rate_limit: u32::MAX,          // Unlimited
+                max_memory: u64::MAX,         // Unlimited
+                max_execution_time: u64::MAX, // Unlimited
+                max_host_calls: u32::MAX,     // Unlimited
+                rate_limit: u32::MAX,         // Unlimited
             },
         }
     }
@@ -656,15 +921,13 @@ impl PluginSecurityManager {
                         | PluginCapability::ReadEventData
                 )
             }
-            PluginTrustLevel::PartiallyTrusted => {
-                !matches!(
-                    capability,
-                    PluginCapability::HttpRequest { .. }
-                        | PluginCapability::ScheduleTasks
-                        | PluginCapability::RegisterHttpRoutes { .. }
-                        | PluginCapability::DeleteRecords { .. }
-                )
-            }
+            PluginTrustLevel::PartiallyTrusted => !matches!(
+                capability,
+                PluginCapability::HttpRequest { .. }
+                    | PluginCapability::ScheduleTasks
+                    | PluginCapability::RegisterHttpRoutes { .. }
+                    | PluginCapability::DeleteRecords { .. }
+            ),
             PluginTrustLevel::FullyTrusted | PluginTrustLevel::System => true,
         }
     }
@@ -745,10 +1008,12 @@ mod tests {
         let mut manager = PluginSecurityManager::new();
 
         // Test registering a plugin
-        assert!(manager.register_plugin(
-            "test_plugin".to_string(),
-            Some(PluginTrustLevel::PartiallyTrusted)
-        ).is_ok());
+        assert!(manager
+            .register_plugin(
+                "test_plugin".to_string(),
+                Some(PluginTrustLevel::PartiallyTrusted)
+            )
+            .is_ok());
 
         // Test plugin context exists
         assert!(manager.get_context("test_plugin").is_some());
@@ -757,78 +1022,100 @@ mod tests {
     #[test]
     fn test_capability_management() {
         let mut manager = PluginSecurityManager::new();
-        manager.register_plugin(
-            "test_plugin".to_string(),
-            Some(PluginTrustLevel::PartiallyTrusted)
-        ).unwrap();
+        manager
+            .register_plugin(
+                "test_plugin".to_string(),
+                Some(PluginTrustLevel::PartiallyTrusted),
+            )
+            .unwrap();
 
         // Grant capability
-        assert!(manager.grant_capability(
-            "test_plugin",
-            PluginCapability::LogInfo
-        ).is_ok());
+        assert!(manager
+            .grant_capability("test_plugin", PluginCapability::LogInfo)
+            .is_ok());
 
         // Check capability
-        assert!(manager.has_capability(
-            "test_plugin",
-            &PluginCapability::LogInfo
-        ).unwrap());
+        assert!(manager
+            .has_capability("test_plugin", &PluginCapability::LogInfo)
+            .unwrap());
 
         // Revoke capability
-        assert!(manager.revoke_capability(
-            "test_plugin",
-            &PluginCapability::LogInfo
-        ).is_ok());
+        assert!(manager
+            .revoke_capability("test_plugin", &PluginCapability::LogInfo)
+            .is_ok());
 
         // Check capability is gone
-        assert!(!manager.has_capability(
-            "test_plugin",
-            &PluginCapability::LogInfo
-        ).unwrap());
+        assert!(!manager
+            .has_capability("test_plugin", &PluginCapability::LogInfo)
+            .unwrap());
+    }
+
+    #[test]
+    fn test_scoped_capability_grants() {
+        let granted = PluginCapability::RegisterHttpRoutes {
+            path_patterns: vec!["/api/hello/*".to_string()],
+            methods: vec!["GET".to_string()],
+        };
+        let requested = PluginCapability::RegisterHttpRoutes {
+            path_patterns: vec!["/api/hello/items".to_string()],
+            methods: vec!["get".to_string()],
+        };
+        let denied = PluginCapability::RegisterHttpRoutes {
+            path_patterns: vec!["/api/admin/items".to_string()],
+            methods: vec!["GET".to_string()],
+        };
+
+        assert!(granted.grants(&requested));
+        assert!(!granted.grants(&denied));
     }
 
     #[test]
     fn test_trust_level_restrictions() {
-        let mut policies = SecurityPolicies::default();
-        policies.allow_untrusted_plugins = true; // Allow untrusted plugins for this test
+        let policies = SecurityPolicies {
+            allow_untrusted_plugins: true, // Allow untrusted plugins for this test
+            ..Default::default()
+        };
         let mut manager = PluginSecurityManager::with_policies(policies);
-        manager.register_plugin(
-            "untrusted_plugin".to_string(),
-            Some(PluginTrustLevel::Untrusted)
-        ).unwrap();
+        manager
+            .register_plugin(
+                "untrusted_plugin".to_string(),
+                Some(PluginTrustLevel::Untrusted),
+            )
+            .unwrap();
 
         // Should be able to grant basic capabilities
-        assert!(manager.grant_capability(
-            "untrusted_plugin",
-            PluginCapability::LogInfo
-        ).is_ok());
+        assert!(manager
+            .grant_capability("untrusted_plugin", PluginCapability::LogInfo)
+            .is_ok());
 
         // Should not be able to grant advanced capabilities
-        assert!(manager.grant_capability(
-            "untrusted_plugin",
-            PluginCapability::ScheduleTasks
-        ).is_err());
+        assert!(manager
+            .grant_capability("untrusted_plugin", PluginCapability::ScheduleTasks)
+            .is_err());
     }
 
     #[test]
     fn test_security_violations() {
-        let mut policies = SecurityPolicies::default();
-        policies.allow_untrusted_plugins = true; // Allow untrusted plugins for this test
+        let policies = SecurityPolicies {
+            allow_untrusted_plugins: true, // Allow untrusted plugins for this test
+            ..Default::default()
+        };
         let mut manager = PluginSecurityManager::with_policies(policies);
-        manager.register_plugin(
-            "bad_plugin".to_string(),
-            Some(PluginTrustLevel::Untrusted)
-        ).unwrap();
+        manager
+            .register_plugin("bad_plugin".to_string(), Some(PluginTrustLevel::Untrusted))
+            .unwrap();
 
         // Record multiple violations
         for _ in 0..5 {
-            manager.record_violation(
-                "bad_plugin",
-                SecurityViolation::UnauthorizedHostFunction {
-                    function_name: "dangerous_function".to_string(),
-                    required_capability: PluginCapability::ScheduleTasks,
-                }
-            ).unwrap();
+            manager
+                .record_violation(
+                    "bad_plugin",
+                    SecurityViolation::UnauthorizedHostFunction {
+                        function_name: "dangerous_function".to_string(),
+                        required_capability: PluginCapability::ScheduleTasks,
+                    },
+                )
+                .unwrap();
         }
 
         // Plugin should be suspended

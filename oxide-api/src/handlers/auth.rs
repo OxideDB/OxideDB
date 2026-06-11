@@ -5,21 +5,23 @@
 //! authentication system.
 
 use axum::{
-    extract::{State, Path},
+    body::Bytes,
+    extract::{Path, State},
     http::StatusCode,
     Json,
 };
-use oxide_core::Claims;
-use oxide_db::{Db, db::{AuthRequest, RegisterRequest as DbRegisterRequest}};
+use oxide_core::{auth::RefreshClaims, Claims};
+use oxide_db::{
+    db::{AuthRequest, RefreshTokenRecord, RegisterRequest as DbRegisterRequest},
+    Db,
+};
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::sync::Arc;
 use tracing::{debug, info, warn};
-use serde::{Deserialize, Serialize};
 
 use crate::{
-    errors::ApiError,
-    responses::ApiResponse,
-    server::AppState,
-    extractors::AuthenticatedUser,
+    errors::ApiError, extractors::AuthenticatedUser, responses::ApiResponse, server::AppState,
 };
 
 /// Login request payload for collection-specific authentication
@@ -111,6 +113,12 @@ pub struct RefreshTokenRequest {
     pub refresh_token: String,
 }
 
+/// Logout request payload
+#[derive(Debug, Deserialize)]
+pub struct LogoutRequest {
+    pub refresh_token: Option<String>,
+}
+
 /// Refresh token response
 #[derive(Debug, Serialize)]
 pub struct RefreshTokenResponse {
@@ -132,11 +140,21 @@ impl AuthHandlers {
         identifier: String,
         credential: String,
     ) -> Result<LoginResponse, ApiError> {
-        debug!("🔑 Processing login request for collection '{}': {}", collection, identifier);
+        debug!(
+            "🔑 Processing login request for collection '{}': {}",
+            collection, identifier
+        );
 
         // Get auth configuration for the collection
-        let auth_config = auth_service.config().get_auth_collection(&collection)
-            .ok_or_else(|| ApiError::bad_request(format!("Collection '{}' is not configured for authentication", collection)))?;
+        let auth_config = auth_service
+            .config()
+            .get_auth_collection(&collection)
+            .ok_or_else(|| {
+                ApiError::bad_request(format!(
+                    "Collection '{}' is not configured for authentication",
+                    collection
+                ))
+            })?;
 
         // Create auth request
         let auth_request = AuthRequest {
@@ -146,11 +164,21 @@ impl AuthHandlers {
         };
 
         // Authenticate user
-        let auth_response = db.authenticate_user(auth_request, &auth_config).await
+        let auth_response = db
+            .authenticate_user(auth_request, &auth_config)
+            .await
             .map_err(|e| {
-                warn!("Authentication failed for user: {} in collection '{}' - {}", identifier, collection, e);
+                warn!(
+                    "Authentication failed for user: {} in collection '{}' - {}",
+                    identifier, collection, e
+                );
                 ApiError::auth("Invalid credentials".to_string())
             })?;
+
+        if let Some(refresh_token) = &auth_response.refresh_token {
+            persist_refresh_token(Arc::clone(&db), Arc::clone(&auth_service), refresh_token)
+                .await?;
+        }
 
         let response = LoginResponse {
             token: auth_response.token,
@@ -165,14 +193,21 @@ impl AuthHandlers {
             } else {
                 None
             },
-            custom_claims: if auth_response.user_data.as_object().map_or(false, |obj| !obj.is_empty()) {
+            custom_claims: if auth_response
+                .user_data
+                .as_object()
+                .is_some_and(|obj| !obj.is_empty())
+            {
                 Some(auth_response.user_data)
             } else {
                 None
             },
         };
 
-        info!("✅ User login successful: {} from collection '{}' ({})", identifier, collection, response.role);
+        info!(
+            "✅ User login successful: {} from collection '{}' ({})",
+            identifier, collection, response.role
+        );
         Ok(response)
     }
 
@@ -185,20 +220,34 @@ impl AuthHandlers {
         credential: String,
         additional_data: Option<serde_json::Value>,
     ) -> Result<RegisterResponse, ApiError> {
-        debug!("👤 Processing registration for collection '{}': {}", collection, identifier);
+        debug!(
+            "👤 Processing registration for collection '{}': {}",
+            collection, identifier
+        );
 
         // Get auth configuration for the collection
-        let auth_config = auth_service.config().get_auth_collection(&collection)
-            .ok_or_else(|| ApiError::bad_request(format!("Collection '{}' is not configured for authentication", collection)))?;
+        let auth_config = auth_service
+            .config()
+            .get_auth_collection(&collection)
+            .ok_or_else(|| {
+                ApiError::bad_request(format!(
+                    "Collection '{}' is not configured for authentication",
+                    collection
+                ))
+            })?;
 
         // Validate identifier format (basic validation)
         if identifier.is_empty() || identifier.len() < 3 {
-            return Err(ApiError::bad_request("Identifier must be at least 3 characters long".to_string()));
+            return Err(ApiError::bad_request(
+                "Identifier must be at least 3 characters long".to_string(),
+            ));
         }
 
         // Validate credential strength (basic validation)
         if credential.len() < 8 {
-            return Err(ApiError::bad_request("Credential must be at least 8 characters long".to_string()));
+            return Err(ApiError::bad_request(
+                "Credential must be at least 8 characters long".to_string(),
+            ));
         }
 
         // Create registration request
@@ -210,13 +259,24 @@ impl AuthHandlers {
         };
 
         // Register user
-        let user_id = db.register_user(register_request, &auth_config).await
+        let user_id = db
+            .register_user(register_request, &auth_config)
+            .await
             .map_err(|e| {
-                warn!("Registration failed for user: {} in collection '{}' - {}", identifier, collection, e);
+                warn!(
+                    "Registration failed for user: {} in collection '{}' - {}",
+                    identifier, collection, e
+                );
                 match e {
-                    oxide_core::AppError::Conflict { .. } => ApiError::bad_request("User with this identifier already exists".to_string()),
-                    oxide_core::AppError::Validation { field, message } => ApiError::bad_request(format!("Validation error in {}: {}", field, message)),
-                    oxide_core::AppError::Auth { .. } => ApiError::forbidden("Registration is not enabled for this collection".to_string()),
+                    oxide_core::AppError::Conflict { .. } => ApiError::bad_request(
+                        "User with this identifier already exists".to_string(),
+                    ),
+                    oxide_core::AppError::Validation { field, message } => {
+                        ApiError::bad_request(format!("Validation error in {}: {}", field, message))
+                    }
+                    oxide_core::AppError::Auth { .. } => ApiError::forbidden(
+                        "Registration is not enabled for this collection".to_string(),
+                    ),
                     _ => ApiError::internal(format!("Failed to register user: {}", e)),
                 }
             })?;
@@ -226,10 +286,16 @@ impl AuthHandlers {
             identifier,
             role: auth_config.default_role.to_string(),
             auth_collection: collection.clone(),
-            message: format!("User registered successfully in collection '{}'", collection),
+            message: format!(
+                "User registered successfully in collection '{}'",
+                collection
+            ),
         };
 
-        info!("✅ User registration successful: {} in collection '{}' ({})", response.identifier, collection, response.role);
+        info!(
+            "✅ User registration successful: {} in collection '{}' ({})",
+            response.identifier, collection, response.role
+        );
         Ok(response)
     }
 
@@ -299,15 +365,46 @@ impl AuthHandlers {
     /// Get current user information from token
     /// Refresh an access token using a refresh token
     pub async fn refresh_token(
+        db: Arc<dyn Db>,
         auth_service: Arc<oxide_core::AuthService>,
         refresh_token: String,
     ) -> Result<RefreshTokenResponse, ApiError> {
         debug!("🔄 Processing token refresh request");
 
-        // Refresh the token pair
-        let token_pair = auth_service.refresh_token_pair(&refresh_token)
+        let refresh_claims = auth_service
+            .verify_refresh_token(&refresh_token)
             .map_err(|e| {
                 warn!("Token refresh failed: {}", e);
+                ApiError::auth("Invalid or expired refresh token".to_string())
+            })?;
+        let old_token_hash = hash_refresh_token(&refresh_token);
+
+        // Refresh the token pair
+        let token_pair = auth_service
+            .refresh_token_pair(&refresh_token)
+            .map_err(|e| {
+                warn!("Token refresh failed: {}", e);
+                ApiError::auth("Invalid or expired refresh token".to_string())
+            })?;
+
+        let new_refresh_claims = auth_service
+            .verify_refresh_token(&token_pair.refresh_token)
+            .map_err(|e| {
+                warn!("Generated refresh token could not be verified: {}", e);
+                ApiError::internal("Failed to generate refresh token".to_string())
+            })?;
+        let new_token_record = refresh_token_record(
+            hash_refresh_token(&token_pair.refresh_token),
+            &new_refresh_claims,
+        );
+
+        db.rotate_refresh_token(&old_token_hash, new_token_record)
+            .await
+            .map_err(|e| {
+                warn!(
+                    "Token refresh failed for user {} from collection {}: {}",
+                    refresh_claims.sub, refresh_claims.auth_collection, e
+                );
                 ApiError::auth("Invalid or expired refresh token".to_string())
             })?;
 
@@ -322,9 +419,24 @@ impl AuthHandlers {
         Ok(response)
     }
 
-    pub async fn get_current_user(
-        claims: Claims,
-    ) -> Result<CurrentUserResponse, ApiError> {
+    pub async fn logout(
+        db: Arc<dyn Db>,
+        refresh_token: Option<String>,
+    ) -> Result<String, ApiError> {
+        if let Some(refresh_token) = refresh_token.filter(|token| !token.trim().is_empty()) {
+            db.revoke_refresh_token(&hash_refresh_token(&refresh_token))
+                .await
+                .map_err(|e| {
+                    warn!("Refresh token revocation failed during logout: {}", e);
+                    ApiError::internal("Failed to revoke refresh token".to_string())
+                })?;
+        }
+
+        info!("👋 User logout processed");
+        Ok("Logged out successfully".to_string())
+    }
+
+    pub async fn get_current_user(claims: Claims) -> Result<CurrentUserResponse, ApiError> {
         debug!("👤 Getting current user info for: {}", claims.email);
 
         let response = CurrentUserResponse {
@@ -342,6 +454,43 @@ impl AuthHandlers {
 
         Ok(response)
     }
+}
+
+async fn persist_refresh_token(
+    db: Arc<dyn Db>,
+    auth_service: Arc<oxide_core::AuthService>,
+    refresh_token: &str,
+) -> Result<(), ApiError> {
+    let claims = auth_service
+        .verify_refresh_token(refresh_token)
+        .map_err(|e| {
+            warn!("Generated refresh token could not be verified: {}", e);
+            ApiError::internal("Failed to generate refresh token".to_string())
+        })?;
+
+    db.store_refresh_token(refresh_token_record(
+        hash_refresh_token(refresh_token),
+        &claims,
+    ))
+    .await
+    .map_err(|e| {
+        warn!("Failed to persist refresh token metadata: {}", e);
+        ApiError::internal("Failed to store refresh token".to_string())
+    })
+}
+
+fn refresh_token_record(token_hash: String, claims: &RefreshClaims) -> RefreshTokenRecord {
+    RefreshTokenRecord {
+        token_hash,
+        user_id: claims.sub.clone(),
+        auth_collection: claims.auth_collection.clone(),
+        jti: claims.jti.clone(),
+        expires_at: claims.exp,
+    }
+}
+
+fn hash_refresh_token(token: &str) -> String {
+    format!("{:x}", Sha256::digest(token.as_bytes()))
 }
 
 // HTTP Handler Functions
@@ -370,7 +519,8 @@ pub async fn login_collection(
         collection,
         request.identifier,
         request.credential,
-    ).await?;
+    )
+    .await?;
     Ok(Json(ApiResponse::success(response)))
 }
 
@@ -389,7 +539,8 @@ pub async fn register_collection(
         request.identifier,
         request.credential,
         request.additional_data,
-    ).await?;
+    )
+    .await?;
     Ok((StatusCode::CREATED, Json(ApiResponse::success(response))))
 }
 
@@ -414,14 +565,25 @@ pub async fn get_current_user(
     Ok(Json(ApiResponse::success(response)))
 }
 
-/// User logout (client-side token removal)
+/// User logout
 ///
 /// POST /auth/logout
-pub async fn logout() -> Result<Json<ApiResponse<String>>, ApiError> {
-    // For JWT tokens, logout is typically handled client-side by removing the token
-    // In a real implementation, you might want to maintain a blacklist of revoked tokens
-    info!("👋 User logout processed");
-    Ok(Json(ApiResponse::success("Logged out successfully".to_string())))
+pub async fn logout(
+    State(state): State<AppState>,
+    body: Bytes,
+) -> Result<Json<ApiResponse<String>>, ApiError> {
+    let request =
+        if body.is_empty() {
+            None
+        } else {
+            Some(serde_json::from_slice::<LogoutRequest>(&body).map_err(|e| {
+                ApiError::bad_request(format!("Invalid logout request body: {}", e))
+            })?)
+        };
+
+    let response =
+        AuthHandlers::logout(state.db, request.and_then(|request| request.refresh_token)).await?;
+    Ok(Json(ApiResponse::success(response)))
 }
 
 /// Refresh token handler
@@ -431,6 +593,43 @@ pub async fn refresh_token(
     State(state): State<AppState>,
     Json(request): Json<RefreshTokenRequest>,
 ) -> Result<Json<ApiResponse<RefreshTokenResponse>>, ApiError> {
-    let response = AuthHandlers::refresh_token(state.auth_service, request.refresh_token).await?;
+    let response =
+        AuthHandlers::refresh_token(state.db, state.auth_service, request.refresh_token).await?;
     Ok(Json(ApiResponse::success(response)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn refresh_token_hash_is_deterministic_and_non_plaintext() {
+        let hash = hash_refresh_token("refresh-token-value");
+
+        assert_eq!(hash, hash_refresh_token("refresh-token-value"));
+        assert_eq!(hash.len(), 64);
+        assert_ne!(hash, "refresh-token-value");
+    }
+
+    #[test]
+    fn refresh_claims_are_mapped_to_persisted_token_metadata() {
+        let claims = RefreshClaims {
+            sub: "user-1".to_string(),
+            email: "user@example.com".to_string(),
+            role: "user".to_string(),
+            auth_collection: "_users".to_string(),
+            exp: 12345,
+            iat: 10000,
+            typ: "refresh".to_string(),
+            jti: "jti-1".to_string(),
+        };
+
+        let record = refresh_token_record("hash".to_string(), &claims);
+
+        assert_eq!(record.token_hash, "hash");
+        assert_eq!(record.user_id, "user-1");
+        assert_eq!(record.auth_collection, "_users");
+        assert_eq!(record.jti, "jti-1");
+        assert_eq!(record.expires_at, 12345);
+    }
 }

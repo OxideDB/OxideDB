@@ -18,10 +18,10 @@
 //! 4. Reusable: Hooks can be used across different contexts
 //! 5. Configurable: Hooks accept configuration parameters
 
-pub mod auth;
-pub mod validation;
 pub mod audit;
+pub mod auth;
 pub mod registry;
+pub mod validation;
 
 // Re-export the main registration function for convenience
-pub use registry::register_system_hooks; 
+pub use registry::register_system_hooks;

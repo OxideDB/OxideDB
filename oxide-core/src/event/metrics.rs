@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use super::types::{BeforeEventType, AfterEventType};
+use super::types::{AfterEventType, BeforeEventType};
 
 /// Comprehensive metrics for the event system
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -48,14 +48,28 @@ impl EventMetrics {
 
     /// Get total number of events processed
     pub fn total_events(&self) -> u64 {
-        self.before_events.values().map(|m| m.total_dispatched).sum::<u64>()
-            + self.after_events.values().map(|m| m.total_dispatched).sum::<u64>()
+        self.before_events
+            .values()
+            .map(|m| m.total_dispatched)
+            .sum::<u64>()
+            + self
+                .after_events
+                .values()
+                .map(|m| m.total_dispatched)
+                .sum::<u64>()
     }
 
     /// Get total number of failed events
     pub fn total_failures(&self) -> u64 {
-        self.before_events.values().map(|m| m.total_failures).sum::<u64>()
-            + self.after_events.values().map(|m| m.total_failures).sum::<u64>()
+        self.before_events
+            .values()
+            .map(|m| m.total_failures)
+            .sum::<u64>()
+            + self
+                .after_events
+                .values()
+                .map(|m| m.total_failures)
+                .sum::<u64>()
     }
 
     /// Get overall success rate as a percentage
@@ -165,8 +179,9 @@ impl EventTypeMetrics {
         } else {
             // Update running average
             let total_time = self.avg_execution_time_ms * (self.total_dispatched - 1) as f64;
-            self.avg_execution_time_ms = (total_time + execution_time_ms) / self.total_dispatched as f64;
-            
+            self.avg_execution_time_ms =
+                (total_time + execution_time_ms) / self.total_dispatched as f64;
+
             // Update min/max
             self.min_execution_time_ms = self.min_execution_time_ms.min(execution_time_ms);
             self.max_execution_time_ms = self.max_execution_time_ms.max(execution_time_ms);
@@ -188,18 +203,22 @@ impl EventTypeMetrics {
         let recent_count = self.recent_execution_times.len().min(20);
         let older_count = self.recent_execution_times.len().min(40);
 
-        let recent_avg: f64 = self.recent_execution_times
+        let recent_avg: f64 = self
+            .recent_execution_times
             .iter()
             .rev()
             .take(recent_count)
-            .sum::<f64>() / recent_count as f64;
+            .sum::<f64>()
+            / recent_count as f64;
 
-        let older_avg: f64 = self.recent_execution_times
+        let older_avg: f64 = self
+            .recent_execution_times
             .iter()
             .rev()
             .skip(recent_count)
             .take(older_count - recent_count)
-            .sum::<f64>() / (older_count - recent_count) as f64;
+            .sum::<f64>()
+            / (older_count - recent_count) as f64;
 
         let change_percent = ((recent_avg - older_avg) / older_avg) * 100.0;
 
@@ -258,7 +277,13 @@ impl HandlerMetrics {
     }
 
     /// Record a handler execution
-    pub fn record_execution(&mut self, execution_time_ms: f64, success: bool, skipped: bool, retries: u32) {
+    pub fn record_execution(
+        &mut self,
+        execution_time_ms: f64,
+        success: bool,
+        skipped: bool,
+        retries: u32,
+    ) {
         self.total_executions += 1;
         self.last_execution_time = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -276,9 +301,10 @@ impl HandlerMetrics {
 
         self.total_retries += retries as u64;
         self.total_execution_time_ms += execution_time_ms;
-        
+
         if self.total_executions > 0 {
-            self.avg_execution_time_ms = self.total_execution_time_ms / self.total_executions as f64;
+            self.avg_execution_time_ms =
+                self.total_execution_time_ms / self.total_executions as f64;
         }
     }
 
@@ -369,7 +395,7 @@ impl EventMetricsCollector {
                 .before_events
                 .entry(event_type.name().to_string())
                 .or_insert_with(EventTypeMetrics::default);
-            
+
             event_metrics.record_execution(execution_time_ms, success, skipped);
             metrics.last_updated = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -391,7 +417,7 @@ impl EventMetricsCollector {
                 .after_events
                 .entry(event_type.name().to_string())
                 .or_insert_with(EventTypeMetrics::default);
-            
+
             event_metrics.record_execution(execution_time_ms, success, skipped);
             metrics.last_updated = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -414,8 +440,10 @@ impl EventMetricsCollector {
             let handler_metrics = metrics
                 .handlers
                 .entry(handler_id.to_string())
-                .or_insert_with(|| HandlerMetrics::new(handler_id.to_string(), handler_name.to_string()));
-            
+                .or_insert_with(|| {
+                    HandlerMetrics::new(handler_id.to_string(), handler_name.to_string())
+                });
+
             handler_metrics.record_execution(execution_time_ms, success, skipped, retries);
         }
     }
@@ -430,9 +458,13 @@ impl EventMetricsCollector {
     ) {
         if let Ok(mut metrics) = self.metrics.write() {
             metrics.errors.total_errors += 1;
-            
-            *metrics.errors.errors_by_type.entry(error_type.clone()).or_insert(0) += 1;
-            
+
+            *metrics
+                .errors
+                .errors_by_type
+                .entry(error_type.clone())
+                .or_insert(0) += 1;
+
             let error_record = ErrorRecord {
                 timestamp: SystemTime::now()
                     .duration_since(UNIX_EPOCH)
@@ -443,7 +475,7 @@ impl EventMetricsCollector {
                 handler_id,
                 event_type,
             };
-            
+
             metrics.errors.recent_errors.push(error_record);
             if metrics.errors.recent_errors.len() > 10 {
                 metrics.errors.recent_errors.remove(0);
@@ -455,11 +487,9 @@ impl EventMetricsCollector {
     pub fn update_system_metrics(&self, active_handlers: u64, concurrent_events: u64) {
         if let Ok(mut metrics) = self.metrics.write() {
             metrics.system.active_handlers = active_handlers;
-            metrics.system.uptime_ms = self.start_time
-                .elapsed()
-                .unwrap_or_default()
-                .as_millis() as u64;
-            
+            metrics.system.uptime_ms =
+                self.start_time.elapsed().unwrap_or_default().as_millis() as u64;
+
             if concurrent_events > metrics.system.peak_concurrent_events {
                 metrics.system.peak_concurrent_events = concurrent_events;
             }
@@ -498,12 +528,12 @@ mod tests {
     #[test]
     fn test_event_type_metrics() {
         let mut metrics = EventTypeMetrics::default();
-        
+
         // Record some executions
         metrics.record_execution(100.0, true, false);
         metrics.record_execution(200.0, true, false);
         metrics.record_execution(150.0, false, false);
-        
+
         assert_eq!(metrics.total_dispatched, 3);
         assert_eq!(metrics.total_failures, 1);
         assert_eq!(metrics.avg_execution_time_ms, 150.0);
@@ -513,11 +543,12 @@ mod tests {
 
     #[test]
     fn test_handler_metrics() {
-        let mut metrics = HandlerMetrics::new("test-handler".to_string(), "Test Handler".to_string());
-        
+        let mut metrics =
+            HandlerMetrics::new("test-handler".to_string(), "Test Handler".to_string());
+
         metrics.record_execution(100.0, true, false, 0);
         metrics.record_execution(200.0, false, false, 2);
-        
+
         assert_eq!(metrics.total_executions, 2);
         assert_eq!(metrics.total_failures, 1);
         assert_eq!(metrics.total_retries, 2);
@@ -528,7 +559,7 @@ mod tests {
     #[test]
     fn test_metrics_collector() {
         let collector = EventMetricsCollector::new();
-        
+
         collector.record_before_event(&BeforeEventType::RecordCreate, 100.0, true, false);
         collector.record_handler_execution("handler-1", "Test Handler", 50.0, true, false, 0);
         collector.record_error(
@@ -537,7 +568,7 @@ mod tests {
             Some("handler-1".to_string()),
             Some("BeforeRecordCreate".to_string()),
         );
-        
+
         let snapshot = collector.snapshot();
         assert_eq!(snapshot.total_events(), 1);
         assert_eq!(snapshot.errors.total_errors, 1);
@@ -547,28 +578,33 @@ mod tests {
     #[test]
     fn test_execution_time_trend() {
         let mut metrics = EventTypeMetrics::default();
-        
+
         // Add some times showing an increasing trend
         for i in 0..50 {
             let time = 100.0 + (i as f64 * 2.0); // Gradually increasing
             metrics.record_execution(time, true, false);
         }
-        
-        assert_eq!(metrics.execution_time_trend(), ExecutionTimeTrend::Increasing);
+
+        assert_eq!(
+            metrics.execution_time_trend(),
+            ExecutionTimeTrend::Increasing
+        );
     }
 
     #[test]
     fn test_event_metrics_aggregation() {
         let mut metrics = EventMetrics::new();
-        
+
         // Add some event type metrics
         let mut before_metrics = EventTypeMetrics::default();
         before_metrics.record_execution(100.0, true, false);
         before_metrics.record_execution(200.0, false, false);
-        metrics.before_events.insert("BeforeRecordCreate".to_string(), before_metrics);
-        
+        metrics
+            .before_events
+            .insert("BeforeRecordCreate".to_string(), before_metrics);
+
         assert_eq!(metrics.total_events(), 2);
         assert_eq!(metrics.total_failures(), 1);
         assert_eq!(metrics.success_rate(), 50.0);
     }
-} 
+}

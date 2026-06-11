@@ -9,7 +9,9 @@
 
 use crate::{
     error::{LoggingError, LoggingResult},
-    models::{LogEntry, SecurityAuditEvent, LogQuery, LogMetrics, LogLevel, AuditEventType, CorrelationId},
+    models::{
+        AuditEventType, CorrelationId, LogEntry, LogLevel, LogMetrics, LogQuery, SecurityAuditEvent,
+    },
 };
 use chrono::{DateTime, Utc};
 use rusqlite::{params, OptionalExtension, Row};
@@ -37,15 +39,18 @@ impl SqliteLogStorage {
     /// Create a new SQLite log storage instance
     pub async fn new(db_path: impl AsRef<Path>) -> LoggingResult<Self> {
         let db_path = db_path.as_ref().to_string_lossy().to_string();
-        
+
         tracing::info!("Creating SQLite log storage at: {}", db_path);
-        
+
         // Ensure parent directory exists
         if let Some(parent) = Path::new(&db_path).parent() {
             if !parent.exists() {
                 tracing::info!("Creating parent directory: {:?}", parent);
                 std::fs::create_dir_all(parent).map_err(|e| {
-                    LoggingError::database(format!("Failed to create log database directory: {}", e))
+                    LoggingError::database(format!(
+                        "Failed to create log database directory: {}",
+                        e
+                    ))
                 })?;
             }
         }
@@ -57,7 +62,7 @@ impl SqliteLogStorage {
             LoggingError::database(format!("Failed to open SQLite connection: {}", e))
         })?;
         tracing::info!("SQLite connection opened successfully");
-        
+
         let connection = Arc::new(Mutex::new(connection));
 
         let storage = Self {
@@ -68,7 +73,7 @@ impl SqliteLogStorage {
         tracing::info!("Initializing database schema...");
         // Initialize schema
         storage.initialize_schema().await?;
-        
+
         info!("SQLite log storage initialized at: {}", storage.db_path);
         Ok(storage)
     }
@@ -77,38 +82,50 @@ impl SqliteLogStorage {
     async fn initialize_schema(&self) -> LoggingResult<()> {
         tracing::info!("Starting schema initialization...");
         let conn = self.connection.lock().await;
-        
+
         tracing::info!("Acquired connection lock, checking schema version...");
-        
+
         // Check current schema version
-        let current_version: i32 = conn.call(|conn| {
-            tracing::info!("Creating schema_version table if not exists...");
-            // Create version table if it doesn't exist
-            conn.execute(
-                "CREATE TABLE IF NOT EXISTS schema_version (
+        let current_version: i32 = conn
+            .call(|conn| {
+                tracing::info!("Creating schema_version table if not exists...");
+                // Create version table if it doesn't exist
+                conn.execute(
+                    "CREATE TABLE IF NOT EXISTS schema_version (
                     version INTEGER PRIMARY KEY
                 )",
-                [],
-            )?;
-            
-            tracing::info!("Querying current schema version...");
-            // Get current version or insert initial
-            match conn.query_row("SELECT version FROM schema_version", [], |row| {
-                Ok(row.get::<_, i32>(0)?)
-            }).optional()? {
-                Some(version) => {
-                    tracing::info!("Found existing schema version: {}", version);
-                    Ok(version)
-                },
-                None => {
-                    tracing::info!("No schema version found, inserting initial version 0");
-                    conn.execute("INSERT INTO schema_version (version) VALUES (?)", params![0])?;
-                    Ok(0)
-                }
-            }
-        }).await?;
+                    [],
+                )?;
 
-        tracing::info!("Current schema version: {}, target version: {}", current_version, SCHEMA_VERSION);
+                tracing::info!("Querying current schema version...");
+                // Get current version or insert initial
+                match conn
+                    .query_row("SELECT version FROM schema_version", [], |row| {
+                        row.get::<_, i32>(0)
+                    })
+                    .optional()?
+                {
+                    Some(version) => {
+                        tracing::info!("Found existing schema version: {}", version);
+                        Ok(version)
+                    }
+                    None => {
+                        tracing::info!("No schema version found, inserting initial version 0");
+                        conn.execute(
+                            "INSERT INTO schema_version (version) VALUES (?)",
+                            params![0],
+                        )?;
+                        Ok(0)
+                    }
+                }
+            })
+            .await?;
+
+        tracing::info!(
+            "Current schema version: {}, target version: {}",
+            current_version,
+            SCHEMA_VERSION
+        );
 
         if current_version < SCHEMA_VERSION {
             tracing::info!("Schema migration needed");
@@ -125,16 +142,20 @@ impl SqliteLogStorage {
 
     /// Perform schema migrations
     async fn migrate_schema(&self, from_version: i32) -> LoggingResult<()> {
-        tracing::info!("Starting schema migration from version {} to {}", from_version, SCHEMA_VERSION);
+        tracing::info!(
+            "Starting schema migration from version {} to {}",
+            from_version,
+            SCHEMA_VERSION
+        );
         let conn = self.connection.lock().await;
 
         conn.call(move |conn| {
             tracing::info!("Starting database transaction for migration...");
             let tx = conn.transaction()?;
-            
+
             if from_version < 1 {
                 tracing::info!("Migrating to version 1: creating tables and indexes...");
-                
+
                 // Create main log entries table
                 tracing::info!("Creating log_entries table...");
                 tx.execute(
@@ -238,7 +259,7 @@ impl SqliteLogStorage {
                     )",
                     [],
                 )?;
-                
+
                 tracing::info!("Version 1 migration completed");
             }
 
@@ -255,14 +276,17 @@ impl SqliteLogStorage {
             Ok(())
         }).await?;
 
-        info!("Schema migration completed successfully from version {} to {}", from_version, SCHEMA_VERSION);
+        info!(
+            "Schema migration completed successfully from version {} to {}",
+            from_version, SCHEMA_VERSION
+        );
         Ok(())
     }
 
     /// Insert a single log entry
     pub async fn insert_log_entry(&self, entry: &LogEntry) -> LoggingResult<()> {
         let conn = self.connection.lock().await;
-        
+
         // Clone the entry data to move into the closure
         let entry_data = (
             entry.id,
@@ -281,8 +305,10 @@ impl SqliteLogStorage {
         conn.call(move |conn| {
             let context_json = serde_json::to_string(&entry_data.7)
                 .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
-            let metrics_json = entry_data.10.as_ref()
-                .map(|m| serde_json::to_string(m))
+            let metrics_json = entry_data
+                .10
+                .as_ref()
+                .map(serde_json::to_string)
                 .transpose()
                 .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
 
@@ -306,7 +332,8 @@ impl SqliteLogStorage {
                 ],
             )?;
             Ok(())
-        }).await?;
+        })
+        .await?;
 
         debug!("Inserted log entry: {}", entry.id);
         Ok(())
@@ -324,20 +351,22 @@ impl SqliteLogStorage {
 
         conn.call(move |conn| {
             let tx = conn.transaction()?;
-            
+
             {
                 let mut stmt = tx.prepare(
                     "INSERT INTO log_entries (
                         id, correlation_id, timestamp, level, message, module, 
                         location, context_json, error_info, stack_trace, metrics_json
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 )?;
 
                 for entry in &entries {
                     let context_json = serde_json::to_string(&entry.context)
                         .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
-                    let metrics_json = entry.metrics.as_ref()
-                        .map(|m| serde_json::to_string(m))
+                    let metrics_json = entry
+                        .metrics
+                        .as_ref()
+                        .map(serde_json::to_string)
                         .transpose()
                         .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
 
@@ -356,10 +385,11 @@ impl SqliteLogStorage {
                     ])?;
                 }
             } // stmt is dropped here
-            
+
             tx.commit()?;
             Ok(())
-        }).await?;
+        })
+        .await?;
 
         debug!("Inserted {} log entries in batch", entry_count);
         Ok(())
@@ -368,7 +398,7 @@ impl SqliteLogStorage {
     /// Insert an audit event
     pub async fn insert_audit_event(&self, event: &SecurityAuditEvent) -> LoggingResult<()> {
         let conn = self.connection.lock().await;
-        
+
         // Clone the event data to move into the closure
         let event_data = (
             event.id,
@@ -412,7 +442,8 @@ impl SqliteLogStorage {
                 ],
             )?;
             Ok(())
-        }).await?;
+        })
+        .await?;
 
         debug!("Inserted audit event: {}", event.id);
         Ok(())
@@ -423,158 +454,163 @@ impl SqliteLogStorage {
         let conn = self.connection.lock().await;
         let query = query.clone(); // Clone for move into closure
 
-        let entries = conn.call(move |conn| {
-            let mut sql = String::from("SELECT * FROM log_entries WHERE 1=1");
-            let mut params = Vec::<Box<dyn rusqlite::ToSql>>::new();
+        let entries = conn
+            .call(move |conn| {
+                let mut sql = String::from("SELECT * FROM log_entries WHERE 1=1");
+                let mut params = Vec::<Box<dyn rusqlite::ToSql>>::new();
 
-            // Build WHERE clause based on filter and collect parameters
-            if let Some(min_level) = query.filter.min_level {
-                sql.push_str(" AND level <= ?");
-                params.push(Box::new(min_level as i32));
-            }
+                // Build WHERE clause based on filter and collect parameters
+                if let Some(min_level) = query.filter.min_level {
+                    sql.push_str(" AND level <= ?");
+                    params.push(Box::new(min_level as i32));
+                }
 
-            if let Some(start_time) = query.filter.start_time {
-                sql.push_str(" AND timestamp >= ?");
-                params.push(Box::new(start_time.timestamp()));
-            }
+                if let Some(start_time) = query.filter.start_time {
+                    sql.push_str(" AND timestamp >= ?");
+                    params.push(Box::new(start_time.timestamp()));
+                }
 
-            if let Some(end_time) = query.filter.end_time {
-                sql.push_str(" AND timestamp <= ?");
-                params.push(Box::new(end_time.timestamp()));
-            }
+                if let Some(end_time) = query.filter.end_time {
+                    sql.push_str(" AND timestamp <= ?");
+                    params.push(Box::new(end_time.timestamp()));
+                }
 
-            if let Some(ref correlation_id) = query.filter.correlation_id {
-                sql.push_str(" AND correlation_id = ?");
-                params.push(Box::new(correlation_id.to_string()));
-            }
+                if let Some(ref correlation_id) = query.filter.correlation_id {
+                    sql.push_str(" AND correlation_id = ?");
+                    params.push(Box::new(correlation_id.to_string()));
+                }
 
-            if let Some(ref module) = query.filter.module {
-                sql.push_str(" AND module = ?");
-                params.push(Box::new(module.clone()));
-            }
+                if let Some(ref module) = query.filter.module {
+                    sql.push_str(" AND module = ?");
+                    params.push(Box::new(module.clone()));
+                }
 
-            if let Some(ref user_id) = query.filter.user_id {
-                sql.push_str(" AND json_extract(context_json, '$.user_id') = ?");
-                params.push(Box::new(user_id.clone()));
-            }
+                if let Some(ref user_id) = query.filter.user_id {
+                    sql.push_str(" AND json_extract(context_json, '$.user_id') = ?");
+                    params.push(Box::new(user_id.clone()));
+                }
 
-            if let Some(ref collection) = query.filter.collection {
-                sql.push_str(" AND json_extract(context_json, '$.collection') = ?");
-                params.push(Box::new(collection.clone()));
-            }
+                if let Some(ref collection) = query.filter.collection {
+                    sql.push_str(" AND json_extract(context_json, '$.collection') = ?");
+                    params.push(Box::new(collection.clone()));
+                }
 
-            if let Some(ref message_search) = query.filter.message_contains {
-                sql.push_str(" AND message LIKE ?");
-                params.push(Box::new(format!("%{}%", message_search)));
-            }
+                if let Some(ref message_search) = query.filter.message_contains {
+                    sql.push_str(" AND message LIKE ?");
+                    params.push(Box::new(format!("%{}%", message_search)));
+                }
 
-            // Add ordering
-            if query.sort_desc {
-                sql.push_str(" ORDER BY timestamp DESC");
-            } else {
-                sql.push_str(" ORDER BY timestamp ASC");
-            }
+                // Add ordering
+                if query.sort_desc {
+                    sql.push_str(" ORDER BY timestamp DESC");
+                } else {
+                    sql.push_str(" ORDER BY timestamp ASC");
+                }
 
-            // Add pagination
-            if let Some(limit) = query.limit {
-                sql.push_str(" LIMIT ?");
-                params.push(Box::new(limit as i64));
-            }
+                // Add pagination
+                if let Some(limit) = query.limit {
+                    sql.push_str(" LIMIT ?");
+                    params.push(Box::new(limit as i64));
+                }
 
-            if let Some(offset) = query.offset {
-                sql.push_str(" OFFSET ?");
-                params.push(Box::new(offset as i64));
-            }
+                if let Some(offset) = query.offset {
+                    sql.push_str(" OFFSET ?");
+                    params.push(Box::new(offset as i64));
+                }
 
-            // Convert parameters to references for the query
-            let param_refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+                // Convert parameters to references for the query
+                let param_refs: Vec<&dyn rusqlite::ToSql> =
+                    params.iter().map(|p| p.as_ref()).collect();
 
-            // Execute query
-            let mut stmt = conn.prepare(&sql)?;
-            let rows = stmt.query_map(param_refs.as_slice(), |row| {
-                parse_log_entry_row(row)
-            })?;
+                // Execute query
+                let mut stmt = conn.prepare(&sql)?;
+                let rows = stmt.query_map(param_refs.as_slice(), parse_log_entry_row)?;
 
-            let mut entries = Vec::new();
-            for row in rows {
-                entries.push(row?);
-            }
+                let mut entries = Vec::new();
+                for row in rows {
+                    entries.push(row?);
+                }
 
-            Ok(entries)
-        }).await?;
+                Ok(entries)
+            })
+            .await?;
 
         Ok(entries)
     }
 
     /// Query audit events
-    pub async fn query_audit_events(&self, query: &LogQuery) -> LoggingResult<Vec<SecurityAuditEvent>> {
+    pub async fn query_audit_events(
+        &self,
+        query: &LogQuery,
+    ) -> LoggingResult<Vec<SecurityAuditEvent>> {
         let conn = self.connection.lock().await;
         let query = query.clone();
 
-        let events = conn.call(move |conn| {
-            let mut sql = String::from("SELECT * FROM audit_events WHERE 1=1");
-            let mut params = Vec::<Box<dyn rusqlite::ToSql>>::new();
+        let events = conn
+            .call(move |conn| {
+                let mut sql = String::from("SELECT * FROM audit_events WHERE 1=1");
+                let mut params = Vec::<Box<dyn rusqlite::ToSql>>::new();
 
-            // Build WHERE clause based on filter and collect parameters
-            if let Some(min_level) = query.filter.min_level {
-                sql.push_str(" AND severity <= ?");
-                params.push(Box::new(min_level as i32));
-            }
+                // Build WHERE clause based on filter and collect parameters
+                if let Some(min_level) = query.filter.min_level {
+                    sql.push_str(" AND severity <= ?");
+                    params.push(Box::new(min_level as i32));
+                }
 
-            if let Some(start_time) = query.filter.start_time {
-                sql.push_str(" AND timestamp >= ?");
-                params.push(Box::new(start_time.timestamp()));
-            }
+                if let Some(start_time) = query.filter.start_time {
+                    sql.push_str(" AND timestamp >= ?");
+                    params.push(Box::new(start_time.timestamp()));
+                }
 
-            if let Some(end_time) = query.filter.end_time {
-                sql.push_str(" AND timestamp <= ?");
-                params.push(Box::new(end_time.timestamp()));
-            }
+                if let Some(end_time) = query.filter.end_time {
+                    sql.push_str(" AND timestamp <= ?");
+                    params.push(Box::new(end_time.timestamp()));
+                }
 
-            if let Some(ref correlation_id) = query.filter.correlation_id {
-                sql.push_str(" AND correlation_id = ?");
-                params.push(Box::new(correlation_id.to_string()));
-            }
+                if let Some(ref correlation_id) = query.filter.correlation_id {
+                    sql.push_str(" AND correlation_id = ?");
+                    params.push(Box::new(correlation_id.to_string()));
+                }
 
-            if let Some(ref audit_event_type) = query.filter.audit_event_type {
-                sql.push_str(" AND event_type = ?");
-                params.push(Box::new(audit_event_type.as_str().to_string()));
-            }
+                if let Some(ref audit_event_type) = query.filter.audit_event_type {
+                    sql.push_str(" AND event_type = ?");
+                    params.push(Box::new(audit_event_type.as_str().to_string()));
+                }
 
-            // Add ordering
-            if query.sort_desc {
-                sql.push_str(" ORDER BY timestamp DESC");
-            } else {
-                sql.push_str(" ORDER BY timestamp ASC");
-            }
+                // Add ordering
+                if query.sort_desc {
+                    sql.push_str(" ORDER BY timestamp DESC");
+                } else {
+                    sql.push_str(" ORDER BY timestamp ASC");
+                }
 
-            // Add pagination
-            if let Some(limit) = query.limit {
-                sql.push_str(" LIMIT ?");
-                params.push(Box::new(limit as i64));
-            }
+                // Add pagination
+                if let Some(limit) = query.limit {
+                    sql.push_str(" LIMIT ?");
+                    params.push(Box::new(limit as i64));
+                }
 
-            if let Some(offset) = query.offset {
-                sql.push_str(" OFFSET ?");
-                params.push(Box::new(offset as i64));
-            }
+                if let Some(offset) = query.offset {
+                    sql.push_str(" OFFSET ?");
+                    params.push(Box::new(offset as i64));
+                }
 
-            // Convert parameters to references for the query
-            let param_refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+                // Convert parameters to references for the query
+                let param_refs: Vec<&dyn rusqlite::ToSql> =
+                    params.iter().map(|p| p.as_ref()).collect();
 
-            // Execute query
-            let mut stmt = conn.prepare(&sql)?;
-            let rows = stmt.query_map(param_refs.as_slice(), |row| {
-                parse_audit_event_row(row)
-            })?;
+                // Execute query
+                let mut stmt = conn.prepare(&sql)?;
+                let rows = stmt.query_map(param_refs.as_slice(), parse_audit_event_row)?;
 
-            let mut events = Vec::new();
-            for row in rows {
-                events.push(row?);
-            }
+                let mut events = Vec::new();
+                for row in rows {
+                    events.push(row?);
+                }
 
-            Ok(events)
-        }).await?;
+                Ok(events)
+            })
+            .await?;
 
         Ok(events)
     }
@@ -583,92 +619,92 @@ impl SqliteLogStorage {
     pub async fn get_metrics(&self) -> LoggingResult<LogMetrics> {
         let conn = self.connection.lock().await;
 
-        let metrics = conn.call(|conn| {
-            // Total entries
-            let total_entries: u64 = conn.query_row(
-                "SELECT COUNT(*) FROM log_entries",
-                [],
-                |row| Ok(row.get::<_, i64>(0)? as u64)
-            )?;
+        let metrics = conn
+            .call(|conn| {
+                // Total entries
+                let total_entries: u64 =
+                    conn.query_row("SELECT COUNT(*) FROM log_entries", [], |row| {
+                        Ok(row.get::<_, i64>(0)? as u64)
+                    })?;
 
-            // Entries by level
-            let mut entries_by_level = HashMap::new();
-            let mut stmt = conn.prepare(
-                "SELECT level, COUNT(*) FROM log_entries GROUP BY level"
-            )?;
-            let rows = stmt.query_map([], |row| {
-                let level = row.get::<_, i32>(0)?;
-                let count = row.get::<_, i64>(1)? as u64;
-                Ok((level, count))
-            })?;
+                // Entries by level
+                let mut entries_by_level = HashMap::new();
+                let mut stmt =
+                    conn.prepare("SELECT level, COUNT(*) FROM log_entries GROUP BY level")?;
+                let rows = stmt.query_map([], |row| {
+                    let level = row.get::<_, i32>(0)?;
+                    let count = row.get::<_, i64>(1)? as u64;
+                    Ok((level, count))
+                })?;
 
-            for row in rows {
-                let (level_int, count) = row?;
-                if let Some(level) = int_to_log_level(level_int) {
-                    entries_by_level.insert(level, count);
+                for row in rows {
+                    let (level_int, count) = row?;
+                    if let Some(level) = int_to_log_level(level_int) {
+                        entries_by_level.insert(level, count);
+                    }
                 }
-            }
 
-            // Audit events by type
-            let mut audit_events_by_type = HashMap::new();
-            let mut audit_stmt = conn.prepare(
-                "SELECT event_type, COUNT(*) FROM audit_events GROUP BY event_type"
-            )?;
-            let audit_rows = audit_stmt.query_map([], |row| {
-                let event_type_str = row.get::<_, String>(0)?;
-                let count = row.get::<_, i64>(1)? as u64;
-                Ok((event_type_str, count))
-            })?;
+                // Audit events by type
+                let mut audit_events_by_type = HashMap::new();
+                let mut audit_stmt = conn
+                    .prepare("SELECT event_type, COUNT(*) FROM audit_events GROUP BY event_type")?;
+                let audit_rows = audit_stmt.query_map([], |row| {
+                    let event_type_str = row.get::<_, String>(0)?;
+                    let count = row.get::<_, i64>(1)? as u64;
+                    Ok((event_type_str, count))
+                })?;
 
-            for row in audit_rows {
-                let (event_type_str, count) = row?;
-                if let Some(event_type) = str_to_audit_event_type(&event_type_str) {
-                    audit_events_by_type.insert(event_type, count);
+                for row in audit_rows {
+                    let (event_type_str, count) = row?;
+                    if let Some(event_type) = str_to_audit_event_type(&event_type_str) {
+                        audit_events_by_type.insert(event_type, count);
+                    }
                 }
-            }
 
-            // Storage size (approximate)
-            let storage_size_bytes: u64 = conn.query_row(
+                // Storage size (approximate)
+                let storage_size_bytes: u64 = conn.query_row(
                 "SELECT page_count * page_size FROM pragma_page_count(), pragma_page_size()",
                 [],
                 |row| Ok(row.get::<_, i64>(0)? as u64)
             ).unwrap_or(0);
 
-            // Average entries per day (last 30 days)
-            let thirty_days_ago = Utc::now().timestamp() - (30 * 24 * 60 * 60);
-            let entries_last_30_days: u64 = conn.query_row(
-                "SELECT COUNT(*) FROM log_entries WHERE timestamp >= ?",
-                params![thirty_days_ago],
-                |row| Ok(row.get::<_, i64>(0)? as u64)
-            ).unwrap_or(0);
-            let avg_entries_per_day = entries_last_30_days as f64 / 30.0;
+                // Average entries per day (last 30 days)
+                let thirty_days_ago = Utc::now().timestamp() - (30 * 24 * 60 * 60);
+                let entries_last_30_days: u64 = conn
+                    .query_row(
+                        "SELECT COUNT(*) FROM log_entries WHERE timestamp >= ?",
+                        params![thirty_days_ago],
+                        |row| Ok(row.get::<_, i64>(0)? as u64),
+                    )
+                    .unwrap_or(0);
+                let avg_entries_per_day = entries_last_30_days as f64 / 30.0;
 
-            // Top users (most active)
-            let mut top_users = Vec::new();
-            let mut user_stmt = conn.prepare(
-                "SELECT json_extract(context_json, '$.user_id') as user_id, COUNT(*) as count 
+                // Top users (most active)
+                let mut top_users = Vec::new();
+                let mut user_stmt = conn.prepare(
+                    "SELECT json_extract(context_json, '$.user_id') as user_id, COUNT(*) as count 
                  FROM log_entries 
                  WHERE user_id IS NOT NULL 
                  GROUP BY user_id 
                  ORDER BY count DESC 
-                 LIMIT 10"
-            )?;
-            let user_rows = user_stmt.query_map([], |row| {
-                let user_id: Option<String> = row.get(0)?;
-                let count = row.get::<_, i64>(1)? as u64;
-                Ok((user_id, count))
-            })?;
+                 LIMIT 10",
+                )?;
+                let user_rows = user_stmt.query_map([], |row| {
+                    let user_id: Option<String> = row.get(0)?;
+                    let count = row.get::<_, i64>(1)? as u64;
+                    Ok((user_id, count))
+                })?;
 
-            for row in user_rows {
-                let (user_id_opt, count) = row?;
-                if let Some(user_id) = user_id_opt {
-                    top_users.push((user_id, count));
+                for row in user_rows {
+                    let (user_id_opt, count) = row?;
+                    if let Some(user_id) = user_id_opt {
+                        top_users.push((user_id, count));
+                    }
                 }
-            }
 
-            // Top collections (most accessed)
-            let mut top_collections = Vec::new();
-            let mut collection_stmt = conn.prepare(
+                // Top collections (most accessed)
+                let mut top_collections = Vec::new();
+                let mut collection_stmt = conn.prepare(
                 "SELECT json_extract(context_json, '$.collection') as collection, COUNT(*) as count 
                  FROM log_entries 
                  WHERE collection IS NOT NULL 
@@ -676,50 +712,55 @@ impl SqliteLogStorage {
                  ORDER BY count DESC 
                  LIMIT 10"
             )?;
-            let collection_rows = collection_stmt.query_map([], |row| {
-                let collection: Option<String> = row.get(0)?;
-                let count = row.get::<_, i64>(1)? as u64;
-                Ok((collection, count))
-            })?;
+                let collection_rows = collection_stmt.query_map([], |row| {
+                    let collection: Option<String> = row.get(0)?;
+                    let count = row.get::<_, i64>(1)? as u64;
+                    Ok((collection, count))
+                })?;
 
-            for row in collection_rows {
-                let (collection_opt, count) = row?;
-                if let Some(collection) = collection_opt {
-                    top_collections.push((collection, count));
+                for row in collection_rows {
+                    let (collection_opt, count) = row?;
+                    if let Some(collection) = collection_opt {
+                        top_collections.push((collection, count));
+                    }
                 }
-            }
 
-            // Error rate in last 24 hours
-            let twenty_four_hours_ago = Utc::now().timestamp() - (24 * 60 * 60);
-            let error_count: u64 = conn.query_row(
-                "SELECT COUNT(*) FROM log_entries WHERE level = 0 AND timestamp >= ?",
-                params![twenty_four_hours_ago],
-                |row| Ok(row.get::<_, i64>(0)? as u64)
-            ).unwrap_or(0);
+                // Error rate in last 24 hours
+                let twenty_four_hours_ago = Utc::now().timestamp() - (24 * 60 * 60);
+                let error_count: u64 = conn
+                    .query_row(
+                        "SELECT COUNT(*) FROM log_entries WHERE level = 0 AND timestamp >= ?",
+                        params![twenty_four_hours_ago],
+                        |row| Ok(row.get::<_, i64>(0)? as u64),
+                    )
+                    .unwrap_or(0);
 
-            let total_count_24h: u64 = conn.query_row(
-                "SELECT COUNT(*) FROM log_entries WHERE timestamp >= ?",
-                params![twenty_four_hours_ago],
-                |row| Ok(row.get::<_, i64>(0)? as u64)
-            ).unwrap_or(0);
+                let total_count_24h: u64 = conn
+                    .query_row(
+                        "SELECT COUNT(*) FROM log_entries WHERE timestamp >= ?",
+                        params![twenty_four_hours_ago],
+                        |row| Ok(row.get::<_, i64>(0)? as u64),
+                    )
+                    .unwrap_or(0);
 
-            let error_rate_24h = if total_count_24h > 0 {
-                (error_count as f64 / total_count_24h as f64) * 100.0
-            } else {
-                0.0
-            };
+                let error_rate_24h = if total_count_24h > 0 {
+                    (error_count as f64 / total_count_24h as f64) * 100.0
+                } else {
+                    0.0
+                };
 
-            Ok(LogMetrics {
-                total_entries,
-                entries_by_level,
-                audit_events_by_type,
-                storage_size_bytes,
-                avg_entries_per_day,
-                top_users,
-                top_collections,
-                error_rate_24h,
+                Ok(LogMetrics {
+                    total_entries,
+                    entries_by_level,
+                    audit_events_by_type,
+                    storage_size_bytes,
+                    avg_entries_per_day,
+                    top_users,
+                    top_collections,
+                    error_rate_24h,
+                })
             })
-        }).await?;
+            .await?;
 
         Ok(metrics)
     }
@@ -727,28 +768,30 @@ impl SqliteLogStorage {
     /// Delete old log entries based on retention policy
     pub async fn cleanup_old_entries(&self, retention_days: u32) -> LoggingResult<u64> {
         let conn = self.connection.lock().await;
-        
+
         let cutoff_timestamp = Utc::now().timestamp() - (retention_days as i64 * 24 * 60 * 60);
 
-        let deleted_count = conn.call(move |conn| {
-            let tx = conn.transaction()?;
-            
-            // Delete old log entries
-            let log_deleted = tx.execute(
-                "DELETE FROM log_entries WHERE timestamp < ?",
-                params![cutoff_timestamp],
-            )?;
+        let deleted_count = conn
+            .call(move |conn| {
+                let tx = conn.transaction()?;
 
-            // Delete old audit events
-            let audit_deleted = tx.execute(
-                "DELETE FROM audit_events WHERE timestamp < ?",
-                params![cutoff_timestamp],
-            )?;
+                // Delete old log entries
+                let log_deleted = tx.execute(
+                    "DELETE FROM log_entries WHERE timestamp < ?",
+                    params![cutoff_timestamp],
+                )?;
 
-            tx.commit()?;
-            
-            Ok((log_deleted + audit_deleted) as u64)
-        }).await?;
+                // Delete old audit events
+                let audit_deleted = tx.execute(
+                    "DELETE FROM audit_events WHERE timestamp < ?",
+                    params![cutoff_timestamp],
+                )?;
+
+                tx.commit()?;
+
+                Ok((log_deleted + audit_deleted) as u64)
+            })
+            .await?;
 
         info!("Cleaned up {} old log entries", deleted_count);
         Ok(deleted_count)
@@ -764,24 +807,34 @@ fn parse_log_entry_row(row: &Row) -> rusqlite::Result<LogEntry> {
     let context_json: String = row.get("context_json")?;
     let metrics_json: Option<String> = row.get("metrics_json")?;
 
-    let id = Uuid::parse_str(&id)
-        .map_err(|e| rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e)))?;
-    
-    let correlation_id = CorrelationId::from_str(&correlation_id)
-        .map_err(|e| rusqlite::Error::FromSqlConversionFailure(1, rusqlite::types::Type::Text, Box::new(e)))?;
+    let id = Uuid::parse_str(&id).map_err(|e| {
+        rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e))
+    })?;
 
-    let timestamp = DateTime::from_timestamp(timestamp, 0)
-        .ok_or_else(|| rusqlite::Error::InvalidColumnType(2, "timestamp".to_string(), rusqlite::types::Type::Integer))?;
+    let correlation_id = correlation_id.parse::<CorrelationId>().map_err(|e| {
+        rusqlite::Error::FromSqlConversionFailure(1, rusqlite::types::Type::Text, Box::new(e))
+    })?;
 
-    let level = int_to_log_level(level)
-        .ok_or_else(|| rusqlite::Error::InvalidColumnType(3, "level".to_string(), rusqlite::types::Type::Integer))?;
+    let timestamp = DateTime::from_timestamp(timestamp, 0).ok_or_else(|| {
+        rusqlite::Error::InvalidColumnType(
+            2,
+            "timestamp".to_string(),
+            rusqlite::types::Type::Integer,
+        )
+    })?;
 
-    let context = serde_json::from_str(&context_json)
-        .map_err(|e| rusqlite::Error::FromSqlConversionFailure(7, rusqlite::types::Type::Text, Box::new(e)))?;
+    let level = int_to_log_level(level).ok_or_else(|| {
+        rusqlite::Error::InvalidColumnType(3, "level".to_string(), rusqlite::types::Type::Integer)
+    })?;
+
+    let context = serde_json::from_str(&context_json).map_err(|e| {
+        rusqlite::Error::FromSqlConversionFailure(7, rusqlite::types::Type::Text, Box::new(e))
+    })?;
 
     let metrics = if let Some(json) = metrics_json {
-        Some(serde_json::from_str(&json)
-            .map_err(|e| rusqlite::Error::FromSqlConversionFailure(10, rusqlite::types::Type::Text, Box::new(e)))?)
+        Some(serde_json::from_str(&json).map_err(|e| {
+            rusqlite::Error::FromSqlConversionFailure(10, rusqlite::types::Type::Text, Box::new(e))
+        })?)
     } else {
         None
     };
@@ -811,23 +864,37 @@ fn parse_audit_event_row(row: &Row) -> rusqlite::Result<SecurityAuditEvent> {
     let context_json: String = row.get("context_json")?;
     let risk_score: Option<i32> = row.get("risk_score")?;
 
-    let id = Uuid::parse_str(&id)
-        .map_err(|e| rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e)))?;
-    
-    let correlation_id = CorrelationId::from_str(&correlation_id)
-        .map_err(|e| rusqlite::Error::FromSqlConversionFailure(1, rusqlite::types::Type::Text, Box::new(e)))?;
+    let id = Uuid::parse_str(&id).map_err(|e| {
+        rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e))
+    })?;
 
-    let timestamp = DateTime::from_timestamp(timestamp, 0)
-        .ok_or_else(|| rusqlite::Error::InvalidColumnType(2, "timestamp".to_string(), rusqlite::types::Type::Integer))?;
+    let correlation_id = correlation_id.parse::<CorrelationId>().map_err(|e| {
+        rusqlite::Error::FromSqlConversionFailure(1, rusqlite::types::Type::Text, Box::new(e))
+    })?;
 
-    let event_type = str_to_audit_event_type(&event_type)
-        .ok_or_else(|| rusqlite::Error::InvalidColumnType(3, "event_type".to_string(), rusqlite::types::Type::Text))?;
+    let timestamp = DateTime::from_timestamp(timestamp, 0).ok_or_else(|| {
+        rusqlite::Error::InvalidColumnType(
+            2,
+            "timestamp".to_string(),
+            rusqlite::types::Type::Integer,
+        )
+    })?;
 
-    let severity = int_to_log_level(severity)
-        .ok_or_else(|| rusqlite::Error::InvalidColumnType(4, "severity".to_string(), rusqlite::types::Type::Integer))?;
+    let event_type = str_to_audit_event_type(&event_type).ok_or_else(|| {
+        rusqlite::Error::InvalidColumnType(3, "event_type".to_string(), rusqlite::types::Type::Text)
+    })?;
 
-    let context = serde_json::from_str(&context_json)
-        .map_err(|e| rusqlite::Error::FromSqlConversionFailure(10, rusqlite::types::Type::Text, Box::new(e)))?;
+    let severity = int_to_log_level(severity).ok_or_else(|| {
+        rusqlite::Error::InvalidColumnType(
+            4,
+            "severity".to_string(),
+            rusqlite::types::Type::Integer,
+        )
+    })?;
+
+    let context = serde_json::from_str(&context_json).map_err(|e| {
+        rusqlite::Error::FromSqlConversionFailure(10, rusqlite::types::Type::Text, Box::new(e))
+    })?;
 
     Ok(SecurityAuditEvent {
         id,
@@ -871,4 +938,4 @@ fn str_to_audit_event_type(event_type: &str) -> Option<AuditEventType> {
         "system_event" => Some(AuditEventType::SystemEvent),
         _ => None,
     }
-} 
+}

@@ -15,12 +15,10 @@ use serde::{Deserialize, Serialize};
 use tracing::{debug, error, warn};
 use uuid::Uuid;
 
-use oxide_core::{ApplicationLogger, SecurityAuditor, LogLevel, LogContext};
-use oxide_logging::{
-    api::{LogQueryParams, AuditQueryParams, LogResponse, DashboardMetrics}
-};
 use crate::responses::ApiResponse;
 use crate::server::AppState;
+use oxide_core::{ApplicationLogger, LogContext, LogLevel, SecurityAuditor};
+use oxide_logging::api::{AuditQueryParams, DashboardMetrics, LogQueryParams, LogResponse};
 
 /// Request body for creating a manual log entry
 #[derive(Debug, Deserialize)]
@@ -76,13 +74,11 @@ pub async fn get_logs(
         Some(service) => service,
         None => return Err(StatusCode::SERVICE_UNAVAILABLE),
     };
-    
+
     debug!("Getting logs with params: {:?}", params);
 
     match service.query_logs(params).await {
-        Ok(response) => {
-            Ok(AxumJson(ApiResponse::success(response)))
-        }
+        Ok(response) => Ok(AxumJson(ApiResponse::success(response))),
         Err(e) => {
             error!("Failed to query logs: {}", e);
             Err(StatusCode::INTERNAL_SERVER_ERROR)
@@ -99,13 +95,11 @@ pub async fn get_audit_events(
         Some(service) => service,
         None => return Err(StatusCode::SERVICE_UNAVAILABLE),
     };
-    
+
     debug!("Getting audit events with params: {:?}", params);
 
     match service.query_audit_events(params).await {
-        Ok(response) => {
-            Ok(AxumJson(ApiResponse::success(response)))
-        }
+        Ok(response) => Ok(AxumJson(ApiResponse::success(response))),
         Err(e) => {
             error!("Failed to query audit events: {}", e);
             Err(StatusCode::INTERNAL_SERVER_ERROR)
@@ -121,13 +115,11 @@ pub async fn get_dashboard_metrics(
         Some(service) => service,
         None => return Err(StatusCode::SERVICE_UNAVAILABLE),
     };
-    
+
     debug!("Getting dashboard metrics");
 
     match service.get_dashboard_metrics().await {
-        Ok(metrics) => {
-            Ok(AxumJson(ApiResponse::success(metrics)))
-        }
+        Ok(metrics) => Ok(AxumJson(ApiResponse::success(metrics))),
         Err(e) => {
             error!("Failed to get dashboard metrics: {}", e);
             Err(StatusCode::INTERNAL_SERVER_ERROR)
@@ -144,7 +136,7 @@ pub async fn get_recent_logs(
         Some(service) => service,
         None => return Err(StatusCode::SERVICE_UNAVAILABLE),
     };
-    
+
     debug!("Getting recent logs with limit: {:?}", params.limit);
 
     let logs = service.get_recent_logs(params.limit);
@@ -159,13 +151,11 @@ pub async fn get_retention_stats(
         Some(service) => service,
         None => return Err(StatusCode::SERVICE_UNAVAILABLE),
     };
-    
+
     debug!("Getting retention statistics");
 
     match service.get_retention_stats().await {
-        Ok(stats) => {
-            Ok(AxumJson(ApiResponse::success(stats)))
-        }
+        Ok(stats) => Ok(AxumJson(ApiResponse::success(stats))),
         Err(e) => {
             error!("Failed to get retention stats: {}", e);
             Err(StatusCode::INTERNAL_SERVER_ERROR)
@@ -182,13 +172,13 @@ pub async fn create_log_entry(
         Some(logger) => logger,
         None => return Err(StatusCode::SERVICE_UNAVAILABLE),
     };
-    
+
     debug!("Creating manual log entry: {:?}", request);
 
     // Parse log level
-    let level = match LogLevel::from_str(&request.level) {
-        Some(level) => level,
-        None => {
+    let level = match request.level.parse::<LogLevel>() {
+        Ok(level) => level,
+        Err(_) => {
             warn!("Invalid log level: {}", request.level);
             return Err(StatusCode::BAD_REQUEST);
         }
@@ -196,7 +186,9 @@ pub async fn create_log_entry(
 
     // Create log entry
     let result = if let Some(context) = request.context {
-        logger.log_with_context(level, request.message, request.module, context).await
+        logger
+            .log_with_context(level, request.message, request.module, context)
+            .await
     } else {
         match level {
             LogLevel::Error => logger.error(request.message, request.module).await,
@@ -231,7 +223,7 @@ pub async fn create_audit_event(
         Some(auditor) => auditor,
         None => return Err(StatusCode::SERVICE_UNAVAILABLE),
     };
-    
+
     debug!("Creating manual audit event: {:?}", request);
 
     let context = request.context.unwrap_or_default();
@@ -239,70 +231,72 @@ pub async fn create_audit_event(
     // Route to appropriate audit function based on event type
     let result = match request.event_type.as_str() {
         "authentication" => {
-            auditor.log_authentication(
-                request.actor,
-                request.action,
-                request.result,
-                context,
-                request.risk_score,
-            ).await
+            auditor
+                .log_authentication(
+                    request.actor,
+                    request.action,
+                    request.result,
+                    context,
+                    request.risk_score,
+                )
+                .await
         }
         "authorization" => {
-            auditor.log_authorization(
-                request.actor,
-                request.target.unwrap_or_default(),
-                request.action,
-                request.result,
-                context,
-                request.risk_score,
-            ).await
+            auditor
+                .log_authorization(
+                    request.actor,
+                    request.target.unwrap_or_default(),
+                    request.action,
+                    request.result,
+                    context,
+                    request.risk_score,
+                )
+                .await
         }
         "data_access" => {
-            auditor.log_data_access(
-                request.actor,
-                request.target.unwrap_or_default(),
-                request.action,
-                context,
-            ).await
+            auditor
+                .log_data_access(
+                    request.actor,
+                    request.target.unwrap_or_default(),
+                    request.action,
+                    context,
+                )
+                .await
         }
         "data_modification" => {
-            auditor.log_data_modification(
-                request.actor,
-                request.target.unwrap_or_default(),
-                request.action,
-                context,
-            ).await
+            auditor
+                .log_data_modification(
+                    request.actor,
+                    request.target.unwrap_or_default(),
+                    request.action,
+                    context,
+                )
+                .await
         }
         "configuration_change" => {
-            auditor.log_configuration_change(
-                request.actor,
-                request.target.unwrap_or_default(),
-                request.action,
-                context,
-            ).await
+            auditor
+                .log_configuration_change(
+                    request.actor,
+                    request.target.unwrap_or_default(),
+                    request.action,
+                    context,
+                )
+                .await
         }
         "security_violation" => {
-            auditor.log_security_violation(
-                request.actor,
-                request.action,
-                request.description,
-                context,
-            ).await
+            auditor
+                .log_security_violation(request.actor, request.action, request.description, context)
+                .await
         }
         "plugin_event" => {
-            auditor.log_plugin_event(
-                request.actor,
-                request.action,
-                request.result,
-                context,
-            ).await
+            auditor
+                .log_plugin_event(request.actor, request.action, request.result, context)
+                .await
         }
         "system_event" => {
-            auditor.log_system_event(
-                request.action,
-                request.description,
-                context,
-            ).await
+            auditor
+                .log_system_event(request.action, request.description, context)
+                .await
         }
         _ => {
             warn!("Invalid audit event type: {}", request.event_type);
@@ -333,13 +327,11 @@ pub async fn flush_logs(
         Some(logger) => logger,
         None => return Err(StatusCode::SERVICE_UNAVAILABLE),
     };
-    
+
     debug!("Flushing logs to storage");
 
     match logger.flush().await {
-        Ok(_) => {
-            Ok(AxumJson(ApiResponse::success("Logs flushed successfully")))
-        }
+        Ok(_) => Ok(AxumJson(ApiResponse::success("Logs flushed successfully"))),
         Err(e) => {
             error!("Failed to flush logs: {}", e);
             Err(StatusCode::INTERNAL_SERVER_ERROR)
@@ -356,7 +348,7 @@ pub async fn get_logs_by_correlation(
         Some(service) => service,
         None => return Err(StatusCode::SERVICE_UNAVAILABLE),
     };
-    
+
     debug!("Getting logs by correlation ID: {}", correlation_id);
 
     let params = LogQueryParams {
@@ -374,9 +366,7 @@ pub async fn get_logs_by_correlation(
     };
 
     match service.query_logs(params).await {
-        Ok(response) => {
-            Ok(AxumJson(ApiResponse::success(response)))
-        }
+        Ok(response) => Ok(AxumJson(ApiResponse::success(response))),
         Err(e) => {
             error!("Failed to query logs by correlation ID: {}", e);
             Err(StatusCode::INTERNAL_SERVER_ERROR)
@@ -394,16 +384,14 @@ pub async fn get_user_logs(
         Some(service) => service,
         None => return Err(StatusCode::SERVICE_UNAVAILABLE),
     };
-    
+
     debug!("Getting logs for user: {}", user_id);
 
     // Set the user_id filter
     params.user_id = Some(user_id);
 
     match service.query_logs(params).await {
-        Ok(response) => {
-            Ok(AxumJson(ApiResponse::success(response)))
-        }
+        Ok(response) => Ok(AxumJson(ApiResponse::success(response))),
         Err(e) => {
             error!("Failed to query user logs: {}", e);
             Err(StatusCode::INTERNAL_SERVER_ERROR)
@@ -421,16 +409,14 @@ pub async fn get_collection_logs(
         Some(service) => service,
         None => return Err(StatusCode::SERVICE_UNAVAILABLE),
     };
-    
+
     debug!("Getting logs for collection: {}", collection);
 
     // Set the collection filter
     params.collection = Some(collection);
 
     match service.query_logs(params).await {
-        Ok(response) => {
-            Ok(AxumJson(ApiResponse::success(response)))
-        }
+        Ok(response) => Ok(AxumJson(ApiResponse::success(response))),
         Err(e) => {
             error!("Failed to query collection logs: {}", e);
             Err(StatusCode::INTERNAL_SERVER_ERROR)
@@ -453,13 +439,11 @@ pub async fn logging_health(
         Some(service) => service,
         None => return Err(StatusCode::SERVICE_UNAVAILABLE),
     };
-    
+
     debug!("Checking logging system health");
 
     match service.get_health_status().await {
-        Ok(health) => {
-            Ok(AxumJson(ApiResponse::success(health)))
-        }
+        Ok(health) => Ok(AxumJson(ApiResponse::success(health))),
         Err(e) => {
             error!("Failed to get logging health status: {}", e);
             Err(StatusCode::INTERNAL_SERVER_ERROR)
@@ -478,4 +462,4 @@ pub struct LoggingHealthResponse {
     pub storage_size_mb: u64,
     /// Error rate in last 24 hours
     pub error_rate_24h: f64,
-} 
+}

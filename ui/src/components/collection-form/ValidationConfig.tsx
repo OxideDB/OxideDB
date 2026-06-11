@@ -1,5 +1,4 @@
 import React from 'react';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
@@ -18,7 +17,7 @@ const ValidationConfigComponent: React.FC<ValidationConfigProps> = ({
   config = {},
   onUpdate,
 }) => {
-  const handleUpdate = (field: keyof ValidationConfig, value: any) => {
+  const handleUpdate = (field: keyof ValidationConfig, value: ValidationConfig[keyof ValidationConfig]) => {
     onUpdate(index, { ...config, [field]: value });
   };
 

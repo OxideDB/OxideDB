@@ -18,12 +18,12 @@ use axum::{
     response::Response,
 };
 use oxide_core::{
-    BeforeEventContext, BeforeEventType, AuthService, Claims,
-    logging::{LogContext, LogLevel, ApplicationLogger, SecurityAuditor},
+    logging::{ApplicationLogger, LogContext, LogLevel, SecurityAuditor},
+    AuthService, BeforeEventContext, BeforeEventType, Claims,
 };
 use std::sync::Arc;
 use std::time::Instant;
-use tracing::{debug, info, warn, error};
+use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
 use crate::{errors::ApiError, server::AppState};
@@ -55,7 +55,7 @@ pub async fn request_logging_middleware(
 ) -> Result<Response, ApiError> {
     let start_time = Instant::now();
     let correlation_id = Uuid::new_v4().to_string();
-    
+
     // Extract request information
     let method = request.method().clone();
     let uri = request.uri().clone();
@@ -67,14 +67,18 @@ pub async fn request_logging_middleware(
         .and_then(|h| h.to_str().ok())
         .unwrap_or("unknown");
     let client_ip = extract_client_ip(&headers);
-    
+
     // Extract user information if available for context
-    let user_id = extract_user_claims(&headers, &state.auth_service)
-        .map(|claims| claims.sub.clone());
+    let user_id =
+        extract_user_claims(&headers, &state.auth_service).map(|claims| claims.sub.clone());
 
     // Store correlation ID and start time in request extensions
-    request.extensions_mut().insert(CorrelationId(correlation_id.clone()));
-    request.extensions_mut().insert(RequestStartTime(start_time));
+    request
+        .extensions_mut()
+        .insert(CorrelationId(correlation_id.clone()));
+    request
+        .extensions_mut()
+        .insert(RequestStartTime(start_time));
 
     // Create log context for the request
     let log_context = LogContext::new()
@@ -82,17 +86,23 @@ pub async fn request_logging_middleware(
         .with_client_ip(client_ip.clone())
         .with_user_agent(user_agent.to_string())
         .with_user_id(user_id.clone().unwrap_or_else(|| "anonymous".to_string()))
-        .with_metadata("correlation_id".to_string(), serde_json::Value::String(correlation_id.clone()))
-        .with_metadata("query_string".to_string(), serde_json::Value::String(query.to_string()))
-        .with_metadata("content_length".to_string(), 
-            serde_json::Value::Number(
-                serde_json::Number::from(
-                    headers.get("content-length")
-                        .and_then(|h| h.to_str().ok())
-                        .and_then(|s| s.parse::<u64>().ok())
-                        .unwrap_or(0)
-                )
-            )
+        .with_metadata(
+            "correlation_id".to_string(),
+            serde_json::Value::String(correlation_id.clone()),
+        )
+        .with_metadata(
+            "query_string".to_string(),
+            serde_json::Value::String(query.to_string()),
+        )
+        .with_metadata(
+            "content_length".to_string(),
+            serde_json::Value::Number(serde_json::Number::from(
+                headers
+                    .get("content-length")
+                    .and_then(|h| h.to_str().ok())
+                    .and_then(|s| s.parse::<u64>().ok())
+                    .unwrap_or(0),
+            )),
         );
 
     // Log the incoming request using the logging service if available
@@ -143,9 +153,18 @@ pub async fn request_logging_middleware(
 
     // Create response log context with timing information
     let response_log_context = log_context
-        .with_metadata("response_status".to_string(), serde_json::Value::Number(serde_json::Number::from(status.as_u16())))
-        .with_metadata("response_time_ms".to_string(), serde_json::Value::Number(serde_json::Number::from(duration.as_millis() as u64)))
-        .with_metadata("status_class".to_string(), serde_json::Value::String(status_class.to_string()));
+        .with_metadata(
+            "response_status".to_string(),
+            serde_json::Value::Number(serde_json::Number::from(status.as_u16())),
+        )
+        .with_metadata(
+            "response_time_ms".to_string(),
+            serde_json::Value::Number(serde_json::Number::from(duration.as_millis() as u64)),
+        )
+        .with_metadata(
+            "status_class".to_string(),
+            serde_json::Value::String(status_class.to_string()),
+        );
 
     // Log the response using the logging service if available
     if let Some(logging_service) = &state.logging_service {
@@ -157,15 +176,15 @@ pub async fn request_logging_middleware(
             _ => LogLevel::Debug,
         };
 
-                 let message = format!(
-             "API Response: {} {} -> {} in {:.2}ms - User: {} - IP: {}",
-             method,
-             path,
-             status,
-             duration.as_millis(),
-             user_id.clone().unwrap_or_else(|| "anonymous".to_string()),
-             client_ip
-         );
+        let message = format!(
+            "API Response: {} {} -> {} in {:.2}ms - User: {} - IP: {}",
+            method,
+            path,
+            status,
+            duration.as_millis(),
+            user_id.clone().unwrap_or_else(|| "anonymous".to_string()),
+            client_ip
+        );
 
         // Log application-level response
         if let Err(e) = logging_service
@@ -188,14 +207,17 @@ pub async fn request_logging_middleware(
                 "server_error"
             };
 
-                         if let Err(e) = logging_service
-                 .log_security_violation(
-                     user_id.clone().unwrap_or_else(|| "anonymous".to_string()),
-                     violation_type.to_string(),
-                     format!("API request failed with status {}: {} {}", status, method, path),
-                     response_log_context,
-                 )
-                 .await
+            if let Err(e) = logging_service
+                .log_security_violation(
+                    user_id.clone().unwrap_or_else(|| "anonymous".to_string()),
+                    violation_type.to_string(),
+                    format!(
+                        "API request failed with status {}: {} {}",
+                        status, method, path
+                    ),
+                    response_log_context,
+                )
+                .await
             {
                 error!("Failed to log security violation: {}", e);
             }
@@ -308,17 +330,15 @@ fn get_status_class(status: StatusCode) -> &'static str {
 }
 
 /// List of public endpoints that don't require authentication
-const PUBLIC_ENDPOINTS: &[&str] = &[
-    "/health",
-];
+const PUBLIC_ENDPOINTS: &[&str] = &["/health"];
 
 /// List of public endpoint prefixes that don't require authentication
 const PUBLIC_ENDPOINT_PREFIXES: &[&str] = &[
-    "/auth/collections",     // List auth collections
-    "/auth/validate",        // Token validation
-    "/auth/logout",          // Logout (though this doesn't need auth anyway)
-    "/auth/refresh",         // Token refresh
-    "/admin",                // Admin UI endpoints should be publicly accessible
+    "/auth/collections", // List auth collections
+    "/auth/validate",    // Token validation
+    "/auth/logout",      // Logout (though this doesn't need auth anyway)
+    "/auth/refresh",     // Token refresh
+    "/admin",            // Admin UI endpoints should be publicly accessible
 ];
 
 /// List of public endpoint patterns that don't require authentication
@@ -330,22 +350,25 @@ const PUBLIC_ENDPOINT_PATTERNS: &[&str] = &[
 /// Check if the given path is a public endpoint
 fn is_public_endpoint(path: &str) -> bool {
     // Check exact matches first
-    if PUBLIC_ENDPOINTS.iter().any(|&endpoint| path == endpoint) {
+    if PUBLIC_ENDPOINTS.contains(&path) {
         return true;
     }
-    
+
     // Check prefix matches
-    if PUBLIC_ENDPOINT_PREFIXES.iter().any(|&prefix| path.starts_with(prefix)) {
+    if PUBLIC_ENDPOINT_PREFIXES
+        .iter()
+        .any(|&prefix| path.starts_with(prefix))
+    {
         return true;
     }
-    
+
     // Check pattern matches for parameterized auth routes
     for pattern in PUBLIC_ENDPOINT_PATTERNS {
         if pattern.contains('*') {
             // Simple pattern matching for /auth/*/login and /auth/*/register
             let pattern_parts: Vec<&str> = pattern.split('/').collect();
             let path_parts: Vec<&str> = path.split('/').collect();
-            
+
             if pattern_parts.len() == path_parts.len() {
                 let mut matches = true;
                 for (i, &pattern_part) in pattern_parts.iter().enumerate() {
@@ -362,7 +385,7 @@ fn is_public_endpoint(path: &str) -> bool {
             return true;
         }
     }
-    
+
     false
 }
 
@@ -372,7 +395,6 @@ pub async fn auth_middleware(
     mut request: Request,
     next: Next,
 ) -> Result<Response, ApiError> {
-
     let method = request.method().clone();
     let uri = request.uri().clone();
     let headers = request.headers().clone();
@@ -391,9 +413,11 @@ pub async fn auth_middleware(
 
     // Extract user claims from headers and store in request extensions
     let claims = extract_user_claims(&headers, &state.auth_service);
-    
+
     // Insert claims extension into the request
-    request.extensions_mut().insert(ClaimsExtension(claims.clone()));
+    request
+        .extensions_mut()
+        .insert(ClaimsExtension(claims.clone()));
 
     // Convert headers to JSON for event dispatch
     let headers_json = headers_to_json(&headers);
@@ -409,7 +433,11 @@ pub async fn auth_middleware(
     );
 
     // Dispatch BeforeApiRequest event - this will trigger authorization hooks
-    match state.event_bus.dispatch_before(BeforeEventType::ApiRequest, &mut context).await {
+    match state
+        .event_bus
+        .dispatch_before(BeforeEventType::ApiRequest, &mut context)
+        .await
+    {
         Ok(_results) => {
             // Authorization passed, continue with the request
             debug!("✅ Authorization passed for {} {}", method, uri);
@@ -418,30 +446,36 @@ pub async fn auth_middleware(
         Err(err) => {
             // Authorization failed
             warn!("🚫 Authorization failed for {} {}: {}", method, uri, err);
-            
+
             // Convert AppError to appropriate ApiError with detailed information
             use oxide_core::AppError;
             let api_error = match &err {
                 AppError::Auth { message } => {
                     warn!("Authentication error: {}", message);
                     ApiError::Core(err)
-                },
-                AppError::NotFound { resource_type, identifier } => {
-                     warn!("Not found error: {} with identifier '{}'", resource_type, identifier);
-                     ApiError::Core(err)
-                 },
+                }
+                AppError::NotFound {
+                    resource_type,
+                    identifier,
+                } => {
+                    warn!(
+                        "Not found error: {} with identifier '{}'",
+                        resource_type, identifier
+                    );
+                    ApiError::Core(err)
+                }
                 AppError::Validation { field, message } => {
-                     warn!("Validation error in field '{}': {}", field, message);
-                     ApiError::Core(err)
-                 },
+                    warn!("Validation error in field '{}': {}", field, message);
+                    ApiError::Core(err)
+                }
                 AppError::Conflict { message } => {
                     warn!("Conflict error: {}", message);
                     ApiError::Core(err)
-                },
+                }
                 AppError::RateLimit { message } => {
                     warn!("Rate limit error: {}", message);
                     ApiError::Core(err)
-                },
+                }
                 _ => {
                     // For other errors, log detailed information and check message for backward compatibility
                     warn!("Internal error in auth middleware: {:?}", err);
@@ -453,7 +487,7 @@ pub async fn auth_middleware(
                     }
                 }
             };
-            
+
             Err(api_error)
         }
     }
@@ -462,19 +496,23 @@ pub async fn auth_middleware(
 /// Convert HTTP headers to JSON format
 fn headers_to_json(headers: &HeaderMap) -> serde_json::Value {
     let mut headers_map = serde_json::Map::new();
-    
+
     for (name, value) in headers.iter() {
         if let Ok(value_str) = value.to_str() {
-            headers_map.insert(name.to_string(), serde_json::Value::String(value_str.to_string()));
+            headers_map.insert(
+                name.to_string(),
+                serde_json::Value::String(value_str.to_string()),
+            );
         }
     }
-    
+
     serde_json::Value::Object(headers_map)
 }
 
 /// Extract user claims from authorization header
 pub fn extract_user_claims(headers: &HeaderMap, auth_service: &Arc<AuthService>) -> Option<Claims> {
-    let auth_header = headers.get("authorization")
+    let auth_header = headers
+        .get("authorization")
         .or_else(|| headers.get("Authorization"))
         .and_then(|h| h.to_str().ok())?;
 

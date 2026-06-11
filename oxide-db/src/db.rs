@@ -81,6 +81,24 @@ pub struct AuthResponse {
     pub user_data: serde_json::Value,
 }
 
+/// Persisted refresh token metadata.
+///
+/// The database only stores token hashes; callers must never pass raw refresh
+/// tokens into this record.
+#[derive(Debug, Clone)]
+pub struct RefreshTokenRecord {
+    /// SHA-256 hash of the refresh token
+    pub token_hash: String,
+    /// The authenticated user's record ID
+    pub user_id: String,
+    /// The auth collection the user authenticated from
+    pub auth_collection: String,
+    /// JWT ID from the refresh token claims
+    pub jti: String,
+    /// Unix timestamp when the token expires
+    pub expires_at: i64,
+}
+
 /// Registration request for generic auth collections
 #[derive(Debug, Clone)]
 pub struct RegisterRequest {
@@ -145,6 +163,17 @@ pub trait Db: Send + Sync + UserPreferencesService + SiteSettingsService {
     /// # Returns
     /// The created record with its assigned ID and timestamps
     async fn create_record(&self, collection: &str, data: RecordData) -> Result<Record, AppError>;
+
+    /// Restore or replace a record while preserving backup metadata.
+    ///
+    /// This is intentionally separate from the normal create/update flow so
+    /// backup restores can preserve IDs, timestamps, and already-transformed
+    /// field values such as password hashes.
+    async fn upsert_record_with_metadata(
+        &self,
+        collection: &str,
+        record: Record,
+    ) -> Result<Record, AppError>;
 
     /// Read a record by ID from the specified collection
     ///
@@ -443,6 +472,23 @@ pub trait Db: Send + Sync + UserPreferencesService + SiteSettingsService {
     /// # Returns
     /// A vector of auth collection schemas
     async fn list_auth_collections(&self) -> Result<Vec<CollectionSchema>, AppError>;
+
+    /// Store a newly issued refresh token hash.
+    async fn store_refresh_token(&self, token: RefreshTokenRecord) -> Result<(), AppError>;
+
+    /// Atomically revoke a still-active refresh token and store its replacement.
+    ///
+    /// Returns an authentication error if the old token hash is missing, expired,
+    /// or already revoked.
+    async fn rotate_refresh_token(
+        &self,
+        old_token_hash: &str,
+        new_token: RefreshTokenRecord,
+    ) -> Result<(), AppError>;
+
+    /// Revoke a refresh token hash if it exists. Missing tokens are treated as
+    /// already revoked so logout remains idempotent.
+    async fn revoke_refresh_token(&self, token_hash: &str) -> Result<(), AppError>;
 
     /// Populate relationship fields in records
     ///

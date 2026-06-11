@@ -39,7 +39,7 @@ impl PluginResponse {
             metadata: serde_json::Value::Null,
         }
     }
-    
+
     /// Create a response that allows the operation with modified data
     pub fn allow_with_data<T: Serialize>(data: &T) -> Result<Self, serde_json::Error> {
         Ok(Self {
@@ -49,7 +49,7 @@ impl PluginResponse {
             metadata: serde_json::Value::Null,
         })
     }
-    
+
     /// Create a response that blocks the operation with an error message
     pub fn deny<S: Into<String>>(error_message: S) -> Self {
         Self {
@@ -59,7 +59,7 @@ impl PluginResponse {
             metadata: serde_json::Value::Null,
         }
     }
-    
+
     /// Add metadata to the response
     pub fn with_metadata(mut self, metadata: serde_json::Value) -> Self {
         self.metadata = metadata;
@@ -97,17 +97,17 @@ impl HttpRequestContext {
     pub fn get_query(&self, name: &str) -> Option<&String> {
         self.query_params.get(name)
     }
-    
+
     /// Get a header by name
     pub fn get_header(&self, name: &str) -> Option<&String> {
         self.headers.get(name)
     }
-    
+
     /// Get a path parameter by name
     pub fn get_path_param(&self, name: &str) -> Option<&String> {
         self.path_params.get(name)
     }
-    
+
     /// Parse the request body as JSON
     pub fn body_json<T: for<'de> Deserialize<'de>>(&self) -> Result<T, serde_json::Error> {
         match &self.body {
@@ -115,7 +115,7 @@ impl HttpRequestContext {
             None => Err(serde_json::Error::custom("No request body")),
         }
     }
-    
+
     /// Check if the request has a JSON content type
     pub fn is_json(&self) -> bool {
         self.get_header("content-type")
@@ -144,37 +144,43 @@ impl HttpResponse {
             body: String::new(),
         }
     }
-    
+
     /// Create a successful response with JSON body
     pub fn json<T: Serialize>(data: &T) -> Result<Self, serde_json::Error> {
         let mut response = Self::new(200);
-        response.headers.insert("Content-Type".to_string(), "application/json".to_string());
+        response
+            .headers
+            .insert("Content-Type".to_string(), "application/json".to_string());
         response.body = serde_json::to_string(data)?;
         Ok(response)
     }
-    
+
     /// Create an error response
     pub fn error(status_code: u16, message: &str) -> Self {
         let mut response = Self::new(status_code);
-        response.headers.insert("Content-Type".to_string(), "application/json".to_string());
+        response
+            .headers
+            .insert("Content-Type".to_string(), "application/json".to_string());
         response.body = format!(r#"{{"error": "{}"}}"#, message);
         response
     }
-    
+
     /// Create a text response
     pub fn text<S: Into<String>>(text: S) -> Self {
         let mut response = Self::new(200);
-        response.headers.insert("Content-Type".to_string(), "text/plain".to_string());
+        response
+            .headers
+            .insert("Content-Type".to_string(), "text/plain".to_string());
         response.body = text.into();
         response
     }
-    
+
     /// Add a header
     pub fn with_header<K: Into<String>, V: Into<String>>(mut self, key: K, value: V) -> Self {
         self.headers.insert(key.into(), value.into());
         self
     }
-    
+
     /// Set the response body
     pub fn with_body<S: Into<String>>(mut self, body: S) -> Self {
         self.body = body.into();
@@ -217,17 +223,17 @@ impl DatabaseResult {
     pub fn is_success(&self) -> bool {
         self.success
     }
-    
+
     /// Get the error message if operation failed
     pub fn error(&self) -> Option<&str> {
         self.error.as_deref()
     }
-    
+
     /// Get the result data
     pub fn data(&self) -> Option<&serde_json::Value> {
         self.data.as_ref()
     }
-    
+
     /// Parse the result data as a specific type
     pub fn parse_data<T: for<'de> Deserialize<'de>>(&self) -> Result<T, serde_json::Error> {
         match &self.data {
@@ -235,12 +241,12 @@ impl DatabaseResult {
             None => Err(serde_json::Error::custom("No result data")),
         }
     }
-    
+
     /// Parse the result data as a list of records
     pub fn parse_records(&self) -> Result<Vec<Record>, serde_json::Error> {
         self.parse_data()
     }
-    
+
     /// Parse the result data as a single record
     pub fn parse_record(&self) -> Result<Record, serde_json::Error> {
         self.parse_data()
@@ -261,7 +267,7 @@ impl LogLevel {
     pub fn as_str(&self) -> &'static str {
         match self {
             LogLevel::Info => "INFO",
-            LogLevel::Error => "ERROR", 
+            LogLevel::Error => "ERROR",
             LogLevel::Warn => "WARN",
             LogLevel::Debug => "DEBUG",
         }
@@ -310,7 +316,7 @@ pub struct PluginMetadata {
 }
 
 /// Security-related metadata for plugins
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PluginSecurityMetadata {
     /// Hash of the plugin binary for integrity verification
     pub binary_hash: Option<String>,
@@ -339,20 +345,6 @@ pub struct PluginAuditInfo {
     pub report_url: Option<String>,
     /// Audit status (e.g., "passed", "failed", "pending")
     pub status: String,
-}
-
-impl Default for PluginSecurityMetadata {
-    fn default() -> Self {
-        Self {
-            binary_hash: None,
-            hash_algorithm: None,
-            signature: None,
-            certificate_chain: None,
-            security_contact: None,
-            security_advisories: Vec::new(),
-            audit_info: None,
-        }
-    }
 }
 
 impl PluginMetadata {
@@ -569,7 +561,7 @@ pub enum PluginStatus {
 }
 
 /// Plugin execution statistics
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PluginStats {
     /// Total number of function calls
     pub total_calls: u64,
@@ -582,15 +574,3 @@ pub struct PluginStats {
     /// Last execution timestamp
     pub last_execution: Option<String>,
 }
-
-impl Default for PluginStats {
-    fn default() -> Self {
-        Self {
-            total_calls: 0,
-            total_execution_time_ms: 0,
-            successful_operations: 0,
-            failed_operations: 0,
-            last_execution: None,
-        }
-    }
-} 

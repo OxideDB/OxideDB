@@ -22,6 +22,8 @@ import Settings from "./pages/Settings";
 import Permissions from "./pages/Permissions";
 import Plugins from "./pages/Plugins";
 import Logs from "./pages/Logs";
+import ApiKeys from "./pages/ApiKeys";
+import Backups from "./pages/Backups";
 
 function App() {
   return (
@@ -73,12 +75,35 @@ function App() {
                             </ProtectedRoute>
                           }
                         />
-                        <Route path="settings" element={<Settings />} />
+                        <Route
+                          path="settings"
+                          element={
+                            <ProtectedRoute requireSuperuser={true}>
+                              <Settings />
+                            </ProtectedRoute>
+                          }
+                        />
                         <Route
                           path="plugins"
                           element={
                             <ProtectedRoute requireSuperuser={true}>
                               <Plugins />
+                            </ProtectedRoute>
+                          }
+                        />
+                        <Route
+                          path="api-keys"
+                          element={
+                            <ProtectedRoute requireSuperuser={true}>
+                              <ApiKeys />
+                            </ProtectedRoute>
+                          }
+                        />
+                        <Route
+                          path="backups"
+                          element={
+                            <ProtectedRoute requireSuperuser={true}>
+                              <Backups />
                             </ProtectedRoute>
                           }
                         />

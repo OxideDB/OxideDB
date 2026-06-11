@@ -8,7 +8,6 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/tooltip';
 import { 
   Search, TrendingUp, Info, AlertTriangle, Shield, User
 } from 'lucide-react';
-import type { LogQueryParams, AuditQueryParams } from '../../types/api';
 
 interface SearchTabProps {
   selectedCorrelationId: string;

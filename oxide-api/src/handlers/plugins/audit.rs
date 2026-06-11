@@ -63,7 +63,11 @@ pub async fn get_plugin_audit_log(
                 Ok(audit_entries)
             }
             Err(e) => {
-                tracing::warn!("Failed to query audit events for plugin {}: {}", plugin_name, e);
+                tracing::warn!(
+                    "Failed to query audit events for plugin {}: {}",
+                    plugin_name,
+                    e
+                );
                 // Fallback to empty audit log if logging service fails
                 Ok(Vec::new())
             }
@@ -72,4 +76,4 @@ pub async fn get_plugin_audit_log(
         // No logging service available
         Ok(Vec::new())
     }
-} 
+}

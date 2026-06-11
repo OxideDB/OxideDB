@@ -17,7 +17,9 @@
 //! that operations are properly dispatched through the event system.
 
 pub mod admin;
+pub mod api_keys;
 pub mod auth;
+pub mod backups;
 pub mod collections;
 pub mod dashboard;
 pub mod health;
@@ -30,10 +32,15 @@ pub mod user_preferences;
 pub mod vfs;
 
 // Re-export commonly used types for convenience
+pub use api_keys::{ApiKeyHandlers, ApiKeyRulesResponse, UpsertApiKeyRuleRequest};
 pub use auth::{AuthHandlers, LoginRequest, LoginResponse, RegisterRequest, RegisterResponse};
-pub use collections::{CollectionStats, CollectionHandlers};
+pub use backups::{
+    BackupExportResponse, BackupHandlers, BackupManifestResponse, BackupRestoreRequest,
+    BackupRestoreResponse,
+};
+pub use collections::{CollectionHandlers, CollectionStats};
 pub use dashboard::{get_dashboard_statistics, get_system_statistics};
 pub use health::{HealthHandlers, HealthStatus};
-pub use permissions::{PermissionHandlers, CollectionPermissionsInfo, PermissionPresetType};
+pub use permissions::{CollectionPermissionsInfo, PermissionHandlers, PermissionPresetType};
 pub use records::RecordHandlers;
-pub use site_settings::SiteSettingsHandlers; 
+pub use site_settings::SiteSettingsHandlers;

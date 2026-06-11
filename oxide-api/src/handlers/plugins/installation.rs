@@ -12,8 +12,8 @@ use zip::ZipArchive;
 
 use super::{
     capabilities::{
-        is_capability_allowed_for_trust_level, minimum_trust_level_for_capabilities,
-        parse_capability_string, parse_trust_level_string,
+        capability_satisfies, is_capability_allowed_for_trust_level,
+        minimum_trust_level_for_capabilities, parse_capability_strings, parse_trust_level_string,
     },
     types::*,
 };
@@ -114,6 +114,12 @@ pub async fn register_plugin(
 
     // Verify digital signature if present
     let signature_valid = verify_plugin_signature(&package).await?;
+    enforce_plugin_signature_policy(
+        &package.manifest.plugin.name,
+        plugin_manager.requires_code_signing(),
+        signature_valid,
+    )?;
+
     if signature_valid {
         info!(
             "✅ Plugin signature verified: {}",
@@ -130,13 +136,8 @@ pub async fn register_plugin(
     let plugin_version = package.manifest.plugin.version.clone();
 
     // Parse declared capabilities from manifest
-    let declared_capabilities: Vec<PluginCapability> = package
-        .manifest
-        .security
-        .required_capabilities
-        .iter()
-        .filter_map(|cap_str| parse_capability_string(cap_str).ok())
-        .collect();
+    let declared_capabilities: Vec<PluginCapability> =
+        parse_capability_strings(&package.manifest.security.required_capabilities)?;
 
     // Parse recommended trust level from manifest (for future use)
     let _recommended_trust_level =
@@ -153,7 +154,11 @@ pub async fn register_plugin(
     // Validate that user-granted capabilities include all required ones
     let missing_capabilities: Vec<&PluginCapability> = declared_capabilities
         .iter()
-        .filter(|req_cap| !final_capabilities.iter().any(|granted| granted == *req_cap))
+        .filter(|req_cap| {
+            !final_capabilities
+                .iter()
+                .any(|granted| capability_satisfies(granted, req_cap))
+        })
         .collect();
 
     if !missing_capabilities.is_empty() {
@@ -512,20 +517,27 @@ pub async fn verify_plugin_signature(package: &PluginPackage) -> Result<bool, Ap
         }
     };
 
-    // TODO: Implement actual signature verification
-    // This would involve:
-    // 1. Loading trusted public keys/certificates
-    // 2. Verifying the signature against the package hash
-    // 3. Checking certificate chain validity
-    // 4. Ensuring the signer is trusted
-
     warn!(
-        "🚧 Digital signature verification not yet implemented for plugin: {}",
+        "Digital signature present but no trusted verification backend is configured for plugin: {}",
         package.manifest.plugin.name
     );
 
-    // For now, return false to indicate signature verification is not working
     Ok(false)
+}
+
+fn enforce_plugin_signature_policy(
+    plugin_name: &str,
+    code_signing_required: bool,
+    signature_valid: bool,
+) -> Result<(), ApiError> {
+    if !code_signing_required || signature_valid {
+        return Ok(());
+    }
+
+    Err(ApiError::forbidden(format!(
+        "Plugin '{}' requires a verified digital signature before installation",
+        plugin_name
+    )))
 }
 
 /// Validate plugin name format
@@ -558,4 +570,23 @@ fn is_valid_version(version: &str) -> bool {
         // Allow numeric parts and pre-release identifiers
         part.chars().all(|c| c.is_alphanumeric() || c == '-')
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::StatusCode;
+
+    #[test]
+    fn signature_policy_fails_closed_when_required() {
+        let error = enforce_plugin_signature_policy("plugin", true, false).unwrap_err();
+
+        assert_eq!(error.status_code(), StatusCode::FORBIDDEN);
+    }
+
+    #[test]
+    fn signature_policy_allows_verified_or_optional_signatures() {
+        assert!(enforce_plugin_signature_policy("plugin", true, true).is_ok());
+        assert!(enforce_plugin_signature_policy("plugin", false, false).is_ok());
+    }
 }

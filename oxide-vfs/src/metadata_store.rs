@@ -9,15 +9,17 @@
 //! - Zero-copy binary serialization
 //! - Automatic cache invalidation
 
-use oxide_core::{VfsResult, VfsError, FileMetadata, VfsNamespace, FileIdentifier};
-use lmdb::{Database, DatabaseFlags, Environment, EnvironmentFlags, Transaction, WriteFlags, Cursor};
+use lmdb::{
+    Cursor, Database, DatabaseFlags, Environment, EnvironmentFlags, Transaction, WriteFlags,
+};
 use lru::LruCache;
+use oxide_core::{FileIdentifier, FileMetadata, VfsError, VfsNamespace, VfsResult};
+use std::num::NonZeroUsize;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::num::NonZeroUsize;
-use tokio::sync::Mutex;
-use tracing::{instrument, debug, warn};
 use std::time::SystemTime;
+use tokio::sync::Mutex;
+use tracing::{debug, instrument, warn};
 
 /// Cache entry with timestamp for TTL
 #[derive(Debug, Clone)]
@@ -39,8 +41,6 @@ pub struct MetadataStore {
     cache: Arc<Mutex<LruCache<String, CacheEntry>>>,
     /// Cache TTL in seconds (default: 5 minutes)
     cache_ttl_secs: u64,
-    /// Base path for LMDB files
-    base_path: PathBuf,
 }
 
 impl MetadataStore {
@@ -53,7 +53,11 @@ impl MetadataStore {
 
         // Create LMDB environment with optimized settings
         let env = Environment::new()
-            .set_flags(EnvironmentFlags::NO_SYNC | EnvironmentFlags::WRITE_MAP | EnvironmentFlags::MAP_ASYNC)
+            .set_flags(
+                EnvironmentFlags::NO_SYNC
+                    | EnvironmentFlags::WRITE_MAP
+                    | EnvironmentFlags::MAP_ASYNC,
+            )
             .set_max_readers(1024)
             .set_max_dbs(4)
             .set_map_size(1024 * 1024 * 1024) // 1GB max
@@ -63,26 +67,29 @@ impl MetadataStore {
             })?;
 
         // Create databases
-        let metadata_db = env.create_db(Some("metadata"), DatabaseFlags::empty())
+        let metadata_db = env
+            .create_db(Some("metadata"), DatabaseFlags::empty())
             .map_err(|e| VfsError::IoError {
                 message: format!("Failed to create metadata database: {}", e),
             })?;
 
-        let path_index_db = env.create_db(Some("path_index"), DatabaseFlags::empty())
+        let path_index_db = env
+            .create_db(Some("path_index"), DatabaseFlags::empty())
             .map_err(|e| VfsError::IoError {
                 message: format!("Failed to create path index database: {}", e),
             })?;
 
-        let namespace_index_db = env.create_db(Some("namespace_index"), DatabaseFlags::empty())
+        let namespace_index_db = env
+            .create_db(Some("namespace_index"), DatabaseFlags::empty())
             .map_err(|e| VfsError::IoError {
                 message: format!("Failed to create namespace index database: {}", e),
             })?;
 
         // Create LRU cache (default 10,000 entries)
         let cache_capacity = cache_size.unwrap_or(10_000);
-        let cache = Arc::new(Mutex::new(
-            LruCache::new(NonZeroUsize::new(cache_capacity).unwrap())
-        ));
+        let cache = Arc::new(Mutex::new(LruCache::new(
+            NonZeroUsize::new(cache_capacity).unwrap(),
+        )));
 
         Ok(Self {
             env,
@@ -91,7 +98,6 @@ impl MetadataStore {
             namespace_index_db,
             cache,
             cache_ttl_secs: 300, // 5 minutes
-            base_path: lmdb_path,
         })
     }
 
@@ -118,22 +124,37 @@ impl MetadataStore {
             })?;
 
             // Store main metadata
-            txn.put(self.metadata_db, &metadata_key, &metadata_data, WriteFlags::empty())
-                .map_err(|e| VfsError::IoError {
-                    message: format!("Failed to store metadata: {}", e),
-                })?;
+            txn.put(
+                self.metadata_db,
+                &metadata_key,
+                &metadata_data,
+                WriteFlags::empty(),
+            )
+            .map_err(|e| VfsError::IoError {
+                message: format!("Failed to store metadata: {}", e),
+            })?;
 
             // Store path index
-            txn.put(self.path_index_db, &path_key, &metadata.id, WriteFlags::empty())
-                .map_err(|e| VfsError::IoError {
-                    message: format!("Failed to store path index: {}", e),
-                })?;
+            txn.put(
+                self.path_index_db,
+                &path_key,
+                &metadata.id,
+                WriteFlags::empty(),
+            )
+            .map_err(|e| VfsError::IoError {
+                message: format!("Failed to store path index: {}", e),
+            })?;
 
             // Store namespace index
-            txn.put(self.namespace_index_db, &namespace_key, &metadata.id, WriteFlags::empty())
-                .map_err(|e| VfsError::IoError {
-                    message: format!("Failed to store namespace index: {}", e),
-                })?;
+            txn.put(
+                self.namespace_index_db,
+                &namespace_key,
+                &metadata.id,
+                WriteFlags::empty(),
+            )
+            .map_err(|e| VfsError::IoError {
+                message: format!("Failed to store namespace index: {}", e),
+            })?;
 
             txn.commit().map_err(|e| VfsError::IoError {
                 message: format!("Failed to commit LMDB transaction: {}", e),
@@ -143,7 +164,10 @@ impl MetadataStore {
         // Update cache
         self.cache_metadata(&metadata_key, metadata).await;
 
-        debug!("Stored metadata for file: {} in namespace: {}", metadata.id, namespace);
+        debug!(
+            "Stored metadata for file: {} in namespace: {}",
+            metadata.id, namespace
+        );
         Ok(())
     }
 
@@ -158,12 +182,12 @@ impl MetadataStore {
             FileIdentifier::Id(id) => {
                 let key = format!("{}:{}", namespace, id);
                 (key.clone(), key)
-            },
+            }
             FileIdentifier::Path(path) => {
                 let cache_key = format!("{}:path:{}", namespace, path);
                 let lookup_key = format!("{}:{}", namespace, path);
                 (cache_key, lookup_key)
-            },
+            }
         };
 
         // Check cache first
@@ -174,7 +198,9 @@ impl MetadataStore {
 
         // Cache miss - lookup in LMDB
         debug!("Cache miss for metadata lookup: {}", cache_key);
-        let metadata = self.lookup_in_lmdb(namespace, identifier, &lookup_key).await?;
+        let metadata = self
+            .lookup_in_lmdb(namespace, identifier, &lookup_key)
+            .await?;
 
         // Cache the result
         self.cache_metadata(&cache_key, &metadata).await;
@@ -191,7 +217,7 @@ impl MetadataStore {
     ) -> VfsResult<()> {
         // Get metadata first to build all keys
         let metadata = self.get_metadata(namespace, identifier).await?;
-        
+
         let metadata_key = format!("{}:{}", namespace, metadata.id);
         let path_key = format!("{}:{}", namespace, metadata.path);
         let namespace_key = format!("{}:{}", namespace, metadata.id);
@@ -215,7 +241,10 @@ impl MetadataStore {
         // Remove from cache
         self.invalidate_cache(&metadata_key).await;
 
-        debug!("Deleted metadata for file: {} in namespace: {}", metadata.id, namespace);
+        debug!(
+            "Deleted metadata for file: {} in namespace: {}",
+            metadata.id, namespace
+        );
         Ok(())
     }
 
@@ -234,9 +263,11 @@ impl MetadataStore {
             message: format!("Failed to begin LMDB read transaction: {}", e),
         })?;
 
-        let mut cursor = txn.open_ro_cursor(self.metadata_db).map_err(|e| VfsError::IoError {
-            message: format!("Failed to open LMDB cursor: {}", e),
-        })?;
+        let mut cursor = txn
+            .open_ro_cursor(self.metadata_db)
+            .map_err(|e| VfsError::IoError {
+                message: format!("Failed to open LMDB cursor: {}", e),
+            })?;
 
         let mut count = 0;
         let start_offset = offset.unwrap_or(0);
@@ -246,7 +277,7 @@ impl MetadataStore {
         // This avoids the LMDB NotFound panic when namespace doesn't exist
         for (key, value) in cursor.iter() {
             let key_str = std::str::from_utf8(key).unwrap_or("");
-            
+
             // Only process keys that start with our namespace prefix
             if !key_str.starts_with(&namespace_prefix) {
                 // Skip keys that don't match our namespace
@@ -276,7 +307,11 @@ impl MetadataStore {
             count += 1;
         }
 
-        debug!("Listed {} metadata entries for namespace: {}", results.len(), namespace);
+        debug!(
+            "Listed {} metadata entries for namespace: {}",
+            results.len(),
+            namespace
+        );
         Ok(results)
     }
 
@@ -290,7 +325,7 @@ impl MetadataStore {
     pub async fn clear_namespace_cache(&self, namespace: &VfsNamespace) {
         let namespace_prefix = format!("{}:", namespace);
         let mut cache = self.cache.lock().await;
-        
+
         let keys_to_remove: Vec<String> = cache
             .iter()
             .filter_map(|(key, _)| {
@@ -316,8 +351,7 @@ impl MetadataStore {
         })
     }
 
-    /// Private helper methods
-
+    // Private helper methods
     async fn get_from_cache(&self, key: &str) -> Option<FileMetadata> {
         let cache = self.cache.lock().await;
         if let Some(entry) = cache.peek(key) {
@@ -359,8 +393,10 @@ impl MetadataStore {
                 // First lookup file ID from path index
                 match txn.get(self.path_index_db, &lookup_key) {
                     Ok(file_id_bytes) => {
-                        let file_id = std::str::from_utf8(file_id_bytes).map_err(|e| VfsError::EncodingError {
-                            message: format!("Invalid file ID encoding: {}", e),
+                        let file_id = std::str::from_utf8(file_id_bytes).map_err(|e| {
+                            VfsError::EncodingError {
+                                message: format!("Invalid file ID encoding: {}", e),
+                            }
                         })?;
                         (format!("{}:{}", namespace, file_id), self.metadata_db)
                     }
@@ -376,8 +412,10 @@ impl MetadataStore {
         // Get metadata from main database
         match txn.get(db, &actual_key) {
             Ok(metadata_bytes) => {
-                bincode::deserialize::<FileMetadata>(metadata_bytes).map_err(|e| VfsError::EncodingError {
-                    message: format!("Failed to deserialize metadata: {}", e),
+                bincode::deserialize::<FileMetadata>(metadata_bytes).map_err(|e| {
+                    VfsError::EncodingError {
+                        message: format!("Failed to deserialize metadata: {}", e),
+                    }
                 })
             }
             Err(_) => Err(VfsError::FileNotFound {
@@ -400,8 +438,8 @@ impl Drop for MetadataStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::TempDir;
     use std::collections::HashMap;
+    use tempfile::TempDir;
 
     async fn create_test_store() -> (MetadataStore, TempDir) {
         let temp_dir = TempDir::new().unwrap();
@@ -412,7 +450,11 @@ mod tests {
     fn create_test_metadata(id: &str, path: &str) -> FileMetadata {
         FileMetadata {
             id: id.to_string(),
-            name: std::path::Path::new(path).file_name().unwrap().to_string_lossy().to_string(),
+            name: std::path::Path::new(path)
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .to_string(),
             path: path.to_string(),
             mime_type: "text/plain".to_string(),
             size: 1024,
@@ -436,7 +478,10 @@ mod tests {
         store.store_metadata(&namespace, &metadata).await.unwrap();
 
         // Retrieve by ID
-        let retrieved = store.get_metadata(&namespace, &FileIdentifier::Id("test123".to_string())).await.unwrap();
+        let retrieved = store
+            .get_metadata(&namespace, &FileIdentifier::Id("test123".to_string()))
+            .await
+            .unwrap();
         assert_eq!(retrieved.id, metadata.id);
         assert_eq!(retrieved.path, metadata.path);
     }
@@ -451,7 +496,13 @@ mod tests {
         store.store_metadata(&namespace, &metadata).await.unwrap();
 
         // Retrieve by path
-        let retrieved = store.get_metadata(&namespace, &FileIdentifier::Path("/test/file2.txt".to_string())).await.unwrap();
+        let retrieved = store
+            .get_metadata(
+                &namespace,
+                &FileIdentifier::Path("/test/file2.txt".to_string()),
+            )
+            .await
+            .unwrap();
         assert_eq!(retrieved.id, metadata.id);
         assert_eq!(retrieved.path, metadata.path);
     }
@@ -466,14 +517,20 @@ mod tests {
         store.store_metadata(&namespace, &metadata).await.unwrap();
 
         // First lookup (should populate cache)
-        let _ = store.get_metadata(&namespace, &FileIdentifier::Id("cached123".to_string())).await.unwrap();
+        let _ = store
+            .get_metadata(&namespace, &FileIdentifier::Id("cached123".to_string()))
+            .await
+            .unwrap();
 
         // Check cache stats
         let (used, _capacity) = store.get_cache_stats().await;
         assert!(used > 0);
 
         // Second lookup should be cache hit
-        let retrieved = store.get_metadata(&namespace, &FileIdentifier::Id("cached123".to_string())).await.unwrap();
+        let retrieved = store
+            .get_metadata(&namespace, &FileIdentifier::Id("cached123".to_string()))
+            .await
+            .unwrap();
         assert_eq!(retrieved.id, metadata.id);
     }
 
@@ -485,13 +542,21 @@ mod tests {
 
         // Store and verify
         store.store_metadata(&namespace, &metadata).await.unwrap();
-        let _ = store.get_metadata(&namespace, &FileIdentifier::Id("delete123".to_string())).await.unwrap();
+        let _ = store
+            .get_metadata(&namespace, &FileIdentifier::Id("delete123".to_string()))
+            .await
+            .unwrap();
 
         // Delete
-        store.delete_metadata(&namespace, &FileIdentifier::Id("delete123".to_string())).await.unwrap();
+        store
+            .delete_metadata(&namespace, &FileIdentifier::Id("delete123".to_string()))
+            .await
+            .unwrap();
 
         // Should not be found
-        let result = store.get_metadata(&namespace, &FileIdentifier::Id("delete123".to_string())).await;
+        let result = store
+            .get_metadata(&namespace, &FileIdentifier::Id("delete123".to_string()))
+            .await;
         assert!(result.is_err());
     }
 
@@ -502,7 +567,8 @@ mod tests {
 
         // Store multiple files
         for i in 0..5 {
-            let metadata = create_test_metadata(&format!("list{}", i), &format!("/test/file{}.txt", i));
+            let metadata =
+                create_test_metadata(&format!("list{}", i), &format!("/test/file{}.txt", i));
             store.store_metadata(&namespace, &metadata).await.unwrap();
         }
 
@@ -511,11 +577,17 @@ mod tests {
         assert_eq!(all_files.len(), 5);
 
         // List with limit
-        let limited = store.list_metadata(&namespace, None, Some(3)).await.unwrap();
+        let limited = store
+            .list_metadata(&namespace, None, Some(3))
+            .await
+            .unwrap();
         assert_eq!(limited.len(), 3);
 
         // List with offset
-        let offset = store.list_metadata(&namespace, Some(2), Some(2)).await.unwrap();
+        let offset = store
+            .list_metadata(&namespace, Some(2), Some(2))
+            .await
+            .unwrap();
         assert_eq!(offset.len(), 2);
     }
-} 
+}

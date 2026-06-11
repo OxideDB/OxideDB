@@ -133,21 +133,17 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
   }, []); // Remove loadAuthCollections from dependencies since it's called directly
 
   const login = async (collection: string, identifier: string, credential: string): Promise<void> => {
-    try {
-      const authResponse = await apiService.login(collection, identifier, credential);
-      
-      // Create user object from auth response
-      const userData: User = {
-        id: authResponse.user_id,
-        email: authResponse.email,
-        is_superuser: authResponse.role === 'superuser',
-        created_at: new Date().toISOString(), // We don't have this from login response
-      };
-      
-      setUser(userData);
-    } catch (error) {
-      throw error; // Re-throw to let the login component handle it
-    }
+    const authResponse = await apiService.login(collection, identifier, credential);
+
+    // Create user object from auth response
+    const userData: User = {
+      id: authResponse.user_id,
+      email: authResponse.email,
+      is_superuser: authResponse.role === 'superuser',
+      created_at: new Date().toISOString(), // We don't have this from login response
+    };
+
+    setUser(userData);
   };
 
   const logout = async (): Promise<void> => {

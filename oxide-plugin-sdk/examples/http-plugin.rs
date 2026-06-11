@@ -1,5 +1,5 @@
 //! HTTP Plugin Example using OxideDB Plugin SDK
-//! 
+//!
 //! This example demonstrates how to create a plugin that handles database operations
 //! using the high-level SDK. This is a simplified version that focuses on data operations.
 
@@ -45,7 +45,10 @@ impl PluginEventHandler for HttpPlugin {
     }
 
     fn on_after_create(&mut self, event: &EventPayload) -> PluginResult<PluginResponse> {
-        log_info!("Record created successfully in collection: {}", event.collection);
+        log_info!(
+            "Record created successfully in collection: {}",
+            event.collection
+        );
 
         // Create audit log entry
         let audit_entry = json!({
@@ -94,7 +97,7 @@ impl PluginEventHandler for HttpPlugin {
 
         // Parse the data to check for protection flags
         let data: JsonValue = serde_json::from_str(&event.data)?;
-        
+
         if let Some(protected) = data.get("protected").and_then(|v| v.as_bool()) {
             if protected {
                 log_warn!("Attempted to delete protected record");
@@ -104,8 +107,13 @@ impl PluginEventHandler for HttpPlugin {
 
         // Don't allow deletion of system collections
         if event.collection.starts_with("_system") {
-            log_warn!("Attempted to delete from system collection: {}", event.collection);
-            return Ok(PluginResponse::deny("System collections cannot be modified"));
+            log_warn!(
+                "Attempted to delete from system collection: {}",
+                event.collection
+            );
+            return Ok(PluginResponse::deny(
+                "System collections cannot be modified",
+            ));
         }
 
         Ok(PluginResponse::allow())
@@ -156,7 +164,7 @@ mod tests {
     #[test]
     fn test_item_validation() {
         let mut plugin = HttpPlugin::default();
-        
+
         // Test valid item creation
         let event = EventPayload {
             event_type: "BeforeRecordCreate".to_string(),
@@ -167,18 +175,17 @@ mod tests {
 
         let response = plugin.on_before_create(&event).unwrap();
         assert!(response.allow);
-        
+
         // Verify metadata was added
-        let enhanced_data: JsonValue = serde_json::from_str(
-            response.modified_data.as_ref().unwrap()
-        ).unwrap();
+        let enhanced_data: JsonValue =
+            serde_json::from_str(response.modified_data.as_ref().unwrap()).unwrap();
         assert_eq!(enhanced_data["processed_by"], "http-plugin");
     }
 
     #[test]
     fn test_empty_name_validation() {
         let mut plugin = HttpPlugin::default();
-        
+
         let event = EventPayload {
             event_type: "BeforeRecordCreate".to_string(),
             collection: "items".to_string(),
@@ -188,13 +195,16 @@ mod tests {
 
         let response = plugin.on_before_create(&event).unwrap();
         assert!(!response.allow);
-        assert!(response.error_message.unwrap().contains("Name field is required"));
+        assert!(response
+            .error_message
+            .unwrap()
+            .contains("Name field is required"));
     }
 
     #[test]
     fn test_protected_record_deletion() {
         let mut plugin = HttpPlugin::default();
-        
+
         let event = EventPayload {
             event_type: "BeforeRecordDelete".to_string(),
             collection: "items".to_string(),
@@ -204,13 +214,16 @@ mod tests {
 
         let response = plugin.on_before_delete(&event).unwrap();
         assert!(!response.allow);
-        assert!(response.error_message.unwrap().contains("Cannot delete protected"));
+        assert!(response
+            .error_message
+            .unwrap()
+            .contains("Cannot delete protected"));
     }
 
     #[test]
     fn test_system_collection_protection() {
         let mut plugin = HttpPlugin::default();
-        
+
         let event = EventPayload {
             event_type: "BeforeRecordDelete".to_string(),
             collection: "_system_config".to_string(),
@@ -220,6 +233,9 @@ mod tests {
 
         let response = plugin.on_before_delete(&event).unwrap();
         assert!(!response.allow);
-        assert!(response.error_message.unwrap().contains("System collections"));
+        assert!(response
+            .error_message
+            .unwrap()
+            .contains("System collections"));
     }
-} 
+}

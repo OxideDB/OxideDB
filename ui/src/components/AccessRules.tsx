@@ -29,7 +29,6 @@ interface AccessRulesProps {
  */
 export const AccessRules: React.FC<AccessRulesProps> = ({
   permissions,
-  collection,
   schema,
   onEdit,
   onReset,

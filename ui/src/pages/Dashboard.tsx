@@ -15,7 +15,8 @@ import {
   BarChart2,
 } from "lucide-react";
 import PageLayout from "@/components/PageLayout";
-import { dashboardApi, type DashboardStats } from "@/types/api";
+import { apiService } from "@/services/api";
+import type { DashboardStats } from "@/types/api";
 
 const Dashboard: React.FC = () => {
   const [dashboardData, setDashboardData] = useState<DashboardStats | null>(null);
@@ -26,7 +27,8 @@ const Dashboard: React.FC = () => {
     const fetchDashboardData = async () => {
       try {
         setLoading(true);
-        const data = await dashboardApi.getDashboardStats();
+        setError(null);
+        const data = await apiService.getDashboardStats();
         setDashboardData(data);
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Failed to load dashboard data');
@@ -71,7 +73,19 @@ const Dashboard: React.FC = () => {
   }
 
   // Show dashboard with real data
-  if (!dashboardData) return null;
+  if (!dashboardData) {
+    return (
+      <PageLayout title="Dashboard">
+        <div className="flex min-h-[400px] items-center justify-center rounded-lg border border-dashed">
+          <div className="text-center">
+            <Server className="mx-auto mb-3 h-10 w-10 text-muted-foreground" />
+            <h3 className="text-lg font-semibold">No dashboard data</h3>
+            <p className="text-sm text-muted-foreground">The server returned an empty dashboard response.</p>
+          </div>
+        </div>
+      </PageLayout>
+    );
+  }
 
   const stats = [
     {

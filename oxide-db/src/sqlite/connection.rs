@@ -1,17 +1,14 @@
 //! SQLite database connection and core structure
 
+use super::schema_adapter::{quote_identifier, SqliteSchemaAdapter};
 use crate::db::SchemaAdapter;
-use super::schema_adapter::SqliteSchemaAdapter;
-use oxide_core::{
-    AppError, AuthService, EventBus, FieldType,
-    event::types::RecordId,
-};
+use chrono::Utc;
+use oxide_core::{event::types::RecordId, AppError, AuthService, EventBus, FieldType};
 use rusqlite::Connection;
 use std::sync::{Arc, Mutex};
 use tokio::task::spawn_blocking;
-use tracing::{info, debug};
+use tracing::{debug, info};
 use uuid::Uuid;
-use chrono::Utc;
 
 /// SQLite implementation of the Db trait
 ///
@@ -32,7 +29,11 @@ impl SqliteDb {
     /// * `database_path` - Path to the SQLite database file (use ":memory:" for in-memory)
     /// * `event_bus` - The event bus for dispatching events
     /// * `auth_service` - The authentication service for password hashing
-    pub fn new(database_path: &str, event_bus: Arc<dyn EventBus>, auth_service: Arc<AuthService>) -> Result<Self, AppError> {
+    pub fn new(
+        database_path: &str,
+        event_bus: Arc<dyn EventBus>,
+        auth_service: Arc<AuthService>,
+    ) -> Result<Self, AppError> {
         let connection = Connection::open(database_path)
             .map_err(|e| AppError::database(format!("Failed to open SQLite database: {}", e)))?;
 
@@ -117,7 +118,45 @@ impl SqliteDb {
                 "#,
                 [],
             )
-            .map_err(|e| AppError::database(format!("Failed to create permissions table: {}", e)))?;
+            .map_err(|e| {
+                AppError::database(format!("Failed to create permissions table: {}", e))
+            })?;
+
+            conn.execute(
+                r#"
+                CREATE TABLE IF NOT EXISTS auth_refresh_tokens (
+                    token_hash TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    auth_collection TEXT NOT NULL,
+                    jti TEXT UNIQUE NOT NULL,
+                    expires_at INTEGER NOT NULL,
+                    revoked_at INTEGER,
+                    replaced_by_hash TEXT,
+                    created_at INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL
+                )
+                "#,
+                [],
+            )
+            .map_err(|e| {
+                AppError::database(format!("Failed to create refresh token table: {}", e))
+            })?;
+
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_auth_refresh_tokens_user_id ON auth_refresh_tokens(user_id)",
+                [],
+            )
+            .map_err(|e| {
+                AppError::database(format!("Failed to create refresh token user index: {}", e))
+            })?;
+
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_auth_refresh_tokens_active ON auth_refresh_tokens(expires_at, revoked_at)",
+                [],
+            )
+            .map_err(|e| {
+                AppError::database(format!("Failed to create refresh token active index: {}", e))
+            })?;
 
             info!("SQLite database initialized successfully");
             Ok::<(), AppError>(())
@@ -130,7 +169,7 @@ impl SqliteDb {
 
     /// Initialize the database with tables and system collections
     pub async fn initialize(&self) -> Result<(), AppError> {
-        use oxide_core::{AfterEventType, AfterEventContext};
+        use oxide_core::{AfterEventContext, AfterEventType};
 
         // Create database tables
         self.create_tables().await?;
@@ -161,7 +200,7 @@ impl SqliteDb {
     /// Migrate existing data from centralized records table to collection-specific tables
     async fn migrate_to_collection_tables(&self) -> Result<(), AppError> {
         let connection = self.connection.clone();
-        
+
         // First, check if we have any data in the old records table
         let has_old_data = spawn_blocking({
             let connection = connection.clone();
@@ -173,7 +212,9 @@ impl SqliteDb {
                 // Check if records table exists and has data
                 let table_exists: bool = conn
                     .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='records'")
-                    .map_err(|e| AppError::database(format!("Failed to check table existence: {}", e)))?
+                    .map_err(|e| {
+                        AppError::database(format!("Failed to check table existence: {}", e))
+                    })?
                     .query_row([], |_| Ok(true))
                     .unwrap_or(false);
 
@@ -202,7 +243,7 @@ impl SqliteDb {
 
         // Get all collections that need migration
         let collections = self.list_collections().await?;
-        
+
         for schema in collections {
             if schema.name.starts_with('_') {
                 // Skip system collections for now
@@ -250,16 +291,16 @@ impl SqliteDb {
                             let data_str: String = row.get(1)?;
                             let created_at: i64 = row.get(2)?;
                             let updated_at: i64 = row.get(3)?;
-                            
+
                             let data: serde_json::Value = serde_json::from_str(&data_str)
                                 .map_err(|e| rusqlite::Error::FromSqlConversionFailure(1, rusqlite::types::Type::Text, Box::new(e)))?;
-                            
+
                             Ok((id, data, created_at, updated_at))
                         })
                         .map_err(|e| AppError::database(format!("Failed to query old records: {}", e)))?
                         .collect::<Result<Vec<_>, _>>()
                         .map_err(|e| AppError::database(format!("Failed to collect old records: {}", e)))?;
-                    
+
                     // Drop the statement before continuing
                     drop(select_stmt);
                     records
@@ -282,7 +323,7 @@ impl SqliteDb {
                         if let Some(value) = data.get(field_name) {
                             field_names.push(field_name.clone());
                             placeholders.push(format!("?{}", field_names.len()));
-                            
+
                             match field_def.field_type.sql_type() {
                                 "TEXT" => {
                                     // For File fields, serialize the entire JSON object as string
@@ -312,8 +353,12 @@ impl SqliteDb {
 
                     let insert_sql = format!(
                         "INSERT INTO {} ({}) VALUES ({})",
-                        table_name,
-                        field_names.join(", "),
+                        quote_identifier(&table_name),
+                        field_names
+                            .iter()
+                            .map(|field_name| quote_identifier(field_name))
+                            .collect::<Vec<_>>()
+                            .join(", "),
                         placeholders.join(", ")
                     );
 
@@ -350,9 +395,9 @@ impl SqliteDb {
                 .map_err(|_| AppError::database("Failed to acquire database lock"))?;
 
             // Use prepare and query_row for SELECT statements instead of execute
-            let mut stmt = conn
-                .prepare("SELECT 1")
-                .map_err(|e| AppError::database(format!("Failed to prepare health check query: {}", e)))?;
+            let mut stmt = conn.prepare("SELECT 1").map_err(|e| {
+                AppError::database(format!("Failed to prepare health check query: {}", e))
+            })?;
 
             let _result: i32 = stmt
                 .query_row([], |row| row.get(0))
@@ -368,7 +413,7 @@ impl SqliteDb {
 
     /// Close the database connection
     pub async fn close(&self) -> Result<(), AppError> {
-        use oxide_core::{AfterEventType, AfterEventContext};
+        use oxide_core::{AfterEventContext, AfterEventType};
 
         info!("Closing SQLite database connection");
 
@@ -406,7 +451,9 @@ impl SqliteDb {
 
             let count: i64 = stmt
                 .query_row([&collection_name], |row| row.get(0))
-                .map_err(|e| AppError::database(format!("Failed to check collection existence: {}", e)))?;
+                .map_err(|e| {
+                    AppError::database(format!("Failed to check collection existence: {}", e))
+                })?;
 
             Ok::<bool, AppError>(count > 0)
         })
@@ -430,7 +477,7 @@ impl SqliteDb {
                 .lock()
                 .map_err(|_| AppError::database("Failed to acquire database lock"))?;
 
-            let count_sql = format!("SELECT COUNT(*) FROM {}", table_name);
+            let count_sql = format!("SELECT COUNT(*) FROM {}", quote_identifier(&table_name));
             let mut stmt = conn
                 .prepare(&count_sql)
                 .map_err(|e| AppError::database(format!("Failed to prepare statement: {}", e)))?;
@@ -444,7 +491,10 @@ impl SqliteDb {
         .await
         .map_err(|e| AppError::internal(format!("Task join error: {}", e)))??;
 
-        debug!("Counted {} records in collection table {}", count, table_name_for_logging);
+        debug!(
+            "Counted {} records in collection table {}",
+            count, table_name_for_logging
+        );
         Ok(count)
     }
 
@@ -463,14 +513,16 @@ impl SqliteDb {
 
             // Primary approach: Use dbstat virtual table for accurate, fast sizing
             let dbstat_sql = "SELECT SUM(pgsize) FROM dbstat WHERE name = ?1";
-            
+
             match conn.prepare(dbstat_sql) {
                 Ok(mut stmt) => {
                     match stmt.query_row([&table_name], |row| row.get::<_, i64>(0)) {
                         Ok(size_bytes) => {
                             let size_kb = size_bytes as f64 / 1024.0;
-                            debug!("Calculated size for collection table {} using dbstat: {:.2} KB", 
-                                table_name, size_kb);
+                            debug!(
+                                "Calculated size for collection table {} using dbstat: {:.2} KB",
+                                table_name, size_kb
+                            );
                             return Ok(size_kb);
                         }
                         Err(_) => {
@@ -482,15 +534,18 @@ impl SqliteDb {
                 }
                 Err(_) => {
                     // dbstat not available, fall back to estimation
-                    debug!("dbstat not available, falling back to estimation for table {}", table_name);
+                    debug!(
+                        "dbstat not available, falling back to estimation for table {}",
+                        table_name
+                    );
                 }
             }
 
             // Fallback approach: Quick estimation using record count
-            let count_sql = format!("SELECT COUNT(*) FROM {}", table_name);
-            let mut count_stmt = conn
-                .prepare(&count_sql)
-                .map_err(|e| AppError::database(format!("Failed to prepare count statement: {}", e)))?;
+            let count_sql = format!("SELECT COUNT(*) FROM {}", quote_identifier(&table_name));
+            let mut count_stmt = conn.prepare(&count_sql).map_err(|e| {
+                AppError::database(format!("Failed to prepare count statement: {}", e))
+            })?;
 
             let record_count: i64 = count_stmt
                 .query_row([], |row| row.get(0))
@@ -503,9 +558,11 @@ impl SqliteDb {
                 1.0 + (record_count as f64 * 256.0 / 1024.0)
             };
 
-            debug!("Estimated size for collection table {}: {:.2} KB ({} records)", 
-                table_name, estimated_kb, record_count);
-            
+            debug!(
+                "Estimated size for collection table {}: {:.2} KB ({} records)",
+                table_name, estimated_kb, record_count
+            );
+
             Ok::<f64, AppError>(estimated_kb)
         })
         .await
@@ -539,8 +596,10 @@ impl SqliteDb {
             top_endpoints: vec![],
         };
 
-        let uptime_seconds = crate::dashboard_stats_service::PROCESS_START.elapsed().as_secs();
-        
+        let uptime_seconds = crate::dashboard_stats_service::PROCESS_START
+            .elapsed()
+            .as_secs();
+
         let system_health = oxide_core::SystemHealth {
             database_status: oxide_core::HealthStatus::Healthy, // Based on health check
             api_status: oxide_core::HealthStatus::Healthy,
@@ -575,7 +634,10 @@ impl SqliteDb {
             match self.count_records(&collection.name).await {
                 Ok(count) => total_records += count as u64,
                 Err(e) => {
-                    debug!("Failed to count records for collection {}: {}", collection.name, e);
+                    debug!(
+                        "Failed to count records for collection {}: {}",
+                        collection.name, e
+                    );
                     // Continue processing other collections
                 }
             }
@@ -599,25 +661,31 @@ impl SqliteDb {
     }
 
     /// Get statistics for all collections
-    pub async fn get_collection_statistics(&self) -> Result<Vec<oxide_core::CollectionStatsEntry>, AppError> {
+    pub async fn get_collection_statistics(
+        &self,
+    ) -> Result<Vec<oxide_core::CollectionStatsEntry>, AppError> {
         debug!("Collecting collection statistics");
 
         let connection = Arc::clone(&self.connection);
-        
+
         let collections_with_timestamps = spawn_blocking(move || {
-            let conn = connection.lock().map_err(|e| AppError::internal(format!("Failed to lock connection: {}", e)))?;
-            
+            let conn = connection
+                .lock()
+                .map_err(|e| AppError::internal(format!("Failed to lock connection: {}", e)))?;
+
             let mut stmt = conn
-                .prepare("SELECT name, schema, created_at, updated_at FROM collections ORDER BY name")
+                .prepare(
+                    "SELECT name, schema, created_at, updated_at FROM collections ORDER BY name",
+                )
                 .map_err(|e| AppError::database(format!("Failed to prepare statement: {}", e)))?;
 
             let collections_data: Result<Vec<(String, String, i64, i64)>, rusqlite::Error> = stmt
                 .query_map([], |row| {
                     Ok((
-                        row.get::<_, String>(0)?,    // name
-                        row.get::<_, String>(1)?,    // schema
-                        row.get::<_, i64>(2)?,       // created_at
-                        row.get::<_, i64>(3)?,       // updated_at
+                        row.get::<_, String>(0)?, // name
+                        row.get::<_, String>(1)?, // schema
+                        row.get::<_, i64>(2)?,    // created_at
+                        row.get::<_, i64>(3)?,    // updated_at
                     ))
                 })
                 .map_err(|e| AppError::database(format!("Failed to execute query: {}", e)))?
@@ -652,10 +720,10 @@ impl SqliteDb {
             let is_system = name.starts_with('_');
 
             // Convert Unix timestamps to ISO 8601 strings
-            let created_at_iso = chrono::DateTime::from_timestamp(created_at, 0)
-                .map(|dt| dt.to_rfc3339());
-            let last_modified_iso = chrono::DateTime::from_timestamp(updated_at, 0)
-                .map(|dt| dt.to_rfc3339());
+            let created_at_iso =
+                chrono::DateTime::from_timestamp(created_at, 0).map(|dt| dt.to_rfc3339());
+            let last_modified_iso =
+                chrono::DateTime::from_timestamp(updated_at, 0).map(|dt| dt.to_rfc3339());
 
             stats.push(oxide_core::CollectionStatsEntry {
                 name: name.clone(),
@@ -675,10 +743,12 @@ impl SqliteDb {
         debug!("Collecting storage usage information");
 
         let connection = Arc::clone(&self.connection);
-        
+
         let database_size_bytes = spawn_blocking(move || {
-            let conn = connection.lock().map_err(|e| AppError::internal(format!("Failed to lock connection: {}", e)))?;
-            
+            let conn = connection
+                .lock()
+                .map_err(|e| AppError::internal(format!("Failed to lock connection: {}", e)))?;
+
             // Get database file size using PRAGMA page_count and page_size
             let page_count: i64 = conn
                 .prepare("PRAGMA page_count")
@@ -715,7 +785,10 @@ impl SqliteDb {
     }
 
     /// Record an activity entry for the dashboard
-    pub async fn record_dashboard_activity(&self, activity: oxide_core::ActivityEntry) -> Result<(), AppError> {
+    pub async fn record_dashboard_activity(
+        &self,
+        activity: oxide_core::ActivityEntry,
+    ) -> Result<(), AppError> {
         debug!("Recording dashboard activity: {:?}", activity.activity_type);
 
         let connection = Arc::clone(&self.connection);
@@ -787,13 +860,18 @@ impl SqliteDb {
     }
 
     /// Get recent activities for the dashboard
-    pub async fn get_recent_dashboard_activities(&self, limit: usize) -> Result<Vec<oxide_core::ActivityEntry>, AppError> {
+    pub async fn get_recent_dashboard_activities(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<oxide_core::ActivityEntry>, AppError> {
         debug!("Getting recent dashboard activities with limit: {}", limit);
 
         let connection = Arc::clone(&self.connection);
 
         let activities = spawn_blocking(move || {
-            let conn = connection.lock().map_err(|e| AppError::internal(format!("Failed to lock connection: {}", e)))?;
+            let conn = connection
+                .lock()
+                .map_err(|e| AppError::internal(format!("Failed to lock connection: {}", e)))?;
 
             // Create table if it doesn't exist (for graceful handling)
             conn.execute(
@@ -807,14 +885,19 @@ impl SqliteDb {
                     metadata TEXT
                 )",
                 [],
-            ).map_err(|e| AppError::database(format!("Failed to create activities table: {}", e)))?;
+            )
+            .map_err(|e| AppError::database(format!("Failed to create activities table: {}", e)))?;
 
             let mut stmt = conn
-                .prepare("SELECT timestamp, activity_type, user_name, description, collection, metadata 
+                .prepare(
+                    "SELECT timestamp, activity_type, user_name, description, collection, metadata 
                          FROM dashboard_activities 
                          ORDER BY timestamp DESC 
-                         LIMIT ?1")
-                .map_err(|e| AppError::database(format!("Failed to prepare activities query: {}", e)))?;
+                         LIMIT ?1",
+                )
+                .map_err(|e| {
+                    AppError::database(format!("Failed to prepare activities query: {}", e))
+                })?;
 
             let activity_iter = stmt
                 .query_map([limit as i64], |row| {
@@ -852,7 +935,7 @@ impl SqliteDb {
                         serde_json::from_str(&metadata_str).ok()
                     };
 
-                    let collection = if collection.as_ref().map_or(true, |s| s.is_empty()) {
+                    let collection = if collection.as_ref().is_none_or(|s| s.is_empty()) {
                         None
                     } else {
                         collection

@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
-use super::types::{Collection, RecordData, RecordId, EventPriority};
+use super::types::{Collection, EventPriority, RecordData, RecordId};
 
 /// Context for Before events that allows data modification
 #[derive(Debug, Clone)]
@@ -207,7 +207,12 @@ impl BeforeEventContext {
     }
 
     /// Create a new VFS file write context
-    pub fn new_vfs_write(namespace: String, path: String, content: Vec<u8>, mime_type: Option<String>) -> Self {
+    pub fn new_vfs_write(
+        namespace: String,
+        path: String,
+        content: Vec<u8>,
+        mime_type: Option<String>,
+    ) -> Self {
         let file_data = serde_json::json!({
             "path": path,
             "size": content.len(),
@@ -728,18 +733,13 @@ impl RequestContext {
 }
 
 /// Error severity levels for error events
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum ErrorSeverity {
     Low,
+    #[default]
     Medium,
     High,
     Critical,
-}
-
-impl Default for ErrorSeverity {
-    fn default() -> Self {
-        ErrorSeverity::Medium
-    }
 }
 
 #[cfg(test)]
@@ -750,7 +750,7 @@ mod tests {
     fn test_before_context_creation() {
         let data = serde_json::json!({"name": "test"});
         let context = BeforeEventContext::new_create("users".to_string(), data.clone());
-        
+
         assert_eq!(context.collection, "users");
         assert_eq!(context.data, data);
         assert_eq!(context.priority, EventPriority::Normal);
@@ -765,7 +765,7 @@ mod tests {
             .with_priority(EventPriority::High)
             .with_tag("env".to_string(), "test".to_string())
             .with_persistence();
-        
+
         assert_eq!(context.priority, EventPriority::High);
         assert!(context.has_tag("env", "test"));
         assert!(context.should_persist);
@@ -775,14 +775,14 @@ mod tests {
     fn test_after_context_factory_methods() {
         let data = serde_json::json!({"name": "test"});
         let request_context = RequestContext::authenticated("user123".to_string());
-        
+
         let context = AfterEventContext::record_created(
             "users".to_string(),
             "rec123".to_string(),
             data,
             request_context,
         );
-        
+
         assert!(!context.event_id().is_empty());
         assert!(context.timestamp() > 0);
         assert!(context.age_ms() < 100); // Should be very recent
@@ -794,7 +794,7 @@ mod tests {
             .with_client_info("192.168.1.1".to_string(), "Mozilla/5.0".to_string())
             .with_correlation_id("corr-123".to_string())
             .with_custom("source".to_string(), "web".to_string());
-        
+
         assert_eq!(context.user_id.as_ref().unwrap(), "user123");
         assert_eq!(context.client_ip.as_ref().unwrap(), "192.168.1.1");
         assert_eq!(context.correlation_id.as_ref().unwrap(), "corr-123");
@@ -807,11 +807,13 @@ mod tests {
             "users".to_string(),
             serde_json::json!({"name": "test"}),
         );
-        
-        context.set_metadata("test_key", serde_json::json!("test_value")).unwrap();
+
+        context
+            .set_metadata("test_key", serde_json::json!("test_value"))
+            .unwrap();
         assert_eq!(
             context.get_metadata("test_key").unwrap(),
             &serde_json::json!("test_value")
         );
     }
-} 
+}

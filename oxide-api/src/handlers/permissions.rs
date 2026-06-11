@@ -8,20 +8,15 @@ use axum::{
     extract::{Path, State},
     Json,
 };
-use oxide_core::{
-    CollectionPermissions, CrudOperation, PermissionLevel, UserRole,
-    Claims,
-};
 use oxide_core::auth::types::AuthOperation;
+use oxide_core::{
+    Claims, CollectionPermissions, CollectionType, CrudOperation, PermissionLevel, UserRole,
+};
 use oxide_db::Db;
 use std::sync::Arc;
 use tracing::{debug, info};
 
-use crate::{
-    errors::ApiError,
-    responses::ApiResponse,
-    server::AppState,
-};
+use crate::{errors::ApiError, responses::ApiResponse, server::AppState};
 
 /// Handlers for permission management operations
 pub struct PermissionHandlers;
@@ -48,10 +43,10 @@ impl PermissionHandlers {
             }
             None => {
                 debug!("No custom permissions found, determining appropriate defaults for collection: {}", collection);
-                
+
                 // Get collection schema to determine type
                 let schema = db.get_collection_schema(&collection).await?;
-                
+
                 // Return appropriate default permissions based on collection type
                 let permissions = match schema.collection_type {
                     oxide_core::CollectionType::Auth => {
@@ -63,7 +58,7 @@ impl PermissionHandlers {
                         CollectionPermissions::new(collection)
                     }
                 };
-                
+
                 Ok(permissions)
             }
         }
@@ -79,11 +74,15 @@ impl PermissionHandlers {
         debug!("Updating permissions for collection: {}", collection);
 
         // Only superusers can modify permissions
-        let user_role: UserRole = user_claims.role.parse()
+        let user_role: UserRole = user_claims
+            .role
+            .parse()
             .map_err(|_| ApiError::forbidden("Invalid user role".to_string()))?;
-        
+
         if user_role != UserRole::Superuser {
-            return Err(ApiError::forbidden("Only superusers can modify permissions".to_string()));
+            return Err(ApiError::forbidden(
+                "Only superusers can modify permissions".to_string(),
+            ));
         }
 
         // Check if collection exists
@@ -92,8 +91,10 @@ impl PermissionHandlers {
             return Err(ApiError::not_found(format!("Collection '{}'", collection)));
         }
 
+        let schema = db.get_collection_schema(&collection).await?;
+
         // Validate permissions
-        Self::validate_permissions(&permissions)?;
+        Self::validate_permissions(&permissions, schema.collection_type)?;
 
         // Store permissions in database
         let mut updated_permissions = permissions;
@@ -102,7 +103,10 @@ impl PermissionHandlers {
 
         db.store_permissions(&updated_permissions).await?;
 
-        info!("Updated permissions for collection: {}", updated_permissions.collection);
+        info!(
+            "Updated permissions for collection: {}",
+            updated_permissions.collection
+        );
         Ok(updated_permissions)
     }
 
@@ -124,26 +128,35 @@ impl PermissionHandlers {
                     // Use appropriate defaults based on collection type
                     match collection_schema.collection_type {
                         oxide_core::CollectionType::Auth => {
-                            debug!("Using auth collection defaults for: {}", collection_schema.name);
-                            CollectionPermissions::new_for_auth_collection(collection_schema.name.clone())
+                            debug!(
+                                "Using auth collection defaults for: {}",
+                                collection_schema.name
+                            );
+                            CollectionPermissions::new_for_auth_collection(
+                                collection_schema.name.clone(),
+                            )
                         }
                         oxide_core::CollectionType::Base => {
-                            debug!("Using base collection defaults for: {}", collection_schema.name);
+                            debug!(
+                                "Using base collection defaults for: {}",
+                                collection_schema.name
+                            );
                             CollectionPermissions::new(collection_schema.name.clone())
                         }
                     }
                 }
             };
 
-            let has_custom_rules = collections_with_custom_permissions.contains(&collection_schema.name);
-            
+            let has_custom_rules =
+                collections_with_custom_permissions.contains(&collection_schema.name);
+
             let info = CollectionPermissionsInfo {
                 collection_name: collection_schema.name,
                 collection_type: collection_schema.collection_type,
                 permissions,
                 has_custom_rules,
             };
-            
+
             permissions_info.push(info);
         }
 
@@ -159,11 +172,15 @@ impl PermissionHandlers {
         debug!("Resetting permissions for collection: {}", collection);
 
         // Only superusers can reset permissions
-        let user_role: UserRole = user_claims.role.parse()
+        let user_role: UserRole = user_claims
+            .role
+            .parse()
             .map_err(|_| ApiError::forbidden("Invalid user role".to_string()))?;
-        
+
         if user_role != UserRole::Superuser {
-            return Err(ApiError::forbidden("Only superusers can reset permissions".to_string()));
+            return Err(ApiError::forbidden(
+                "Only superusers can reset permissions".to_string(),
+            ));
         }
 
         // Check if collection exists
@@ -177,7 +194,7 @@ impl PermissionHandlers {
 
         // Get collection schema to determine appropriate defaults
         let schema = db.get_collection_schema(&collection).await?;
-        
+
         // Return appropriate default permissions based on collection type
         let permissions = match schema.collection_type {
             oxide_core::CollectionType::Auth => {
@@ -190,7 +207,10 @@ impl PermissionHandlers {
             }
         };
 
-        info!("Reset permissions to defaults for collection: {}", permissions.collection);
+        info!(
+            "Reset permissions to defaults for collection: {}",
+            permissions.collection
+        );
         Ok(permissions)
     }
 
@@ -199,7 +219,10 @@ impl PermissionHandlers {
         collection: String,
         preset_type: PermissionPresetType,
     ) -> Result<CollectionPermissions, ApiError> {
-        debug!("Creating permission preset '{}' for collection: {}", preset_type, collection);
+        debug!(
+            "Creating permission preset '{}' for collection: {}",
+            preset_type, collection
+        );
 
         let permissions = match preset_type {
             PermissionPresetType::Public => CollectionPermissions::public(collection),
@@ -207,14 +230,23 @@ impl PermissionHandlers {
                 let mut perms = CollectionPermissions::new(collection);
                 // Set CRUD operations to authenticated only
                 for operation in [
-                    CrudOperation::Create, CrudOperation::Read, CrudOperation::Update, CrudOperation::Delete, CrudOperation::List,
+                    CrudOperation::Create,
+                    CrudOperation::Read,
+                    CrudOperation::Update,
+                    CrudOperation::Delete,
+                    CrudOperation::List,
                 ] {
                     perms.set_crud_permission(operation, PermissionLevel::AuthenticatedOnly);
                 }
                 // Set auth operations to authenticated only
                 for operation in [
-                    AuthOperation::Login, AuthOperation::Register, AuthOperation::TokenValidation, 
-                    AuthOperation::TokenRefresh, AuthOperation::Logout, AuthOperation::GetCurrentUser, AuthOperation::ListAuthCollections
+                    AuthOperation::Login,
+                    AuthOperation::Register,
+                    AuthOperation::TokenValidation,
+                    AuthOperation::TokenRefresh,
+                    AuthOperation::Logout,
+                    AuthOperation::GetCurrentUser,
+                    AuthOperation::ListAuthCollections,
                 ] {
                     perms.set_auth_permission(operation, PermissionLevel::AuthenticatedOnly);
                 }
@@ -232,8 +264,14 @@ impl PermissionHandlers {
                 perms.set_auth_permission(AuthOperation::TokenValidation, PermissionLevel::Public);
                 perms.set_auth_permission(AuthOperation::TokenRefresh, PermissionLevel::Public);
                 perms.set_auth_permission(AuthOperation::Logout, PermissionLevel::Public);
-                perms.set_auth_permission(AuthOperation::GetCurrentUser, PermissionLevel::AuthenticatedOnly);
-                perms.set_auth_permission(AuthOperation::ListAuthCollections, PermissionLevel::Public);
+                perms.set_auth_permission(
+                    AuthOperation::GetCurrentUser,
+                    PermissionLevel::AuthenticatedOnly,
+                );
+                perms.set_auth_permission(
+                    AuthOperation::ListAuthCollections,
+                    PermissionLevel::Public,
+                );
                 perms
             }
         };
@@ -242,10 +280,15 @@ impl PermissionHandlers {
     }
 
     /// Validate permission rules
-    fn validate_permissions(permissions: &CollectionPermissions) -> Result<(), ApiError> {
+    fn validate_permissions(
+        permissions: &CollectionPermissions,
+        collection_type: CollectionType,
+    ) -> Result<(), ApiError> {
         // Basic validation
         if permissions.collection.is_empty() {
-            return Err(ApiError::bad_request("Collection name cannot be empty".to_string()));
+            return Err(ApiError::bad_request(
+                "Collection name cannot be empty".to_string(),
+            ));
         }
 
         // Validate that all CRUD operations have rules
@@ -266,23 +309,25 @@ impl PermissionHandlers {
             }
         }
 
-        // Validate that all auth operations have rules (for auth collections)
-        let required_auth_operations = [
-            AuthOperation::Login,
-            AuthOperation::Register,
-            AuthOperation::TokenValidation,
-            AuthOperation::TokenRefresh,
-            AuthOperation::Logout,
-            AuthOperation::GetCurrentUser,
-            AuthOperation::ListAuthCollections,
-        ];
+        // Validate that auth collections have all auth operation rules.
+        if collection_type == CollectionType::Auth {
+            let required_auth_operations = [
+                AuthOperation::Login,
+                AuthOperation::Register,
+                AuthOperation::TokenValidation,
+                AuthOperation::TokenRefresh,
+                AuthOperation::Logout,
+                AuthOperation::GetCurrentUser,
+                AuthOperation::ListAuthCollections,
+            ];
 
-        for operation in &required_auth_operations {
-            if permissions.get_auth_rule(operation).is_none() {
-                return Err(ApiError::bad_request(format!(
-                    "Missing permission rule for {} operation",
-                    operation
-                )));
+            for operation in &required_auth_operations {
+                if permissions.get_auth_rule(operation).is_none() {
+                    return Err(ApiError::bad_request(format!(
+                        "Missing permission rule for {} operation",
+                        operation
+                    )));
+                }
             }
         }
 
@@ -290,7 +335,9 @@ impl PermissionHandlers {
         for rule in permissions.crud_rules.values() {
             if let PermissionLevel::Rule(rule_expr) = &rule.permission {
                 if rule_expr.is_empty() {
-                    return Err(ApiError::bad_request("Custom rule expression cannot be empty".to_string()));
+                    return Err(ApiError::bad_request(
+                        "Custom rule expression cannot be empty".to_string(),
+                    ));
                 }
                 // TODO: Add more sophisticated rule validation
             }
@@ -299,7 +346,9 @@ impl PermissionHandlers {
         for rule in permissions.auth_rules.values() {
             if let PermissionLevel::Rule(rule_expr) = &rule.permission {
                 if rule_expr.is_empty() {
-                    return Err(ApiError::bad_request("Custom rule expression cannot be empty".to_string()));
+                    return Err(ApiError::bad_request(
+                        "Custom rule expression cannot be empty".to_string(),
+                    ));
                 }
                 // TODO: Add more sophisticated rule validation
             }
@@ -370,8 +419,9 @@ pub async fn update_collection_permissions(
         collection,
         permissions,
         authenticated_user.claims,
-    ).await?;
-    
+    )
+    .await?;
+
     Ok(Json(ApiResponse::success(updated_permissions)))
 }
 
@@ -393,7 +443,9 @@ pub async fn reset_collection_permissions(
     State(state): State<AppState>,
     Path(collection): Path<String>,
 ) -> Result<Json<ApiResponse<CollectionPermissions>>, ApiError> {
-    let permissions = PermissionHandlers::reset_permissions(state.db, collection, authenticated_user.claims).await?;
+    let permissions =
+        PermissionHandlers::reset_permissions(state.db, collection, authenticated_user.claims)
+            .await?;
     Ok(Json(ApiResponse::success(permissions)))
 }
 
@@ -407,15 +459,17 @@ pub async fn create_permissions_from_preset(
     Json(preset): Json<PermissionPresetType>,
 ) -> Result<Json<ApiResponse<CollectionPermissions>>, ApiError> {
     // Get the permissions from the preset
-    let permissions = PermissionHandlers::create_permission_preset(collection.clone(), preset).await?;
-    
+    let permissions =
+        PermissionHandlers::create_permission_preset(collection.clone(), preset).await?;
+
     // Store the permissions in the database
     let updated_permissions = PermissionHandlers::update_permissions(
         state.db,
         collection,
         permissions,
         authenticated_user.claims,
-    ).await?;
-    
+    )
+    .await?;
+
     Ok(Json(ApiResponse::success(updated_permissions)))
 }

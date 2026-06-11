@@ -19,58 +19,72 @@ pub mod dashboard;
 pub mod error;
 pub mod event;
 pub mod field_types;
-pub mod logging;
-pub mod vfs;
-pub mod plugin_api;
-pub mod plugin_security;
-pub mod plugin_config;
 pub mod hooks;
-pub mod user_preferences;
+pub mod logging;
+pub mod plugin_api;
+pub mod plugin_config;
+pub mod plugin_security;
 pub mod site_settings;
+pub mod user_preferences;
+pub mod vfs;
 
 // Re-export commonly used types for convenience
 pub use auth::{
-    AuthService, UserRole, Claims, CrudOperation, PermissionLevel,
-    OperationRule, CollectionPermissions, PermissionContext
+    AuthService, Claims, CollectionPermissions, CrudOperation, OperationRule, PermissionContext,
+    PermissionLevel, UserRole,
 };
 pub use collection::{CollectionSchema, CollectionType, FieldDefinition};
 pub use dashboard::{
-    DashboardStats, SystemStats, CollectionStatsEntry, UserStats, ApiStats,
-    ActivityEntry, ActivityType, SystemHealth, HealthStatus, StorageUsage,
-    DashboardStatsService, GrowthTrends, UserActivity, EndpointStats
+    ActivityEntry, ActivityType, ApiStats, CollectionStatsEntry, DashboardStats,
+    DashboardStatsService, EndpointStats, GrowthTrends, HealthStatus, StorageUsage, SystemHealth,
+    SystemStats, UserActivity, UserStats,
 };
 pub use error::AppError;
-pub use field_types::FieldType;
 pub use event::{
+    AfterEventContext,
+    AfterEventHandler,
+    AfterEventType,
     // Event system core types
-    BeforeEventContext, AfterEventContext, BeforeEventType, AfterEventType,
-    BeforeEventHandler, AfterEventHandler, EventBus, InMemoryEventBus,
+    BeforeEventContext,
+    BeforeEventHandler,
+    BeforeEventType,
+    BusConfig as EventBusConfig,
+    CircuitBreakerMiddleware,
+    CompositeAfterMiddleware,
+    CompositeBeforeMiddleware,
+    EventBus,
+    EventBusHealth,
+    EventFilter,
+    EventMetrics,
     // Configuration and utilities
-    EventSystemConfig, BusConfig as EventBusConfig, EventBusHealth, EventMetrics,
-    HandlerMetadata, HandlerExecutionResult, EventFilter,
+    EventSystemConfig,
+    HandlerExecutionResult,
+    HandlerMetadata,
+    InMemoryEventBus,
+    RetryMiddleware,
     // Middleware
-    TimeoutMiddleware, RetryMiddleware, CircuitBreakerMiddleware,
-    CompositeBeforeMiddleware, CompositeAfterMiddleware,
+    TimeoutMiddleware,
 };
+pub use field_types::FieldType;
 pub use logging::{
-    ApplicationLogger, SecurityAuditor, LoggingService, LogLevel, AuditEventType,
-    LogContext, LoggingMetrics, CorrelationIdTrait, NoOpLogger, LoggingResult
+    ApplicationLogger, AuditEventType, CorrelationIdTrait, LogContext, LogLevel, LoggingMetrics,
+    LoggingResult, LoggingService, NoOpLogger, SecurityAuditor,
 };
-pub use vfs::{
-    VirtualFileSystem, VfsServiceBridge, FileMetadata, VfsNamespaceConfig, VfsBackupConfig,
-    FileWriteRequest, FileReadRequest, FileReadResponse, FileListRequest, FileListResponse,
-    FileIdentifier, VfsUsageStats, VfsResult, VfsError, FileId, VfsPath, VfsNamespace, NoOpVfs
-};
-pub use plugin_api::{PluginError, PluginResult, EventPayload, PluginResponse};
+pub use plugin_api::{EventPayload, PluginError, PluginResponse, PluginResult};
 pub use plugin_security::{
-    PluginCapability, PluginSecurityContext, PluginTrustLevel, ResourceLimits,
-    ExecutionStats, SecurityViolation, PluginSecurityManager, SecurityPolicies
+    ExecutionStats, PluginCapability, PluginSecurityContext, PluginSecurityManager,
+    PluginTrustLevel, ResourceLimits, SecurityPolicies, SecurityViolation,
 };
 pub use site_settings::{
-    SiteSettings, BrandingSettings, EmailSettings, SystemInfoSettings, GeneralSettings,
-    SecuritySettings, MaintenanceSettings, BackupSettings, EmailTemplateSettings,
-    OxideDbEdition, DeploymentEnvironment, UpdateSiteSettingsRequest, SystemInfoUpdateRequest,
-    SiteSettingsResponse, SiteSettingsService, SettingsHealthStatus, settings_sections
+    settings_sections, BackupSettings, BrandingSettings, DeploymentEnvironment, EmailSettings,
+    EmailTemplateSettings, GeneralSettings, MaintenanceSettings, OxideDbEdition, SecuritySettings,
+    SettingsHealthStatus, SiteSettings, SiteSettingsResponse, SiteSettingsService,
+    SystemInfoSettings, SystemInfoUpdateRequest, UpdateSiteSettingsRequest,
+};
+pub use vfs::{
+    FileId, FileIdentifier, FileListRequest, FileListResponse, FileMetadata, FileReadRequest,
+    FileReadResponse, FileWriteRequest, NoOpVfs, VfsBackupConfig, VfsError, VfsNamespace,
+    VfsNamespaceConfig, VfsPath, VfsResult, VfsServiceBridge, VfsUsageStats, VirtualFileSystem,
 };
 
 // Re-export the main hook registration function

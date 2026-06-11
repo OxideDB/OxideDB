@@ -5,6 +5,7 @@
 
 use crate::host_state::HostState;
 use oxide_core::plugin_api::{host_functions, PluginError};
+use oxide_core::plugin_security::PluginCapability;
 use std::sync::{Arc, Mutex};
 use wasmtime::{Caller, Linker};
 
@@ -26,13 +27,16 @@ pub fn define_event_functions(
                 caller.data().lock().unwrap().record_host_call();
 
                 let state = caller.data().lock().unwrap();
+                if !state.current_plugin_has_capability(&PluginCapability::ReadEventData) {
+                    return -1;
+                }
+
                 if let Some(payload) = &state.current_payload {
                     let payload_bytes = payload.as_bytes().to_vec();
                     drop(state); // Release the lock early
 
                     // Get plugin memory and allocate space
-                    if let Some(memory) =
-                        caller.get_export("memory").and_then(|e| e.into_memory())
+                    if let Some(memory) = caller.get_export("memory").and_then(|e| e.into_memory())
                     {
                         // Call plugin's alloc function to get memory
                         if let Some(alloc_export) = caller.get_export("alloc") {
@@ -55,9 +59,7 @@ pub fn define_event_functions(
                                             let mut state = caller.data().lock().unwrap();
                                             state.result_buffer = [
                                                 (ptr as u32).to_le_bytes().to_vec(),
-                                                (payload_bytes.len() as u32)
-                                                    .to_le_bytes()
-                                                    .to_vec(),
+                                                (payload_bytes.len() as u32).to_le_bytes().to_vec(),
                                             ]
                                             .concat();
 
@@ -73,10 +75,7 @@ pub fn define_event_functions(
             },
         )
         .map_err(|e| {
-            PluginError::InitializationFailed(format!(
-                "Failed to define get_event_payload: {}",
-                e
-            ))
+            PluginError::InitializationFailed(format!("Failed to define get_event_payload: {}", e))
         })?;
 
     // get_result_ptr() -> i32 (returns pointer to allocated plugin memory)

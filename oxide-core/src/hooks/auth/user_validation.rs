@@ -3,7 +3,7 @@
 //! This hook validates user data in authentication collections to ensure
 //! data integrity and security requirements are met.
 
-use crate::{BeforeEventContext, AppError};
+use crate::{AppError, BeforeEventContext};
 use regex::Regex;
 use std::sync::Arc;
 use tracing::{debug, warn};
@@ -51,13 +51,14 @@ impl UserValidationHook {
     /// Create a new user validation hook with custom configuration
     pub fn with_config(config: UserValidationConfig) -> Result<Self, AppError> {
         // Use custom email regex or default
-        let email_pattern = config.email_regex.as_deref()
+        let email_pattern = config
+            .email_regex
+            .as_deref()
             .unwrap_or(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$");
-        
-        let email_regex = Arc::new(
-            Regex::new(email_pattern)
-                .map_err(|e| AppError::validation("email_regex", &format!("Invalid regex pattern: {}", e)))?
-        );
+
+        let email_regex = Arc::new(Regex::new(email_pattern).map_err(|e| {
+            AppError::validation("email_regex", &format!("Invalid regex pattern: {}", e))
+        })?);
 
         Ok(Self {
             config,
@@ -66,18 +67,30 @@ impl UserValidationHook {
     }
 
     /// Hook that processes BeforeRecordCreate events for user validation
-    pub fn handle_before_record_create(&self, context: &mut BeforeEventContext) -> Result<(), AppError> {
+    pub fn handle_before_record_create(
+        &self,
+        context: &mut BeforeEventContext,
+    ) -> Result<(), AppError> {
         if self.should_process_collection(&context.collection) {
-            debug!("Validating user data for create in collection: {}", context.collection);
+            debug!(
+                "Validating user data for create in collection: {}",
+                context.collection
+            );
             self.validate_user_data(context)?;
         }
         Ok(())
     }
 
     /// Hook that processes BeforeRecordUpdate events for user validation
-    pub fn handle_before_record_update(&self, context: &mut BeforeEventContext) -> Result<(), AppError> {
+    pub fn handle_before_record_update(
+        &self,
+        context: &mut BeforeEventContext,
+    ) -> Result<(), AppError> {
         if self.should_process_collection(&context.collection) {
-            debug!("Validating user data for update in collection: {}", context.collection);
+            debug!(
+                "Validating user data for update in collection: {}",
+                context.collection
+            );
             self.validate_user_data(context)?;
         }
         Ok(())
@@ -85,7 +98,9 @@ impl UserValidationHook {
 
     /// Check if this collection should have user validation applied
     fn should_process_collection(&self, collection: &str) -> bool {
-        self.config.auth_collections.contains(&collection.to_string())
+        self.config
+            .auth_collections
+            .contains(&collection.to_string())
     }
 
     /// Validate user data according to configuration
@@ -121,7 +136,10 @@ impl UserValidationHook {
         }
 
         if email.len() > 254 {
-            return Err(AppError::validation("email", "Email is too long (max 254 characters)"));
+            return Err(AppError::validation(
+                "email",
+                "Email is too long (max 254 characters)",
+            ));
         }
 
         if !self.email_regex.is_match(email) {
@@ -140,14 +158,20 @@ impl UserValidationHook {
 
         if password.len() < self.config.min_password_length {
             return Err(AppError::validation(
-                "password", 
-                &format!("Password must be at least {} characters long", self.config.min_password_length)
+                "password",
+                &format!(
+                    "Password must be at least {} characters long",
+                    self.config.min_password_length
+                ),
             ));
         }
 
         // Additional password strength checks
         if password.len() > 128 {
-            return Err(AppError::validation("password", "Password is too long (max 128 characters)"));
+            return Err(AppError::validation(
+                "password",
+                "Password is too long (max 128 characters)",
+            ));
         }
 
         // Check for common weak passwords
@@ -161,11 +185,21 @@ impl UserValidationHook {
     /// Check for commonly weak passwords
     fn is_weak_password(&self, password: &str) -> bool {
         let weak_passwords = [
-            "password", "123456", "password123", "admin", "qwerty",
-            "letmein", "welcome", "monkey", "dragon", "secret"
+            "password",
+            "123456",
+            "password123",
+            "admin",
+            "qwerty",
+            "letmein",
+            "welcome",
+            "monkey",
+            "dragon",
+            "secret",
         ];
 
-        weak_passwords.iter().any(|&weak| password.to_lowercase() == weak)
+        weak_passwords
+            .iter()
+            .any(|&weak| password.to_lowercase() == weak)
     }
 
     /// Validate that required fields are present
@@ -176,7 +210,8 @@ impl UserValidationHook {
         }
 
         // For new records, password field must be present (it will contain hash after password hashing hook runs)
-        if context.record_id.is_none() { // This is a create operation
+        if context.record_id.is_none() {
+            // This is a create operation
             if context.data.get("password").is_none() {
                 return Err(AppError::validation("password", "Password is required"));
             }
@@ -209,7 +244,7 @@ mod tests {
         // Valid emails
         assert!(hook.validate_email("test@example.com").is_ok());
         assert!(hook.validate_email("user.name+tag@example.co.uk").is_ok());
-        
+
         // Invalid emails
         assert!(hook.validate_email("").is_err());
         assert!(hook.validate_email("invalid").is_err());
@@ -224,7 +259,7 @@ mod tests {
         // Valid passwords
         assert!(hook.validate_password("strongPassword123").is_ok());
         assert!(hook.validate_password("mySecureP@ss").is_ok());
-        
+
         // Invalid passwords
         assert!(hook.validate_password("").is_err()); // Empty
         assert!(hook.validate_password("short").is_err()); // Too short
@@ -238,7 +273,7 @@ mod tests {
 
         // Valid user data
         let mut context = BeforeEventContext::new_create(
-            "users".to_string(),
+            "_users".to_string(),
             json!({
                 "email": "test@example.com",
                 "password": "strongPassword123"
@@ -303,7 +338,7 @@ mod tests {
         // Test data that would result from password hashing hook running
         // The password field now contains the hash directly
         let mut context = BeforeEventContext::new_create(
-            "superusers".to_string(),
+            "_superusers".to_string(),
             json!({
                 "email": "admin@example.com",
                 "password": "$argon2id$v=19$m=65536,t=3,p=4$abcdef..."
@@ -323,8 +358,8 @@ mod tests {
 
     #[test]
     fn test_integration_password_hashing_then_validation() {
-        use crate::AuthService;
         use crate::hooks::auth::password_hash::PasswordHashingHook;
+        use crate::AuthService;
         use std::sync::Arc;
 
         // Simulate the exact scenario from the error:
@@ -338,30 +373,39 @@ mod tests {
         let validation_hook = UserValidationHook::new().unwrap();
 
         // Create auth collection schema (like superusers)
-        let mut schema = crate::CollectionSchema::new("superusers".to_string(), crate::CollectionType::Auth);
-        schema.add_field("email".to_string(), crate::FieldDefinition {
-            field_type: crate::FieldType::Email,
-            required: true,
-            unique: true,
-            default: None,
-            validation: None,
-            index: false,
-        });
-        schema.add_field("password".to_string(), crate::FieldDefinition {
-            field_type: crate::FieldType::Password,
-            required: true,
-            unique: false,
-            default: None,
-            validation: None,
-            index: false,
-        });
+        let mut schema =
+            crate::CollectionSchema::new("_superusers".to_string(), crate::CollectionType::Auth);
+        schema.add_field(
+            "email".to_string(),
+            crate::FieldDefinition {
+                field_type: crate::FieldType::Email,
+                required: true,
+                unique: true,
+                default: None,
+                validation: None,
+                index: false,
+            },
+        );
+        schema.add_field(
+            "password".to_string(),
+            crate::FieldDefinition {
+                field_type: crate::FieldType::Password,
+                required: true,
+                unique: false,
+                default: None,
+                validation: None,
+                index: false,
+            },
+        );
 
         // Register the schema with the password hashing hook
-        assert!(password_hook.register_schema("superusers".to_string(), schema).is_ok());
+        assert!(password_hook
+            .register_schema("_superusers".to_string(), schema)
+            .is_ok());
 
         // Original data with plain text password
         let mut context = BeforeEventContext::new_create(
-            "superusers".to_string(),
+            "_superusers".to_string(),
             json!({
                 "email": "admin@example.com",
                 "password": "securepassword123"
@@ -369,8 +413,10 @@ mod tests {
         );
 
         // Step 1: Password hashing hook processes the data
-        assert!(password_hook.handle_before_record_create(&mut context).is_ok());
-        
+        assert!(password_hook
+            .handle_before_record_create(&mut context)
+            .is_ok());
+
         // Verify password was hashed and stored in the same field
         assert!(context.data.get("password").is_some());
         let password_value = context.data.get("password").unwrap().as_str().unwrap();
@@ -380,6 +426,10 @@ mod tests {
 
         // Step 2: User validation hook should NOT fail
         let validation_result = validation_hook.handle_before_record_create(&mut context);
-        assert!(validation_result.is_ok(), "User validation should pass after password hashing: {:?}", validation_result);
+        assert!(
+            validation_result.is_ok(),
+            "User validation should pass after password hashing: {:?}",
+            validation_result
+        );
     }
-} 
+}

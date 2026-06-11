@@ -45,24 +45,23 @@
 //! # }
 //! ```
 
-pub mod types;
 pub mod jwt;
 pub mod password;
 pub mod permissions;
 pub mod rules;
 pub mod service;
+pub mod types;
 
 // Re-export commonly used types for convenience
 pub use types::{
-    UserRole, AuthMethod, AuthCollectionConfig, AuthServiceConfig,
-    CrudOperation, PermissionLevel
+    AuthCollectionConfig, AuthMethod, AuthServiceConfig, CrudOperation, PermissionLevel, UserRole,
 };
 
-pub use jwt::{Claims, RefreshClaims, TokenPair, JwtService};
+pub use jwt::{Claims, JwtService, RefreshClaims, TokenPair};
 pub use password::PasswordService;
 pub use permissions::{
-    OperationRule, CollectionPermissions, PermissionContext, 
-    PermissionService, DefaultPermissionService
+    CollectionPermissions, DefaultPermissionService, OperationRule, PermissionContext,
+    PermissionService,
 };
 pub use rules::RuleEvaluator;
 pub use service::{AuthService, AuthTokens};
@@ -73,18 +72,25 @@ mod tests {
 
     use super::*;
     use serde_json::json;
+    use sha2::{Digest, Sha256};
 
     #[test]
     fn test_user_role_parsing() {
         assert_eq!("user".parse::<UserRole>().unwrap(), UserRole::User);
-        assert_eq!("superuser".parse::<UserRole>().unwrap(), UserRole::Superuser);
-        assert_eq!("admin".parse::<UserRole>().unwrap(), UserRole::Custom("admin".to_string()));
+        assert_eq!(
+            "superuser".parse::<UserRole>().unwrap(),
+            UserRole::Superuser
+        );
+        assert_eq!(
+            "admin".parse::<UserRole>().unwrap(),
+            UserRole::Custom("admin".to_string())
+        );
     }
 
     #[test]
     fn test_auth_service_config() {
         let config = AuthServiceConfig::new("secret".to_string());
-        
+
         let auth_config = AuthCollectionConfig {
             collection: "users".to_string(),
             auth_method: AuthMethod::EmailPassword,
@@ -97,9 +103,9 @@ mod tests {
             refresh_tokens_enabled: false,
             refresh_tokens_required: false,
         };
-        
+
         config.add_auth_collection(auth_config);
-        
+
         assert!(config.is_auth_collection("users"));
         assert!(!config.is_auth_collection("posts"));
         assert_eq!(config.list_auth_collections(), vec!["users"]);
@@ -114,7 +120,7 @@ mod tests {
             "users".to_string(),
             24,
         );
-        
+
         assert_eq!(claims.sub, "user123");
         assert_eq!(claims.email, "test@example.com");
         assert_eq!(claims.role, "user");
@@ -150,14 +156,46 @@ mod tests {
             Operation::Crud(CrudOperation::Read),
             "test".to_string(),
             None,
-        ).with_metadata(metadata);
+        )
+        .with_metadata(metadata);
 
         let evaluator = RuleEvaluator::new(&context);
 
         // Test header access
-        assert!(evaluator.evaluate("@req.headers.x-api-key = 'secret123'").unwrap());
-        assert!(!evaluator.evaluate("@req.headers.x-api-key = 'wrong'").unwrap());
+        assert!(evaluator
+            .evaluate("@req.headers.x-api-key = 'secret123'")
+            .unwrap());
+        assert!(!evaluator
+            .evaluate("@req.headers.x-api-key = 'wrong'")
+            .unwrap());
         assert!(evaluator.evaluate("@req.headers.x-api-key != ''").unwrap());
+    }
+
+    #[test]
+    fn test_rule_evaluator_hashed_request_headers() {
+        let mut metadata = std::collections::HashMap::new();
+        let headers = json!({
+            "x-api-key": "secret123"
+        });
+        metadata.insert("headers".to_string(), headers);
+
+        let context = PermissionContext::new(
+            None,
+            Operation::Crud(CrudOperation::Read),
+            "test".to_string(),
+            None,
+        )
+        .with_metadata(metadata);
+
+        let evaluator = RuleEvaluator::new(&context);
+        let digest = format!("{:x}", Sha256::digest("secret123".as_bytes()));
+
+        assert!(evaluator
+            .evaluate(&format!("@req.headers.x-api-key.sha256 = '{}'", digest))
+            .unwrap());
+        assert!(!evaluator
+            .evaluate("@req.headers.x-api-key.sha256 = 'wrong'")
+            .unwrap());
     }
 
     #[test]
@@ -176,7 +214,8 @@ mod tests {
             Operation::Crud(CrudOperation::Read),
             "test".to_string(),
             None,
-        ).with_metadata(metadata);
+        )
+        .with_metadata(metadata);
 
         let evaluator = RuleEvaluator::new(&context);
 
@@ -184,9 +223,9 @@ mod tests {
         // This should work due to lowercase fallback
         let result = evaluator.evaluate("@req.headers.x-api-key = 'your-secret-key'");
         println!("Rule evaluation result: {:?}", result);
-        
+
         // Test the rule evaluation directly
-        
+
         assert!(result.unwrap(), "Rule should match despite case difference");
 
         // Test existence check too
@@ -215,7 +254,9 @@ mod tests {
         // Test user variable access
         assert!(evaluator.evaluate("@req.user.id = 'user123'").unwrap());
         assert!(evaluator.evaluate("@req.user.role = 'superuser'").unwrap());
-        assert!(evaluator.evaluate("@req.user.email = 'user@example.com'").unwrap());
+        assert!(evaluator
+            .evaluate("@req.user.email = 'user@example.com'")
+            .unwrap());
         assert!(!evaluator.evaluate("@req.user.id = 'wrong'").unwrap());
     }
 
@@ -232,7 +273,8 @@ mod tests {
             Operation::Crud(CrudOperation::Read),
             "test".to_string(),
             None,
-        ).with_record_data(record_data);
+        )
+        .with_record_data(record_data);
 
         let evaluator = RuleEvaluator::new(&context);
 
@@ -311,13 +353,18 @@ mod tests {
             Operation::Crud(CrudOperation::Read),
             "test".to_string(),
             None,
-        ).with_metadata(metadata);
+        )
+        .with_metadata(metadata);
 
         let evaluator = RuleEvaluator::new(&context);
 
         // Test pattern matching
-        assert!(evaluator.evaluate("@req.headers.x-forwarded-for ~ '192.168.1.*'").unwrap());
-        assert!(!evaluator.evaluate("@req.headers.x-forwarded-for ~ '10.0.0.*'").unwrap());
+        assert!(evaluator
+            .evaluate("@req.headers.x-forwarded-for ~ '192.168.1.*'")
+            .unwrap());
+        assert!(!evaluator
+            .evaluate("@req.headers.x-forwarded-for ~ '10.0.0.*'")
+            .unwrap());
     }
 
     #[test]
@@ -340,15 +387,22 @@ mod tests {
             Operation::Crud(CrudOperation::Update),
             "posts".to_string(),
             None,
-        ).with_record_data(record_data);
+        )
+        .with_record_data(record_data);
 
         let evaluator = RuleEvaluator::new(&context);
 
         // Test owner access rule
-        assert!(evaluator.evaluate("@req.user.id = @record.user_id").unwrap());
-        
+        assert!(evaluator
+            .evaluate("@req.user.id = @record.user_id")
+            .unwrap());
+
         // Test combined conditions
-        assert!(evaluator.evaluate("@req.user.id = @record.user_id && @record.status = 'active'").unwrap());
-        assert!(!evaluator.evaluate("@req.user.id = @record.user_id && @record.status = 'deleted'").unwrap());
+        assert!(evaluator
+            .evaluate("@req.user.id = @record.user_id && @record.status = 'active'")
+            .unwrap());
+        assert!(!evaluator
+            .evaluate("@req.user.id = @record.user_id && @record.status = 'deleted'")
+            .unwrap());
     }
-} 
+}

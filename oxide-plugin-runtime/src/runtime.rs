@@ -89,6 +89,11 @@ impl WasmtimePluginRuntime {
         Ok(runtime)
     }
 
+    /// Get the security policies applied to this runtime.
+    pub fn security_policies(&self) -> &SecurityPolicies {
+        self.security_manager.policies()
+    }
+
     /// Define all host functions that plugins can import using modular approach
     fn define_host_functions(&mut self) -> PluginResult<()> {
         // Define event-related host functions
@@ -244,6 +249,21 @@ impl WasmtimePluginRuntime {
         state
             .registered_routes
             .retain(|route| route.plugin_name != plugin_name);
+        state.remove_plugin_capabilities(plugin_name);
+    }
+
+    fn sync_plugin_capabilities_to_host_state(&mut self, plugin_name: &str) {
+        let capabilities = self
+            .security_manager
+            .get_context(plugin_name)
+            .map(|context| context.capabilities.iter().cloned().collect())
+            .unwrap_or_default();
+
+        self.store
+            .data()
+            .lock()
+            .unwrap()
+            .set_plugin_capabilities(plugin_name.to_string(), capabilities);
     }
 
     /// Load a plugin with specific trust level and capabilities
@@ -291,6 +311,8 @@ impl WasmtimePluginRuntime {
                 })?;
         }
 
+        self.sync_plugin_capabilities_to_host_state(name);
+
         // Store module and instance
         self.modules.insert(name.to_string(), module);
         self.instances.insert(name.to_string(), instance);
@@ -317,7 +339,10 @@ impl WasmtimePluginRuntime {
             .grant_capability(plugin_name, capability)
             .map_err(|e| {
                 PluginError::SecurityViolation(format!("Failed to grant capability: {:?}", e))
-            })
+            })?;
+
+        self.sync_plugin_capabilities_to_host_state(plugin_name);
+        Ok(())
     }
 
     /// Revoke a capability from a plugin
@@ -330,7 +355,10 @@ impl WasmtimePluginRuntime {
             .revoke_capability(plugin_name, capability)
             .map_err(|e| {
                 PluginError::SecurityViolation(format!("Failed to revoke capability: {:?}", e))
-            })
+            })?;
+
+        self.sync_plugin_capabilities_to_host_state(plugin_name);
+        Ok(())
     }
 
     /// Suspend a plugin due to security violations
@@ -664,6 +692,8 @@ impl PluginRuntime for WasmtimePluginRuntime {
                     e
                 ))
             })?;
+
+        self.sync_plugin_capabilities_to_host_state(name);
 
         // Store module and instance
         self.modules.insert(name.to_string(), module);

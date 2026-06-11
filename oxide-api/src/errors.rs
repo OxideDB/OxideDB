@@ -4,7 +4,7 @@
 //! application errors into appropriate HTTP responses with proper status codes.
 
 use axum::{
-    http::{StatusCode, HeaderValue},
+    http::{HeaderValue, StatusCode},
     response::{IntoResponse, Json},
 };
 use oxide_core::AppError;
@@ -18,39 +18,39 @@ pub enum ApiError {
     /// Wraps a core application error
     #[error(transparent)]
     Core(#[from] AppError),
-    
+
     /// Invalid request format or parameters
     #[error("Invalid request: {message}")]
     BadRequest { message: String },
-    
+
     /// Authentication required
     #[error("Authentication required")]
     Unauthorized,
-    
+
     /// Access forbidden
     #[error("Access forbidden: {message}")]
     Forbidden { message: String },
-    
+
     /// Resource not found
     #[error("Resource not found: {resource}")]
     NotFound { resource: String },
-    
+
     /// Request conflicts with current state
     #[error("Conflict: {message}")]
     Conflict { message: String },
-    
+
     /// Request payload too large
     #[error("Request payload too large")]
     PayloadTooLarge,
-    
+
     /// Rate limit exceeded
     #[error("Rate limit exceeded")]
     TooManyRequests,
-    
+
     /// Internal server error
     #[error("Internal server error: {message}")]
     Internal { message: String },
-    
+
     /// Service temporarily unavailable
     #[error("Service unavailable: {message}")]
     ServiceUnavailable { message: String },
@@ -78,49 +78,49 @@ impl ApiError {
             message: message.into(),
         }
     }
-    
+
     /// Create an authentication error
     pub fn auth(message: impl Into<String>) -> Self {
         Self::Core(AppError::Auth {
             message: message.into(),
         })
     }
-    
+
     /// Create a forbidden error
     pub fn forbidden(message: impl Into<String>) -> Self {
         Self::Forbidden {
             message: message.into(),
         }
     }
-    
+
     /// Create a not found error
     pub fn not_found(resource: impl Into<String>) -> Self {
         Self::NotFound {
             resource: resource.into(),
         }
     }
-    
+
     /// Create a conflict error
     pub fn conflict(message: impl Into<String>) -> Self {
         Self::Conflict {
             message: message.into(),
         }
     }
-    
+
     /// Create an internal server error
     pub fn internal(message: impl Into<String>) -> Self {
         Self::Internal {
             message: message.into(),
         }
     }
-    
+
     /// Create a service unavailable error
     pub fn service_unavailable(message: impl Into<String>) -> Self {
         Self::ServiceUnavailable {
             message: message.into(),
         }
     }
-    
+
     /// Get the appropriate HTTP status code for this error
     pub fn status_code(&self) -> StatusCode {
         match self {
@@ -149,7 +149,7 @@ impl ApiError {
             ApiError::ServiceUnavailable { .. } => StatusCode::SERVICE_UNAVAILABLE,
         }
     }
-    
+
     /// Get the error type identifier
     pub fn error_type(&self) -> &'static str {
         match self {
@@ -185,29 +185,37 @@ impl IntoResponse for ApiError {
         let status = self.status_code();
         let error_type = self.error_type();
         let message = self.to_string();
-        
+
         // Log internal errors
         if status.is_server_error() {
             error!("API Error: {} - {}", error_type, message);
         }
-        
+
         let error_response = ErrorResponse {
             error: error_type.to_string(),
             message,
             details: None,
             request_id: None, // TODO: Extract from request context
         };
-        
+
         // Build response with CORS headers
         let mut response = (status, Json(error_response)).into_response();
         let headers = response.headers_mut();
-        
+
         // Add CORS headers to ensure cross-origin requests work properly
         headers.insert("Access-Control-Allow-Origin", HeaderValue::from_static("*"));
-        headers.insert("Access-Control-Allow-Methods", HeaderValue::from_static("GET, POST, PUT, DELETE, OPTIONS"));
-        headers.insert("Access-Control-Allow-Headers", HeaderValue::from_static("Content-Type, Authorization, Accept, Origin, X-Requested-With"));
+        headers.insert(
+            "Access-Control-Allow-Methods",
+            HeaderValue::from_static("GET, POST, PUT, DELETE, OPTIONS"),
+        );
+        headers.insert(
+            "Access-Control-Allow-Headers",
+            HeaderValue::from_static(
+                "Content-Type, Authorization, X-API-Key, Accept, Origin, X-Requested-With",
+            ),
+        );
         headers.insert("Access-Control-Max-Age", HeaderValue::from_static("86400"));
-        
+
         response
     }
 }

@@ -89,10 +89,18 @@ export const RecordTable: React.FC<RecordTableProps> = ({
     }
   };
 
-  const renderFileField = (value: any): React.ReactNode => {
+  const isFileReferenceLike = (value: unknown): value is FileReference => (
+    value !== null &&
+    typeof value === 'object' &&
+    'file_id' in value &&
+    'name' in value &&
+    'mime_type' in value
+  );
+
+  const renderFileField = (value: unknown): React.ReactNode => {
     // Handle single file reference
-    if (value && typeof value === 'object' && 'file_id' in value) {
-      const fileRef = value as FileReference;
+    if (isFileReferenceLike(value)) {
+      const fileRef = value;
       return (
         <div className="flex items-center space-x-2 max-w-xs">
           <FileIcon className="h-4 w-4 text-muted-foreground" />
@@ -115,11 +123,11 @@ export const RecordTable: React.FC<RecordTableProps> = ({
     }
 
     // Handle multiple file references
-    if (Array.isArray(value) && value.length > 0 && typeof value[0] === 'object' && 'file_id' in value[0]) {
+    if (Array.isArray(value) && value.length > 0 && isFileReferenceLike(value[0])) {
       const fileRefs = value as FileReference[];
       return (
         <div className="space-y-1 max-w-xs">
-          {fileRefs.slice(0, 2).map((fileRef, index) => (
+          {fileRefs.slice(0, 2).map((fileRef) => (
             <div key={fileRef.file_id} className="flex items-center space-x-2">
               <FileIcon className="h-3 w-3 text-muted-foreground" />
               <div className="min-w-0 flex-1">
@@ -147,7 +155,7 @@ export const RecordTable: React.FC<RecordTableProps> = ({
     return <span className="text-muted-foreground italic">No files</span>;
   };
 
-  const formatCellValue = (value: any, fieldName?: string): React.ReactNode => {
+  const formatCellValue = (value: unknown, fieldName?: string): React.ReactNode => {
     if (value === null || value === undefined) {
       return <span className="text-muted-foreground italic">null</span>;
     }
@@ -168,12 +176,12 @@ export const RecordTable: React.FC<RecordTableProps> = ({
     
     if (typeof value === 'object') {
       // Check if this looks like a file reference
-      if ('file_id' in value && 'name' in value && 'mime_type' in value) {
+      if (isFileReferenceLike(value)) {
         return renderFileField(value);
       }
       
       // Check if this is an array of file references
-      if (Array.isArray(value) && value.length > 0 && typeof value[0] === 'object' && 'file_id' in value[0]) {
+      if (Array.isArray(value) && value.length > 0 && isFileReferenceLike(value[0])) {
         return renderFileField(value);
       }
 

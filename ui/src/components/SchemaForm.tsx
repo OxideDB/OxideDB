@@ -16,7 +16,7 @@ import type { FieldCustomization } from '../types/fieldCustomization';
 
 interface SchemaFormProps {
   schema: CollectionSchema;
-  initialData?: Record<string, Record<string, unknown>>;
+  initialData?: Record<string, unknown>;
   onSubmit: (data: Record<string, unknown>) => Promise<void>;
   onCancel: () => void;
   submitLabel?: string;
@@ -45,12 +45,10 @@ interface RelationshipFieldProps {
 }
 
 const RelationshipField: React.FC<RelationshipFieldProps> = ({
-  fieldName,
   relationshipConfig,
   value,
   onChange,
   error,
-  required = false,
 }) => {
   const [open, setOpen] = useState(false);
   const [records, setRecords] = useState<DbRecord[]>([]);
@@ -82,10 +80,10 @@ const RelationshipField: React.FC<RelationshipFieldProps> = ({
     return record.id;
   };
 
-  const getPreviewData = (record: DbRecord): { primary: string; secondary: string; fields: Array<{ key: string; value: any }> } => {
+  const getPreviewData = (record: DbRecord): { primary: string; secondary: string; fields: Array<{ key: string; value: string }> } => {
     const data = record.data;
     const fields = Object.entries(data)
-      .filter(([key, value]) => value !== null && value !== undefined && value !== '')
+      .filter(([, value]) => value !== null && value !== undefined && value !== '')
       .slice(0, 4) // Limit to first 4 fields for preview
       .map(([key, value]) => ({
         key,
@@ -307,13 +305,6 @@ export const SchemaForm: React.FC<SchemaFormProps> = ({
   onCancel,
   submitLabel = 'Submit',
   isSubmitting = false,
-  customizationMode = false,
-  fieldCustomizations = {},
-  onFieldCustomizationChange,
-  onDragStart,
-  onDragOver,
-  onDrop,
-  draggedField,
 }) => {
   const [formData, setFormData] = useState<FormData>({});
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -353,7 +344,7 @@ export const SchemaForm: React.FC<SchemaFormProps> = ({
     setFormData(data);
   }, [schema, initialData]);
 
-  const validateField = (fieldName: string, value: any, fieldDef: FieldDefinition): string | null => {
+  const validateField = (fieldName: string, value: unknown, fieldDef: FieldDefinition): string | null => {
     // Check required fields
     if (fieldDef.required && (value === '' || value === null || value === undefined)) {
       return `${fieldName} is required`;
@@ -405,12 +396,13 @@ export const SchemaForm: React.FC<SchemaFormProps> = ({
       
       // If value exists, validate that it's a proper FileReference
       if (value && typeof value === 'object') {
+        const fileValue = value as Partial<FileReference>;
         const missingFields = [];
-        if (!value.file_id) missingFields.push('file_id');
-        if (!value.name) missingFields.push('name');
-        if (!value.mime_type) missingFields.push('mime_type');
-        if (value.size === undefined) missingFields.push('size');
-        if (!value.path) missingFields.push('path');
+        if (!fileValue.file_id) missingFields.push('file_id');
+        if (!fileValue.name) missingFields.push('name');
+        if (!fileValue.mime_type) missingFields.push('mime_type');
+        if (fileValue.size === undefined) missingFields.push('size');
+        if (!fileValue.path) missingFields.push('path');
         
         if (missingFields.length > 0) {
           return `${fieldName} contains invalid file reference: missing ${missingFields.join(', ')}. Please re-upload the file.`;
@@ -437,7 +429,7 @@ export const SchemaForm: React.FC<SchemaFormProps> = ({
     return isValid;
   };
 
-  const handleFieldChange = (fieldName: string, value: any) => {
+  const handleFieldChange = (fieldName: string, value: unknown) => {
     setFormData(prev => ({ ...prev, [fieldName]: value }));
     
     // Clear error for this field if it exists
@@ -454,7 +446,7 @@ export const SchemaForm: React.FC<SchemaFormProps> = ({
     }
 
     // Convert form data to appropriate types
-    const processedData: Record<string, any> = {};
+    const processedData: Record<string, unknown> = {};
     
     Object.entries(schema.fields).forEach(([fieldName, fieldDef]) => {
       const value = formData[fieldName];
@@ -602,11 +594,14 @@ export const SchemaForm: React.FC<SchemaFormProps> = ({
       default:
         if (typeof fieldDef.field_type === 'object' && 'file' in fieldDef.field_type) {
           // Handle file field type
-          const fileConfig: FileFieldConfig = (fieldDef.field_type as any).file || {
-            multiple: false,
-            allowed_mime_types: undefined,
-            max_file_size: 10 * 1024 * 1024, // 10MB default
-            required: fieldDef.required || false
+          const rawFileConfig = fieldDef.field_type.file;
+          const fileConfig: FileFieldConfig = {
+            multiple: rawFileConfig?.multiple ?? false,
+            allowed_mime_types: rawFileConfig?.allowed_mime_types ?? undefined,
+            max_file_size: typeof rawFileConfig?.max_file_size === 'bigint'
+              ? Number(rawFileConfig.max_file_size)
+              : rawFileConfig?.max_file_size ?? 10 * 1024 * 1024,
+            required: rawFileConfig?.required ?? fieldDef.required ?? false
           };
 
           fieldComponent = (

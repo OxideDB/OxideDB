@@ -4,10 +4,14 @@
 //! CRUD operations on collections within the OxideDB system.
 
 use crate::host_state::HostState;
-use crate::utils::{read_string_from_plugin_memory, allocate_plugin_memory_and_copy, create_error_response, create_success_response};
-use oxide_core::plugin_api::{host_functions, PluginError};
+use crate::utils::{
+    allocate_plugin_memory_and_copy, create_error_response, create_success_response,
+    read_string_from_plugin_memory,
+};
+use oxide_core::auth::CrudOperation;
 use oxide_core::event::types::{RecordData, RecordId};
-use oxide_db::{Db, db::ListParams};
+use oxide_core::plugin_api::{host_functions, PluginError};
+use oxide_db::{db::ListParams, Db};
 use std::sync::{Arc, Mutex};
 use tracing::{debug, error, info};
 use wasmtime::{Caller, Linker};
@@ -31,9 +35,19 @@ pub fn define_database_functions(
                 "env",
                 host_functions::CREATE_RECORD,
                 move |mut caller: Caller<'_, Arc<Mutex<HostState>>>,
-                      collection_ptr: i32, collection_len: i32,
-                      data_ptr: i32, data_len: i32| -> i32 {
-                    handle_create_record(&mut caller, &db, collection_ptr, collection_len, data_ptr, data_len)
+                      collection_ptr: i32,
+                      collection_len: i32,
+                      data_ptr: i32,
+                      data_len: i32|
+                      -> i32 {
+                    handle_create_record(
+                        &mut caller,
+                        &db,
+                        collection_ptr,
+                        collection_len,
+                        data_ptr,
+                        data_len,
+                    )
                 },
             )
             .map_err(|e| {
@@ -49,9 +63,19 @@ pub fn define_database_functions(
                 "env",
                 host_functions::READ_RECORDS,
                 move |mut caller: Caller<'_, Arc<Mutex<HostState>>>,
-                      collection_ptr: i32, collection_len: i32,
-                      filter_ptr: i32, filter_len: i32| -> i32 {
-                    handle_read_records(&mut caller, &db, collection_ptr, collection_len, filter_ptr, filter_len)
+                      collection_ptr: i32,
+                      collection_len: i32,
+                      filter_ptr: i32,
+                      filter_len: i32|
+                      -> i32 {
+                    handle_read_records(
+                        &mut caller,
+                        &db,
+                        collection_ptr,
+                        collection_len,
+                        filter_ptr,
+                        filter_len,
+                    )
                 },
             )
             .map_err(|e| {
@@ -67,10 +91,23 @@ pub fn define_database_functions(
                 "env",
                 host_functions::UPDATE_RECORD,
                 move |mut caller: Caller<'_, Arc<Mutex<HostState>>>,
-                      collection_ptr: i32, collection_len: i32,
-                      record_id_ptr: i32, record_id_len: i32,
-                      data_ptr: i32, data_len: i32| -> i32 {
-                    handle_update_record(&mut caller, &db, collection_ptr, collection_len, record_id_ptr, record_id_len, data_ptr, data_len)
+                      collection_ptr: i32,
+                      collection_len: i32,
+                      record_id_ptr: i32,
+                      record_id_len: i32,
+                      data_ptr: i32,
+                      data_len: i32|
+                      -> i32 {
+                    handle_update_record(
+                        &mut caller,
+                        &db,
+                        collection_ptr,
+                        collection_len,
+                        record_id_ptr,
+                        record_id_len,
+                        data_ptr,
+                        data_len,
+                    )
                 },
             )
             .map_err(|e| {
@@ -86,9 +123,19 @@ pub fn define_database_functions(
                 "env",
                 host_functions::DELETE_RECORD,
                 move |mut caller: Caller<'_, Arc<Mutex<HostState>>>,
-                      collection_ptr: i32, collection_len: i32,
-                      record_id_ptr: i32, record_id_len: i32| -> i32 {
-                    handle_delete_record(&mut caller, &db, collection_ptr, collection_len, record_id_ptr, record_id_len)
+                      collection_ptr: i32,
+                      collection_len: i32,
+                      record_id_ptr: i32,
+                      record_id_len: i32|
+                      -> i32 {
+                    handle_delete_record(
+                        &mut caller,
+                        &db,
+                        collection_ptr,
+                        collection_len,
+                        record_id_ptr,
+                        record_id_len,
+                    )
                 },
             )
             .map_err(|e| {
@@ -97,6 +144,48 @@ pub fn define_database_functions(
     }
 
     Ok(())
+}
+
+fn write_error_result(caller: &mut Caller<'_, Arc<Mutex<HostState>>>, message: &str) {
+    let result_bytes = create_error_response(message);
+
+    if let Some((ptr, len)) = allocate_plugin_memory_and_copy(caller, &result_bytes) {
+        let mut state = caller.data().lock().unwrap();
+        state.result_buffer = [
+            (ptr as u32).to_le_bytes().to_vec(),
+            (len as u32).to_le_bytes().to_vec(),
+        ]
+        .concat();
+    }
+}
+
+fn ensure_database_capability(
+    caller: &mut Caller<'_, Arc<Mutex<HostState>>>,
+    operation: CrudOperation,
+    collection: &str,
+) -> bool {
+    let (allowed, plugin_name) = {
+        let state = caller.data().lock().unwrap();
+        (
+            state.current_plugin_can_access_collection(&operation, collection),
+            state
+                .current_plugin
+                .clone()
+                .unwrap_or_else(|| "unknown".to_string()),
+        )
+    };
+
+    if allowed {
+        return true;
+    }
+
+    let message = format!(
+        "Plugin '{}' lacks {:?} access to collection '{}'",
+        plugin_name, operation, collection
+    );
+    error!("{}", message);
+    write_error_result(caller, &message);
+    false
 }
 
 /// Handle create_record host function call.
@@ -123,6 +212,10 @@ fn handle_create_record(
         Err(_) => return -1,
     };
 
+    if !ensure_database_capability(caller, CrudOperation::Create, &collection) {
+        return -1;
+    }
+
     let record_data_str = match read_string_from_plugin_memory(caller, data_ptr, data_len) {
         Ok(s) => s,
         Err(_) => return -1,
@@ -141,8 +234,12 @@ fn handle_create_record(
     let can_perform_db_ops = {
         let state = caller.data().lock().unwrap();
         let can_perform = state.can_perform_database_operations();
-        debug!("Database operation check: can_perform={}, execution_context={:?}, has_http_request={}",
-               can_perform, state.execution_context, state.current_http_request.is_some());
+        debug!(
+            "Database operation check: can_perform={}, execution_context={:?}, has_http_request={}",
+            can_perform,
+            state.execution_context,
+            state.current_http_request.is_some()
+        );
         can_perform
     };
 
@@ -155,7 +252,8 @@ fn handle_create_record(
             state.result_buffer = [
                 (ptr as u32).to_le_bytes().to_vec(),
                 (len as u32).to_le_bytes().to_vec(),
-            ].concat();
+            ]
+            .concat();
         }
         return -1;
     }
@@ -168,19 +266,16 @@ fn handle_create_record(
             Ok(_handle) => {
                 // We have an active runtime, use it
                 let rt = tokio::runtime::Runtime::new().unwrap();
-                rt.block_on(async {
-                    db.create_record(&collection_clone, record_data).await
-                })
+                rt.block_on(async { db.create_record(&collection_clone, record_data).await })
             }
             Err(_) => {
                 // No active runtime, create a new one
                 let rt = tokio::runtime::Runtime::new().unwrap();
-                rt.block_on(async {
-                    db.create_record(&collection_clone, record_data).await
-                })
+                rt.block_on(async { db.create_record(&collection_clone, record_data).await })
             }
         }
-    }).join();
+    })
+    .join();
 
     // Mark that we're exiting the database operation
     {
@@ -206,7 +301,8 @@ fn handle_create_record(
                 state.result_buffer = [
                     (ptr as u32).to_le_bytes().to_vec(),
                     (len as u32).to_le_bytes().to_vec(),
-                ].concat();
+                ]
+                .concat();
                 info!("Created record in collection: {}", collection);
                 0 // Success
             } else {
@@ -224,7 +320,8 @@ fn handle_create_record(
                 state.result_buffer = [
                     (ptr as u32).to_le_bytes().to_vec(),
                     (len as u32).to_le_bytes().to_vec(),
-                ].concat();
+                ]
+                .concat();
             }
             -1 // Error
         }
@@ -238,7 +335,8 @@ fn handle_create_record(
                 state.result_buffer = [
                     (ptr as u32).to_le_bytes().to_vec(),
                     (len as u32).to_le_bytes().to_vec(),
-                ].concat();
+                ]
+                .concat();
             }
             -1 // Error
         }
@@ -269,6 +367,10 @@ fn handle_read_records(
         Err(_) => return -1,
     };
 
+    if !ensure_database_capability(caller, CrudOperation::Read, &collection) {
+        return -1;
+    }
+
     let filter_str = if filter_len > 0 {
         match read_string_from_plugin_memory(caller, filter_ptr, filter_len) {
             Ok(s) => Some(s),
@@ -280,10 +382,7 @@ fn handle_read_records(
 
     // Parse filter as ListParams if provided
     let list_params = if let Some(filter_json) = filter_str {
-        match serde_json::from_str::<ListParams>(&filter_json) {
-            Ok(params) => params,
-            Err(_) => ListParams::default(),
-        }
+        serde_json::from_str::<ListParams>(&filter_json).unwrap_or_default()
     } else {
         ListParams::default()
     };
@@ -296,24 +395,22 @@ fn handle_read_records(
             Ok(_handle) => {
                 // We have an active runtime, use it
                 let rt = tokio::runtime::Runtime::new().unwrap();
-                rt.block_on(async {
-                    db.list_records(&collection_clone, list_params).await
-                })
+                rt.block_on(async { db.list_records(&collection_clone, list_params).await })
             }
             Err(_) => {
                 // No active runtime, create a new one
                 let rt = tokio::runtime::Runtime::new().unwrap();
-                rt.block_on(async {
-                    db.list_records(&collection_clone, list_params).await
-                })
+                rt.block_on(async { db.list_records(&collection_clone, list_params).await })
             }
         }
-    }).join();
+    })
+    .join();
 
     match result {
         Ok(Ok(records)) => {
-            let response_data = serde_json::json!(
-                records.iter().map(|record| {
+            let response_data = serde_json::json!(records
+                .iter()
+                .map(|record| {
                     serde_json::json!({
                         "id": record.id,
                         "collection": collection,
@@ -321,8 +418,8 @@ fn handle_read_records(
                         "created_at": record.created_at.to_string(),
                         "updated_at": record.updated_at.to_string()
                     })
-                }).collect::<Vec<_>>()
-            );
+                })
+                .collect::<Vec<_>>());
 
             let result_bytes = create_success_response(response_data);
 
@@ -332,8 +429,13 @@ fn handle_read_records(
                 state.result_buffer = [
                     (ptr as u32).to_le_bytes().to_vec(),
                     (len as u32).to_le_bytes().to_vec(),
-                ].concat();
-                info!("Read {} records from collection: {}", records.len(), collection);
+                ]
+                .concat();
+                info!(
+                    "Read {} records from collection: {}",
+                    records.len(),
+                    collection
+                );
                 0 // Success
             } else {
                 error!("Failed to allocate plugin memory for read_records result");
@@ -350,7 +452,8 @@ fn handle_read_records(
                 state.result_buffer = [
                     (ptr as u32).to_le_bytes().to_vec(),
                     (len as u32).to_le_bytes().to_vec(),
-                ].concat();
+                ]
+                .concat();
             }
             -1 // Error
         }
@@ -364,7 +467,8 @@ fn handle_read_records(
                 state.result_buffer = [
                     (ptr as u32).to_le_bytes().to_vec(),
                     (len as u32).to_le_bytes().to_vec(),
-                ].concat();
+                ]
+                .concat();
             }
             -1 // Error
         }
@@ -372,6 +476,7 @@ fn handle_read_records(
 }
 
 /// Handle update_record host function call.
+#[allow(clippy::too_many_arguments)]
 fn handle_update_record(
     caller: &mut Caller<'_, Arc<Mutex<HostState>>>,
     db: &Arc<dyn Db>,
@@ -390,6 +495,10 @@ fn handle_update_record(
         Ok(s) => s,
         Err(_) => return -1,
     };
+
+    if !ensure_database_capability(caller, CrudOperation::Update, &collection) {
+        return -1;
+    }
 
     let record_id = match read_string_from_plugin_memory(caller, record_id_ptr, record_id_len) {
         Ok(s) => s,
@@ -425,7 +534,8 @@ fn handle_update_record(
             state.result_buffer = [
                 (ptr as u32).to_le_bytes().to_vec(),
                 (len as u32).to_le_bytes().to_vec(),
-            ].concat();
+            ]
+            .concat();
         }
         return -1;
     }
@@ -440,18 +550,29 @@ fn handle_update_record(
                 // We have an active runtime, use it
                 let rt = tokio::runtime::Runtime::new().unwrap();
                 rt.block_on(async {
-                    db.update_record(&collection_clone, &RecordId::from(record_id_clone), record_data).await
+                    db.update_record(
+                        &collection_clone,
+                        &RecordId::from(record_id_clone),
+                        record_data,
+                    )
+                    .await
                 })
             }
             Err(_) => {
                 // No active runtime, create a new one
                 let rt = tokio::runtime::Runtime::new().unwrap();
                 rt.block_on(async {
-                    db.update_record(&collection_clone, &RecordId::from(record_id_clone), record_data).await
+                    db.update_record(
+                        &collection_clone,
+                        &RecordId::from(record_id_clone),
+                        record_data,
+                    )
+                    .await
                 })
             }
         }
-    }).join();
+    })
+    .join();
 
     // Mark that we're exiting the database operation
     {
@@ -477,7 +598,8 @@ fn handle_update_record(
                 state.result_buffer = [
                     (ptr as u32).to_le_bytes().to_vec(),
                     (len as u32).to_le_bytes().to_vec(),
-                ].concat();
+                ]
+                .concat();
                 info!("Updated record {} in collection: {}", record.id, collection);
                 0 // Success
             } else {
@@ -495,7 +617,8 @@ fn handle_update_record(
                 state.result_buffer = [
                     (ptr as u32).to_le_bytes().to_vec(),
                     (len as u32).to_le_bytes().to_vec(),
-                ].concat();
+                ]
+                .concat();
             }
             -1 // Error
         }
@@ -509,7 +632,8 @@ fn handle_update_record(
                 state.result_buffer = [
                     (ptr as u32).to_le_bytes().to_vec(),
                     (len as u32).to_le_bytes().to_vec(),
-                ].concat();
+                ]
+                .concat();
             }
             -1 // Error
         }
@@ -534,6 +658,10 @@ fn handle_delete_record(
         Err(_) => return -1,
     };
 
+    if !ensure_database_capability(caller, CrudOperation::Delete, &collection) {
+        return -1;
+    }
+
     let record_id = match read_string_from_plugin_memory(caller, record_id_ptr, record_id_len) {
         Ok(s) => s,
         Err(_) => return -1,
@@ -554,7 +682,8 @@ fn handle_delete_record(
             state.result_buffer = [
                 (ptr as u32).to_le_bytes().to_vec(),
                 (len as u32).to_le_bytes().to_vec(),
-            ].concat();
+            ]
+            .concat();
         }
         return -1;
     }
@@ -569,18 +698,21 @@ fn handle_delete_record(
                 // We have an active runtime, use it
                 let rt = tokio::runtime::Runtime::new().unwrap();
                 rt.block_on(async {
-                    db.delete_record(&collection_clone, &RecordId::from(record_id_clone)).await
+                    db.delete_record(&collection_clone, &RecordId::from(record_id_clone))
+                        .await
                 })
             }
             Err(_) => {
                 // No active runtime, create a new one
                 let rt = tokio::runtime::Runtime::new().unwrap();
                 rt.block_on(async {
-                    db.delete_record(&collection_clone, &RecordId::from(record_id_clone)).await
+                    db.delete_record(&collection_clone, &RecordId::from(record_id_clone))
+                        .await
                 })
             }
         }
-    }).join();
+    })
+    .join();
 
     // Mark that we're exiting the database operation
     {
@@ -606,8 +738,12 @@ fn handle_delete_record(
                 state.result_buffer = [
                     (ptr as u32).to_le_bytes().to_vec(),
                     (len as u32).to_le_bytes().to_vec(),
-                ].concat();
-                info!("Deleted record {} from collection: {}", record.id, collection);
+                ]
+                .concat();
+                info!(
+                    "Deleted record {} from collection: {}",
+                    record.id, collection
+                );
                 0 // Success
             } else {
                 error!("Failed to allocate plugin memory for delete_record result");
@@ -624,7 +760,8 @@ fn handle_delete_record(
                 state.result_buffer = [
                     (ptr as u32).to_le_bytes().to_vec(),
                     (len as u32).to_le_bytes().to_vec(),
-                ].concat();
+                ]
+                .concat();
             }
             -1 // Error
         }
@@ -638,7 +775,8 @@ fn handle_delete_record(
                 state.result_buffer = [
                     (ptr as u32).to_le_bytes().to_vec(),
                     (len as u32).to_le_bytes().to_vec(),
-                ].concat();
+                ]
+                .concat();
             }
             -1 // Error
         }

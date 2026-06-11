@@ -1,11 +1,11 @@
 //! Plugin handler types and data structures
 
+use oxide_core::{
+    auth::CollectionPermissions,
+    plugin_security::{PluginCapability, PluginTrustLevel},
+};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use oxide_core::{
-    plugin_security::{PluginCapability, PluginTrustLevel},
-    auth::CollectionPermissions,
-};
 
 /// TOML-based plugin metadata structure
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -214,4 +214,4 @@ pub struct PluginSecurityInfo {
     pub signature_valid: bool,
     pub security_advisories: Vec<String>,
     pub audit_info: Option<oxide_plugin_sdk::PluginAuditInfo>,
-} 
+}

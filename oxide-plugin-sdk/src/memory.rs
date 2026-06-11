@@ -62,9 +62,9 @@ pub extern "C" fn alloc(size: usize) -> *mut u8 {
 }
 
 /// Export function for memory deallocation
-/// 
+///
 /// # Safety
-/// 
+///
 /// This function is unsafe because it reconstructs a Vec from raw parts.
 /// The caller must ensure that:
 /// - `ptr` was originally allocated by the `alloc` function in this module
@@ -77,9 +77,9 @@ pub unsafe extern "C" fn dealloc(ptr: *mut u8, size: usize) {
 }
 
 /// Set response data that the host can retrieve
-/// 
+///
 /// # Safety
-/// 
+///
 /// This function is unsafe because it dereferences a raw pointer (`ptr`) to create a slice.
 /// The caller must ensure that:
 /// - `ptr` is valid and points to at least `len` bytes of readable memory
@@ -101,4 +101,4 @@ pub extern "C" fn get_response_len() -> usize {
 #[no_mangle]
 pub extern "C" fn get_response_ptr() -> *const u8 {
     MemoryManager::get_response_ptr()
-} 
+}

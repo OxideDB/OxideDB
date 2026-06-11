@@ -4,24 +4,22 @@
 //! It follows the event-driven architecture principle by dispatching Before/After events
 //! for all operations through the central EventBus.
 
-use oxide_core::{
-    VirtualFileSystem, VfsResult, VfsError, VfsNamespace, VfsNamespaceConfig,
-    FileMetadata, FileWriteRequest, FileReadRequest, FileReadResponse,
-    FileListRequest, FileListResponse, FileIdentifier, VfsUsageStats,
-    EventBus, BeforeEventType, AfterEventType, BeforeEventContext, AfterEventContext,
-};
-use oxide_core::event::RequestContext;
-use crate::storage::FileSystemStorage;
-use crate::utils::{generate_file_id, detect_mime_type, validate_path};
 use crate::backup;
-use std::path::PathBuf;
+use crate::storage::FileSystemStorage;
+use crate::utils::{detect_mime_type, generate_file_id, validate_path};
+use oxide_core::event::RequestContext;
+use oxide_core::{
+    AfterEventContext, AfterEventType, BeforeEventContext, BeforeEventType, EventBus,
+    FileIdentifier, FileListRequest, FileListResponse, FileMetadata, FileReadRequest,
+    FileReadResponse, FileWriteRequest, VfsError, VfsNamespace, VfsNamespaceConfig, VfsResult,
+    VfsUsageStats, VirtualFileSystem,
+};
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::RwLock;
-use tracing::{instrument, error, debug, info, warn};
-
-
+use tracing::{debug, error, info, instrument, warn};
 
 /// VFS performance and operational metrics
 #[derive(Debug, Clone, Default)]
@@ -62,10 +60,10 @@ impl VfsService {
     pub async fn initialize(&self) -> VfsResult<()> {
         // Initialize storage
         self.storage.initialize().await?;
-        
+
         // Load existing namespace configurations
         self.load_namespaces().await?;
-        
+
         info!("VFS service initialized successfully");
         Ok(())
     }
@@ -81,24 +79,32 @@ impl VfsService {
         // Scan storage for existing namespace configurations
         let base_path = self.storage.base_path().clone();
         let namespace_dir = base_path.join("namespaces");
-        
+
         if !namespace_dir.exists() {
             debug!("No existing namespaces directory found");
             return Ok(());
         }
 
-        let mut entries = tokio::fs::read_dir(&namespace_dir).await.map_err(|e| VfsError::IoError {
-            message: format!("Failed to read namespaces directory: {}", e),
-        })?;
+        let mut entries =
+            tokio::fs::read_dir(&namespace_dir)
+                .await
+                .map_err(|e| VfsError::IoError {
+                    message: format!("Failed to read namespaces directory: {}", e),
+                })?;
 
         let mut loaded_count = 0;
         let mut namespaces = self.namespaces.write().await;
 
         while let Ok(Some(entry)) = entries.next_entry().await {
-            if entry.file_type().await.map(|ft| ft.is_dir()).unwrap_or(false) {
+            if entry
+                .file_type()
+                .await
+                .map(|ft| ft.is_dir())
+                .unwrap_or(false)
+            {
                 let namespace = entry.file_name().to_string_lossy().to_string();
                 let config_path = entry.path().join("config.json");
-                
+
                 if config_path.exists() {
                     match tokio::fs::read(&config_path).await {
                         Ok(config_data) => {
@@ -109,7 +115,10 @@ impl VfsService {
                                     debug!("Loaded namespace configuration: {}", namespace);
                                 }
                                 Err(e) => {
-                                    warn!("Failed to deserialize config for namespace {}: {}", namespace, e);
+                                    warn!(
+                                        "Failed to deserialize config for namespace {}: {}",
+                                        namespace, e
+                                    );
                                 }
                             }
                         }
@@ -125,15 +134,13 @@ impl VfsService {
         Ok(())
     }
 
-
-
     /// Update performance metrics
     async fn update_metrics<F>(&self, update_fn: F)
     where
         F: FnOnce(&mut VfsMetrics),
     {
         let mut metrics = self.metrics.write().await;
-        update_fn(&mut *metrics);
+        update_fn(&mut metrics);
     }
 
     /// Validate path for security
@@ -168,7 +175,10 @@ impl VirtualFileSystem for VfsService {
     #[instrument(skip(self))]
     async fn create_namespace(&self, config: VfsNamespaceConfig) -> VfsResult<()> {
         // Log namespace creation (namespace events are not yet in core EventBus)
-        debug!("VFS before namespace create: namespace={}, quota={:?}", config.namespace, config.quota_bytes);
+        debug!(
+            "VFS before namespace create: namespace={}, quota={:?}",
+            config.namespace, config.quota_bytes
+        );
 
         // Validate namespace name
         if config.namespace.is_empty() || !validate_path(&config.namespace) {
@@ -242,9 +252,10 @@ impl VirtualFileSystem for VfsService {
     ) -> VfsResult<FileMetadata> {
         // Validate inputs
         self.validate_file_path(&request.path)?;
-        
+
         // Check quota before writing
-        self.check_quota(namespace, request.content.len() as u64).await?;
+        self.check_quota(namespace, request.content.len() as u64)
+            .await?;
 
         // Emit before event with real content
         let mut before_context = BeforeEventContext::new_vfs_write(
@@ -253,15 +264,20 @@ impl VirtualFileSystem for VfsService {
             request.content.clone(),
             request.mime_type.clone(),
         );
-        
+
         if let Some(event_bus) = &self.event_bus {
-            match event_bus.dispatch_before(BeforeEventType::FileWrite, &mut before_context).await {
+            match event_bus
+                .dispatch_before(BeforeEventType::FileWrite, &mut before_context)
+                .await
+            {
                 Ok(results) => {
                     // Check if any handler failed critically
                     for result in results {
                         if !result.success && !result.skipped {
-                            error!("VFS before file write handler failed: {}", 
-                                result.error.unwrap_or_else(|| "Unknown error".to_string()));
+                            error!(
+                                "VFS before file write handler failed: {}",
+                                result.error.unwrap_or_else(|| "Unknown error".to_string())
+                            );
                             return Err(VfsError::AccessDenied {
                                 path: "Event handler rejected write operation".to_string(),
                             });
@@ -280,7 +296,9 @@ impl VirtualFileSystem for VfsService {
 
         // Prepare metadata
         let file_id = generate_file_id();
-        let mime_type = request.mime_type.unwrap_or_else(|| detect_mime_type(&request.path));
+        let mime_type = request
+            .mime_type
+            .unwrap_or_else(|| detect_mime_type(&request.path));
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
@@ -307,21 +325,27 @@ impl VirtualFileSystem for VfsService {
 
         // Check if file exists and handle overwrite logic
         if !request.overwrite {
-            if let Ok(_existing) = self.storage.get_file_metadata(namespace, &FileIdentifier::Path(request.path.clone())).await {
-                return Err(VfsError::FileAlreadyExists {
-                    path: request.path,
-                });
+            if let Ok(_existing) = self
+                .storage
+                .get_file_metadata(namespace, &FileIdentifier::Path(request.path.clone()))
+                .await
+            {
+                return Err(VfsError::FileAlreadyExists { path: request.path });
             }
         }
 
         // Store file in storage layer
-        let stored_metadata = self.storage.store_file(namespace, &request.content, metadata).await?;
+        let stored_metadata = self
+            .storage
+            .store_file(namespace, &request.content, metadata)
+            .await?;
 
         // Update metrics
         self.update_metrics(|metrics| {
             metrics.total_writes += 1;
             metrics.bytes_written += request.content.len() as u64;
-        }).await;
+        })
+        .await;
 
         // Emit after event with real metadata
         let after_context = AfterEventContext::file_written(
@@ -333,14 +357,23 @@ impl VirtualFileSystem for VfsService {
             stored_metadata.content_hash.clone(),
             RequestContext::anonymous(),
         );
-        
+
         if let Some(event_bus) = &self.event_bus {
-            if let Err(e) = event_bus.dispatch_after(AfterEventType::FileWritten, &after_context).await {
-                warn!("Failed to dispatch VFS after file write event (non-critical): {}", e);
+            if let Err(e) = event_bus
+                .dispatch_after(AfterEventType::FileWritten, &after_context)
+                .await
+            {
+                warn!(
+                    "Failed to dispatch VFS after file write event (non-critical): {}",
+                    e
+                );
             }
         }
 
-        debug!("Successfully wrote file: {} ({})", stored_metadata.id, stored_metadata.path);
+        debug!(
+            "Successfully wrote file: {} ({})",
+            stored_metadata.id, stored_metadata.path
+        );
         Ok(stored_metadata)
     }
 
@@ -357,15 +390,20 @@ impl VirtualFileSystem for VfsService {
             FileIdentifier::Id(id) => (id.clone(), "unknown".to_string()),
         };
         let mut before_context = BeforeEventContext::new_vfs_read(namespace.clone(), file_id, path);
-        
+
         if let Some(event_bus) = &self.event_bus {
-            match event_bus.dispatch_before(BeforeEventType::FileRead, &mut before_context).await {
+            match event_bus
+                .dispatch_before(BeforeEventType::FileRead, &mut before_context)
+                .await
+            {
                 Ok(results) => {
                     // Check if any handler failed critically
                     for result in results {
                         if !result.success && !result.skipped {
-                            error!("VFS before file read handler failed: {}", 
-                                result.error.unwrap_or_else(|| "Unknown error".to_string()));
+                            error!(
+                                "VFS before file read handler failed: {}",
+                                result.error.unwrap_or_else(|| "Unknown error".to_string())
+                            );
                             return Err(VfsError::AccessDenied {
                                 path: "Event handler rejected read operation".to_string(),
                             });
@@ -384,13 +422,17 @@ impl VirtualFileSystem for VfsService {
 
         let response = if request.include_content {
             // Read file with content
-            let (metadata, content) = self.storage.retrieve_file(namespace, &request.identifier).await?;
-            
+            let (metadata, content) = self
+                .storage
+                .retrieve_file(namespace, &request.identifier)
+                .await?;
+
             // Update metrics
             self.update_metrics(|metrics| {
                 metrics.total_reads += 1;
                 metrics.bytes_read += content.len() as u64;
-            }).await;
+            })
+            .await;
 
             FileReadResponse {
                 metadata: metadata.clone(),
@@ -398,11 +440,15 @@ impl VirtualFileSystem for VfsService {
             }
         } else {
             // Read metadata only
-            let metadata = self.storage.get_file_metadata(namespace, &request.identifier).await?;
-            
+            let metadata = self
+                .storage
+                .get_file_metadata(namespace, &request.identifier)
+                .await?;
+
             self.update_metrics(|metrics| {
                 metrics.total_reads += 1;
-            }).await;
+            })
+            .await;
 
             FileReadResponse {
                 metadata: metadata.clone(),
@@ -419,10 +465,16 @@ impl VirtualFileSystem for VfsService {
             request.include_content,
             RequestContext::anonymous(),
         );
-        
+
         if let Some(event_bus) = &self.event_bus {
-            if let Err(e) = event_bus.dispatch_after(AfterEventType::FileRead, &after_context).await {
-                warn!("Failed to dispatch VFS after file read event (non-critical): {}", e);
+            if let Err(e) = event_bus
+                .dispatch_after(AfterEventType::FileRead, &after_context)
+                .await
+            {
+                warn!(
+                    "Failed to dispatch VFS after file read event (non-critical): {}",
+                    e
+                );
             }
         }
 
@@ -437,24 +489,32 @@ impl VirtualFileSystem for VfsService {
         identifier: FileIdentifier,
     ) -> VfsResult<()> {
         // Get file metadata first for events and validation
-        let metadata = self.storage.get_file_metadata(namespace, &identifier).await?;
+        let metadata = self
+            .storage
+            .get_file_metadata(namespace, &identifier)
+            .await?;
 
         // Emit before event
         // Create proper context for delete event
         let mut before_context = BeforeEventContext::new_vfs_delete(
-            namespace.clone(), 
-            metadata.id.clone(), 
-            metadata.path.clone()
+            namespace.clone(),
+            metadata.id.clone(),
+            metadata.path.clone(),
         );
-        
+
         if let Some(event_bus) = &self.event_bus {
-            match event_bus.dispatch_before(BeforeEventType::FileDelete, &mut before_context).await {
+            match event_bus
+                .dispatch_before(BeforeEventType::FileDelete, &mut before_context)
+                .await
+            {
                 Ok(results) => {
                     // Check if any handler failed critically
                     for result in results {
                         if !result.success && !result.skipped {
-                            error!("VFS before file delete handler failed: {}", 
-                                result.error.unwrap_or_else(|| "Unknown error".to_string()));
+                            error!(
+                                "VFS before file delete handler failed: {}",
+                                result.error.unwrap_or_else(|| "Unknown error".to_string())
+                            );
                             return Err(VfsError::AccessDenied {
                                 path: "Event handler rejected delete operation".to_string(),
                             });
@@ -477,7 +537,8 @@ impl VirtualFileSystem for VfsService {
         // Update metrics
         self.update_metrics(|metrics| {
             metrics.total_deletes += 1;
-        }).await;
+        })
+        .await;
 
         // Emit after event with real metadata
         let after_context = AfterEventContext::file_deleted(
@@ -486,10 +547,16 @@ impl VirtualFileSystem for VfsService {
             metadata.path.clone(),
             RequestContext::anonymous(),
         );
-        
+
         if let Some(event_bus) = &self.event_bus {
-            if let Err(e) = event_bus.dispatch_after(AfterEventType::FileDeleted, &after_context).await {
-                warn!("Failed to dispatch VFS after file delete event (non-critical): {}", e);
+            if let Err(e) = event_bus
+                .dispatch_after(AfterEventType::FileDeleted, &after_context)
+                .await
+            {
+                warn!(
+                    "Failed to dispatch VFS after file delete event (non-critical): {}",
+                    e
+                );
             }
         }
 
@@ -514,15 +581,18 @@ impl VirtualFileSystem for VfsService {
         }
 
         // Get files from storage
-        let (files, total_count) = self.storage.list_files(
-            namespace,
-            &request.directory,
-            request.recursive,
-            request.mime_filter.as_deref(),
-            request.tag_filter.as_deref(),
-            request.offset,
-            request.limit,
-        ).await?;
+        let (files, total_count) = self
+            .storage
+            .list_files(
+                namespace,
+                &request.directory,
+                request.recursive,
+                request.mime_filter.as_deref(),
+                request.tag_filter.as_deref(),
+                request.offset,
+                request.limit,
+            )
+            .await?;
 
         let has_more = if let (Some(offset), Some(limit)) = (request.offset, request.limit) {
             offset + limit < total_count
@@ -542,13 +612,17 @@ impl VirtualFileSystem for VfsService {
         // Validate namespace exists
         let config = {
             let namespaces = self.namespaces.read().await;
-            namespaces.get(namespace).cloned().ok_or_else(|| VfsError::AccessDenied {
-                path: namespace.clone(),
-            })?
+            namespaces
+                .get(namespace)
+                .cloned()
+                .ok_or_else(|| VfsError::AccessDenied {
+                    path: namespace.clone(),
+                })?
         };
 
         // Get stats from storage
-        let (file_count, storage_used, directory_count) = self.storage.get_usage_stats(namespace).await?;
+        let (file_count, storage_used, directory_count) =
+            self.storage.get_usage_stats(namespace).await?;
 
         Ok(VfsUsageStats {
             namespace: namespace.clone(),
@@ -577,7 +651,7 @@ impl VirtualFileSystem for VfsService {
 
         // Create backup using backup module
         let backup_id = backup::create_backup(namespace).await?;
-        
+
         info!("Created backup {} for namespace {}", backup_id, namespace);
         Ok(backup_id)
     }
@@ -596,17 +670,23 @@ impl VirtualFileSystem for VfsService {
 
         // Restore backup using backup module
         backup::restore_backup(namespace, backup_id).await?;
-        
+
         info!("Restored backup {} for namespace {}", backup_id, namespace);
         Ok(())
     }
 
     #[instrument(skip(self))]
-    async fn get_namespace_config(&self, namespace: &VfsNamespace) -> VfsResult<VfsNamespaceConfig> {
+    async fn get_namespace_config(
+        &self,
+        namespace: &VfsNamespace,
+    ) -> VfsResult<VfsNamespaceConfig> {
         let namespaces = self.namespaces.read().await;
-        namespaces.get(namespace).cloned().ok_or_else(|| VfsError::AccessDenied {
-            path: namespace.clone(),
-        })
+        namespaces
+            .get(namespace)
+            .cloned()
+            .ok_or_else(|| VfsError::AccessDenied {
+                path: namespace.clone(),
+            })
     }
 
     #[instrument(skip(self))]
@@ -630,7 +710,7 @@ impl VirtualFileSystem for VfsService {
         info!("Updated namespace configuration: {}", config.namespace);
         Ok(())
     }
-} 
+}
 
 #[cfg(test)]
 mod tests {
@@ -658,14 +738,20 @@ mod tests {
         service.create_namespace(config.clone()).await.unwrap();
 
         // Get namespace config
-        let retrieved_config = service.get_namespace_config(&config.namespace).await.unwrap();
+        let retrieved_config = service
+            .get_namespace_config(&config.namespace)
+            .await
+            .unwrap();
         assert_eq!(retrieved_config.namespace, config.namespace);
 
         // Delete namespace
         service.delete_namespace(&config.namespace).await.unwrap();
 
         // Should fail to get deleted namespace
-        assert!(service.get_namespace_config(&config.namespace).await.is_err());
+        assert!(service
+            .get_namespace_config(&config.namespace)
+            .await
+            .is_err());
     }
 
     #[tokio::test]
@@ -690,7 +776,10 @@ mod tests {
         };
 
         // Write file
-        let metadata = service.write_file(&"test".to_string(), write_request).await.unwrap();
+        let metadata = service
+            .write_file(&"test".to_string(), write_request)
+            .await
+            .unwrap();
         assert_eq!(metadata.size, content.len() as u64);
         assert_eq!(metadata.mime_type, "text/plain");
 
@@ -699,7 +788,10 @@ mod tests {
             identifier: FileIdentifier::Id(metadata.id.clone()),
             include_content: true,
         };
-        let response = service.read_file(&"test".to_string(), read_request).await.unwrap();
+        let response = service
+            .read_file(&"test".to_string(), read_request)
+            .await
+            .unwrap();
         assert_eq!(response.content.unwrap(), content);
 
         // List files
@@ -711,18 +803,27 @@ mod tests {
             offset: None,
             limit: None,
         };
-        let list_response = service.list_files(&"test".to_string(), list_request).await.unwrap();
+        let list_response = service
+            .list_files(&"test".to_string(), list_request)
+            .await
+            .unwrap();
         assert_eq!(list_response.files.len(), 1);
 
         // Delete file
-        service.delete_file(&"test".to_string(), FileIdentifier::Id(metadata.id)).await.unwrap();
+        service
+            .delete_file(&"test".to_string(), FileIdentifier::Id(metadata.id))
+            .await
+            .unwrap();
 
         // File should no longer exist
         let read_request = FileReadRequest {
             identifier: FileIdentifier::Path("test.txt".to_string()),
             include_content: false,
         };
-        assert!(service.read_file(&"test".to_string(), read_request).await.is_err());
+        assert!(service
+            .read_file(&"test".to_string(), read_request)
+            .await
+            .is_err());
     }
 
     #[tokio::test]
@@ -751,4 +852,4 @@ mod tests {
         let result = service.write_file(&"test".to_string(), write_request).await;
         assert!(matches!(result, Err(VfsError::QuotaExceeded { .. })));
     }
-} 
+}

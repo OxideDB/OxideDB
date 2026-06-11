@@ -1,6 +1,6 @@
 //! Database utilities for plugin database operations
 
-use crate::{PluginResult, PluginError, Host, DatabaseResult, Record};
+use crate::{DatabaseResult, Host, PluginError, PluginResult, Record};
 
 /// Database utilities for plugins
 pub struct Database;
@@ -17,12 +17,19 @@ impl Database {
     }
 
     /// Read records from a collection with a filter
-    pub fn read_with_filter(collection: &str, filter: &serde_json::Value) -> PluginResult<DatabaseResult> {
+    pub fn read_with_filter(
+        collection: &str,
+        filter: &serde_json::Value,
+    ) -> PluginResult<DatabaseResult> {
         Host::read_records(collection, Some(filter))
     }
 
     /// Update a record in a collection
-    pub fn update<T: serde::Serialize>(collection: &str, record_id: &str, data: &T) -> PluginResult<DatabaseResult> {
+    pub fn update<T: serde::Serialize>(
+        collection: &str,
+        record_id: &str,
+        data: &T,
+    ) -> PluginResult<DatabaseResult> {
         Host::update_record(collection, record_id, data)
     }
 
@@ -35,10 +42,13 @@ impl Database {
     pub fn create_typed<T: serde::Serialize>(collection: &str, data: &T) -> PluginResult<Record> {
         let result = Self::create(collection, data)?;
         if result.is_success() {
-            result.parse_record().map_err(|e| PluginError::JsonError(e))
+            result.parse_record().map_err(PluginError::JsonError)
         } else {
             Err(PluginError::ExecutionError(
-                result.error().unwrap_or("Unknown database error").to_string()
+                result
+                    .error()
+                    .unwrap_or("Unknown database error")
+                    .to_string(),
             ))
         }
     }
@@ -47,34 +57,50 @@ impl Database {
     pub fn read_typed(collection: &str) -> PluginResult<Vec<Record>> {
         let result = Self::read(collection)?;
         if result.is_success() {
-            result.parse_records().map_err(|e| PluginError::JsonError(e))
+            result.parse_records().map_err(PluginError::JsonError)
         } else {
             Err(PluginError::ExecutionError(
-                result.error().unwrap_or("Unknown database error").to_string()
+                result
+                    .error()
+                    .unwrap_or("Unknown database error")
+                    .to_string(),
             ))
         }
     }
 
     /// Read typed records with a filter
-    pub fn read_typed_with_filter(collection: &str, filter: &serde_json::Value) -> PluginResult<Vec<Record>> {
+    pub fn read_typed_with_filter(
+        collection: &str,
+        filter: &serde_json::Value,
+    ) -> PluginResult<Vec<Record>> {
         let result = Self::read_with_filter(collection, filter)?;
         if result.is_success() {
-            result.parse_records().map_err(|e| PluginError::JsonError(e))
+            result.parse_records().map_err(PluginError::JsonError)
         } else {
             Err(PluginError::ExecutionError(
-                result.error().unwrap_or("Unknown database error").to_string()
+                result
+                    .error()
+                    .unwrap_or("Unknown database error")
+                    .to_string(),
             ))
         }
     }
 
     /// Update a typed record
-    pub fn update_typed<T: serde::Serialize>(collection: &str, record_id: &str, data: &T) -> PluginResult<Record> {
+    pub fn update_typed<T: serde::Serialize>(
+        collection: &str,
+        record_id: &str,
+        data: &T,
+    ) -> PluginResult<Record> {
         let result = Self::update(collection, record_id, data)?;
         if result.is_success() {
-            result.parse_record().map_err(|e| PluginError::JsonError(e))
+            result.parse_record().map_err(PluginError::JsonError)
         } else {
             Err(PluginError::ExecutionError(
-                result.error().unwrap_or("Unknown database error").to_string()
+                result
+                    .error()
+                    .unwrap_or("Unknown database error")
+                    .to_string(),
             ))
         }
     }
@@ -83,10 +109,13 @@ impl Database {
     pub fn delete_typed(collection: &str, record_id: &str) -> PluginResult<Record> {
         let result = Self::delete(collection, record_id)?;
         if result.is_success() {
-            result.parse_record().map_err(|e| PluginError::JsonError(e))
+            result.parse_record().map_err(PluginError::JsonError)
         } else {
             Err(PluginError::ExecutionError(
-                result.error().unwrap_or("Unknown database error").to_string()
+                result
+                    .error()
+                    .unwrap_or("Unknown database error")
+                    .to_string(),
             ))
         }
     }
@@ -141,7 +170,8 @@ impl RecordBuilder {
 
     /// Set a field value
     pub fn set<V: serde::Serialize>(mut self, key: &str, value: &V) -> PluginResult<Self> {
-        self.data.insert(key.to_string(), serde_json::to_value(value)?);
+        self.data
+            .insert(key.to_string(), serde_json::to_value(value)?);
         Ok(self)
     }
 
@@ -161,4 +191,4 @@ impl Default for RecordBuilder {
     fn default() -> Self {
         Self::new()
     }
-} 
+}

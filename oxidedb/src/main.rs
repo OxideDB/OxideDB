@@ -3,12 +3,12 @@
 //! This is the main entry point for OxideDB. It demonstrates the integration
 //! of the core architecture components using a modular, maintainable structure.
 
+use clap::Parser;
 use oxidedb::{
+    commands::{CommandHandler, ManagePluginsCommand, RegisterSuperuserCommand, StartCommand},
     config::{Cli, Commands},
-    commands::{CommandHandler, StartCommand, RegisterSuperuserCommand, ManagePluginsCommand},
     Result,
 };
-use clap::Parser;
 use tracing::Level;
 use tracing_subscriber::fmt;
 
@@ -23,19 +23,13 @@ async fn main() -> Result<()> {
         Commands::RegisterSuperuser(args) => Level::from(args.log_level.clone()),
         Commands::ManagePlugins(args) => Level::from(args.log_level.clone()),
     };
-    
+
     fmt().with_max_level(log_level).init();
 
     // Execute the appropriate command
     match cli.command {
-        Commands::Start(args) => {
-            StartCommand::execute(args).await
-        }
-        Commands::RegisterSuperuser(args) => {
-            RegisterSuperuserCommand::execute(args).await
-        }
-        Commands::ManagePlugins(args) => {
-            ManagePluginsCommand::execute(args).await
-        }
+        Commands::Start(args) => StartCommand::execute(args).await,
+        Commands::RegisterSuperuser(args) => RegisterSuperuserCommand::execute(args).await,
+        Commands::ManagePlugins(args) => ManagePluginsCommand::execute(args).await,
     }
 }

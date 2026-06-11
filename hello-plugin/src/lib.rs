@@ -52,7 +52,7 @@ impl PluginEventHandler for HelloPlugin {
         log_info!("Homepage: https://github.com/oxidedb/hello-plugin");
 
         // NOTE: All plugin metadata is now sourced from plugin.toml during installation
-        
+
         // Register HTTP routes with their specific handler function names
         Http::register_route("GET", "/api/hello/items", "handle_get_items")?;
         Http::register_route("POST", "/api/hello/items", "handle_create_item")?;
@@ -60,40 +60,49 @@ impl PluginEventHandler for HelloPlugin {
         Http::register_route("POST", "/api/hello/process", "handle_process_data")?;
         Http::register_route("GET", "/api/hello/metadata", "handle_get_metadata")?;
         Http::register_route("GET", "/api/hello/status", "handle_get_status")?;
-        
+
         log_info!("Hello Plugin routes registered successfully!");
         log_info!("Features enabled: database_operations, http_routes, data_validation, event_handling, security_checks");
         Ok(())
     }
 
     fn on_before_create(&mut self, event: &EventPayload) -> PluginResult<PluginResponse> {
-        log_info!("Processing create event for collection: {}", event.collection);
+        log_info!(
+            "Processing create event for collection: {}",
+            event.collection
+        );
 
         // Security check: block access to restricted collections
         if event.collection.contains("admin") || event.collection.contains("system") {
-            let error_msg = format!("Access denied to restricted collection: {}", event.collection);
+            let error_msg = format!(
+                "Access denied to restricted collection: {}",
+                event.collection
+            );
             log_warn!("{}", error_msg);
             return Ok(PluginResponse::deny(error_msg));
         }
 
         // Parse and enhance the data
         let mut data: JsonValue = serde_json::from_str(&event.data)?;
-        
+
         if let Some(obj) = data.as_object_mut() {
             // Add comprehensive plugin metadata
             let runtime_info = Self::get_runtime_info();
-            obj.insert("plugin_processed_at".to_string(), json!(Self::get_current_timestamp()));
+            obj.insert(
+                "plugin_processed_at".to_string(),
+                json!(Self::get_current_timestamp()),
+            );
             obj.insert("plugin_name".to_string(), json!(PLUGIN_NAME));
             obj.insert("plugin_version".to_string(), json!(PLUGIN_VERSION));
             obj.insert("plugin_author".to_string(), json!(PLUGIN_AUTHOR));
             obj.insert("plugin_runtime_info".to_string(), runtime_info);
-            
+
             // Validate and enhance name field if present
             if let Some(name) = obj.get("name").and_then(|v| v.as_str()) {
                 if name.trim().is_empty() {
                     return Ok(PluginResponse::deny("Name cannot be empty"));
                 }
-                
+
                 // Capitalize the name
                 obj.insert("name".to_string(), json!(capitalize_name(name)));
             }
@@ -104,36 +113,52 @@ impl PluginEventHandler for HelloPlugin {
     }
 
     fn on_after_create(&mut self, event: &EventPayload) -> PluginResult<PluginResponse> {
-        log_info!("Record created successfully in collection: {}", event.collection);
+        log_info!(
+            "Record created successfully in collection: {}",
+            event.collection
+        );
 
         // NOTE: We don't create audit logs from the event handler because it can cause
         // circular dependencies (the audit log creation would trigger another event).
         // In a production system, you might use a separate audit logging service
         // or queue the audit log for later processing.
-        
-        log_info!("Audit log would be created: action=record_created, collection={}, plugin={} v{}", 
-                 event.collection, PLUGIN_NAME, PLUGIN_VERSION);
+
+        log_info!(
+            "Audit log would be created: action=record_created, collection={}, plugin={} v{}",
+            event.collection,
+            PLUGIN_NAME,
+            PLUGIN_VERSION
+        );
 
         Ok(PluginResponse::allow())
     }
 
     fn on_before_update(&mut self, event: &EventPayload) -> PluginResult<PluginResponse> {
-        log_info!("Processing update event for collection: {}", event.collection);
+        log_info!(
+            "Processing update event for collection: {}",
+            event.collection
+        );
 
         // Parse and validate the update data
         let mut data: JsonValue = serde_json::from_str(&event.data)?;
 
         if let Some(obj) = data.as_object_mut() {
             // Update the last modified timestamp with metadata
-            obj.insert("plugin_updated_at".to_string(), json!(Self::get_current_timestamp()));
-            obj.insert("plugin_updated_by".to_string(), json!(format!("{} v{}", PLUGIN_NAME, PLUGIN_VERSION)));
+            obj.insert(
+                "plugin_updated_at".to_string(),
+                json!(Self::get_current_timestamp()),
+            );
+            obj.insert(
+                "plugin_updated_by".to_string(),
+                json!(format!("{} v{}", PLUGIN_NAME, PLUGIN_VERSION)),
+            );
 
             // Validate name field if being updated
             if let Some(name) = obj.get("name").and_then(|v| v.as_str()) {
                 if name.trim().is_empty() {
                     return Ok(PluginResponse::deny("Name cannot be empty"));
                 }
-                
+
                 obj.insert("name".to_string(), json!(capitalize_name(name)));
             }
         }
@@ -142,15 +167,21 @@ impl PluginEventHandler for HelloPlugin {
     }
 
     fn on_before_delete(&mut self, event: &EventPayload) -> PluginResult<PluginResponse> {
-        log_info!("Processing delete event for collection: {}", event.collection);
+        log_info!(
+            "Processing delete event for collection: {}",
+            event.collection
+        );
 
         // Parse the data to check if it's a protected record
         let data: JsonValue = serde_json::from_str(&event.data)?;
-        
+
         if let Some(protected) = data.get("protected").and_then(|v| v.as_bool()) {
             if protected {
-                log_warn!("Attempted to delete protected record (blocked by {} v{})", 
-                         PLUGIN_NAME, PLUGIN_VERSION);
+                log_warn!(
+                    "Attempted to delete protected record (blocked by {} v{})",
+                    PLUGIN_NAME,
+                    PLUGIN_VERSION
+                );
                 return Ok(PluginResponse::deny("Cannot delete protected records"));
             }
         }
@@ -159,7 +190,11 @@ impl PluginEventHandler for HelloPlugin {
     }
 
     fn on_cleanup(&mut self) -> PluginResult<()> {
-        log_info!("Hello Plugin cleanup completed for {} v{}", PLUGIN_NAME, PLUGIN_VERSION);
+        log_info!(
+            "Hello Plugin cleanup completed for {} v{}",
+            PLUGIN_NAME,
+            PLUGIN_VERSION
+        );
         Ok(())
     }
 }
@@ -167,18 +202,28 @@ impl PluginEventHandler for HelloPlugin {
 /// HTTP handler implementation using the proper SDK architecture
 impl PluginHttpHandler for HelloPlugin {
     fn handle_request(&mut self, request: &HttpRequestContext) -> PluginResult<HttpResponse> {
-        log_info!("Handling HTTP request: {} {} (plugin: {} v{})", 
-                 request.method, request.path, PLUGIN_NAME, PLUGIN_VERSION);
-        
+        log_info!(
+            "Handling HTTP request: {} {} (plugin: {} v{})",
+            request.method,
+            request.path,
+            PLUGIN_NAME,
+            PLUGIN_VERSION
+        );
+
         match (request.method.as_str(), request.path.as_str()) {
             ("GET", "/api/hello/items") => self.handle_get_items(request),
             ("POST", "/api/hello/items") => self.handle_create_item(request),
             ("GET", path) if path.starts_with("/api/hello/items/") => self.handle_get_item(request),
             ("POST", "/api/hello/process") => self.handle_process_data(request),
-            ("GET", "/api/hello/metadata") => self.handle_get_metadata(request), 
+            ("GET", "/api/hello/metadata") => self.handle_get_metadata(request),
             ("GET", "/api/hello/status") => self.handle_get_status(request),
             _ => {
-                log_warn!("Route not found: {} {} (plugin: {})", request.method, request.path, PLUGIN_NAME);
+                log_warn!(
+                    "Route not found: {} {} (plugin: {})",
+                    request.method,
+                    request.path,
+                    PLUGIN_NAME
+                );
                 Ok(HttpResponse::error(404, "Route not found"))
             }
         }
@@ -194,14 +239,17 @@ impl HelloPlugin {
         match Database::read_typed("items") {
             Ok(records) => {
                 log_info!("Retrieved {} items from database", records.len());
-                
-                let items: Vec<JsonValue> = records.into_iter()
-                    .map(|record| json!({
-                        "id": record.id,
-                        "data": record.data,
-                        "created_at": record.created_at,
-                        "updated_at": record.updated_at
-                    }))
+
+                let items: Vec<JsonValue> = records
+                    .into_iter()
+                    .map(|record| {
+                        json!({
+                            "id": record.id,
+                            "data": record.data,
+                            "created_at": record.created_at,
+                            "updated_at": record.updated_at
+                        })
+                    })
                     .collect();
 
                 JsonResponseBuilder::new()
@@ -211,7 +259,7 @@ impl HelloPlugin {
             }
             Err(e) => {
                 log_error!("Failed to read items: {}", e);
-                
+
                 // Return mock data for demo purposes with metadata
                 let mock_items = json!([
                     {
@@ -222,14 +270,14 @@ impl HelloPlugin {
                         "plugin_info": Self::get_runtime_info()
                     },
                     {
-                        "id": "item2", 
+                        "id": "item2",
                         "name": "Hello Item 2",
                         "description": "Another item from Hello Plugin",
                         "created_at": Self::get_current_timestamp(),
                         "plugin_info": Self::get_runtime_info()
                     }
                 ]);
-                
+
                 JsonResponseBuilder::new()
                     .header("X-Plugin-Name".to_string(), PLUGIN_NAME.to_string())
                     .header("X-Plugin-Version".to_string(), PLUGIN_VERSION.to_string())
@@ -244,13 +292,20 @@ impl HelloPlugin {
         log_info!("Handling POST /api/hello/items");
 
         if !request.is_json() {
-            return Ok(HttpResponse::error(400, "Content-Type must be application/json"));
+            return Ok(HttpResponse::error(
+                400,
+                "Content-Type must be application/json",
+            ));
         }
 
         let item_data: JsonValue = request.body_json()?;
 
         // Validate required fields
-        if !item_data.get("name").and_then(|v| v.as_str()).map_or(false, |s| !s.is_empty()) {
+        if item_data
+            .get("name")
+            .and_then(|v| v.as_str())
+            .is_none_or(str::is_empty)
+        {
             return Ok(HttpResponse::error(400, "Name field is required"));
         }
 
@@ -258,8 +313,14 @@ impl HelloPlugin {
         let mut enhanced_item = item_data;
         if let Some(obj) = enhanced_item.as_object_mut() {
             let runtime_info = Self::get_runtime_info();
-            obj.insert("created_by".to_string(), json!(format!("{} v{}", PLUGIN_NAME, PLUGIN_VERSION)));
-            obj.insert("created_at".to_string(), json!(Self::get_current_timestamp()));
+            obj.insert(
+                "created_by".to_string(),
+                json!(format!("{} v{}", PLUGIN_NAME, PLUGIN_VERSION)),
+            );
+            obj.insert(
+                "created_at".to_string(),
+                json!(Self::get_current_timestamp()),
+            );
             obj.insert("plugin_info".to_string(), runtime_info);
             obj.insert("plugin_author".to_string(), json!(PLUGIN_AUTHOR));
             obj.insert("plugin_homepage".to_string(), json!(PLUGIN_HOMEPAGE));
@@ -268,8 +329,13 @@ impl HelloPlugin {
         // Create the record in the database
         match Database::create_typed("items", &enhanced_item) {
             Ok(record) => {
-                log_info!("Item created with ID: {} by plugin {} v{}", record.id, PLUGIN_NAME, PLUGIN_VERSION);
-                
+                log_info!(
+                    "Item created with ID: {} by plugin {} v{}",
+                    record.id,
+                    PLUGIN_NAME,
+                    PLUGIN_VERSION
+                );
+
                 let response_data = json!({
                     "success": true,
                     "message": "Item created successfully",
@@ -302,7 +368,8 @@ impl HelloPlugin {
     fn handle_get_item(&mut self, request: &HttpRequestContext) -> PluginResult<HttpResponse> {
         log_info!("Handling GET /api/hello/items/:id");
 
-        let item_id = request.get_path_param("id")
+        let item_id = request
+            .get_path_param("id")
             .ok_or_else(|| PluginError::InvalidData("Item ID not found in path".to_string()))?;
 
         // Query for the specific item
@@ -319,7 +386,11 @@ impl HelloPlugin {
                     "retrieved_at": Self::get_current_timestamp()
                 });
 
-                log_info!("Successfully retrieved item: {} via plugin {}", item_id, PLUGIN_NAME);
+                log_info!(
+                    "Successfully retrieved item: {} via plugin {}",
+                    item_id,
+                    PLUGIN_NAME
+                );
                 JsonResponseBuilder::new()
                     .header("X-Plugin-Name".to_string(), PLUGIN_NAME.to_string())
                     .header("X-Plugin-Version".to_string(), PLUGIN_VERSION.to_string())
@@ -331,7 +402,7 @@ impl HelloPlugin {
             }
             Err(e) => {
                 log_error!("Failed to read item {}: {}", item_id, e);
-                
+
                 // Return mock data for demo purposes
                 let mock_item = json!({
                     "id": item_id,
@@ -341,7 +412,7 @@ impl HelloPlugin {
                     "created_by": format!("{} v{}", PLUGIN_NAME, PLUGIN_VERSION),
                     "plugin_info": Self::get_runtime_info()
                 });
-                
+
                 JsonResponseBuilder::new()
                     .header("X-Plugin-Name".to_string(), PLUGIN_NAME.to_string())
                     .header("X-Plugin-Version".to_string(), PLUGIN_VERSION.to_string())
@@ -356,7 +427,10 @@ impl HelloPlugin {
         log_info!("Handling POST /api/hello/process");
 
         if !request.is_json() {
-            return Ok(HttpResponse::error(400, "Content-Type must be application/json"));
+            return Ok(HttpResponse::error(
+                400,
+                "Content-Type must be application/json",
+            ));
         }
 
         let input_data: JsonValue = request.body_json()?;
@@ -366,26 +440,38 @@ impl HelloPlugin {
             JsonValue::Object(mut obj) => {
                 // Add comprehensive processing metadata
                 let runtime_info = Self::get_runtime_info();
-                obj.insert("processed_by".to_string(), json!(format!("{} v{}", PLUGIN_NAME, PLUGIN_VERSION)));
-                obj.insert("processed_at".to_string(), json!(Self::get_current_timestamp()));
+                obj.insert(
+                    "processed_by".to_string(),
+                    json!(format!("{} v{}", PLUGIN_NAME, PLUGIN_VERSION)),
+                );
+                obj.insert(
+                    "processed_at".to_string(),
+                    json!(Self::get_current_timestamp()),
+                );
                 obj.insert("processor_info".to_string(), runtime_info);
                 obj.insert("processor_author".to_string(), json!(PLUGIN_AUTHOR));
-                
+
                 // Example transformation: uppercase all string values
                 for (_key, value) in obj.iter_mut() {
                     if let Some(string_val) = value.as_str() {
                         *value = json!(string_val.to_uppercase());
                     }
                 }
-                
+
                 JsonValue::Object(obj)
             }
             JsonValue::Array(mut arr) => {
                 // Process each item in the array
                 for item in arr.iter_mut() {
                     if let Some(obj) = item.as_object_mut() {
-                        obj.insert("processed_by".to_string(), json!(format!("{} v{}", PLUGIN_NAME, PLUGIN_VERSION)));
-                        obj.insert("processed_at".to_string(), json!(Self::get_current_timestamp()));
+                        obj.insert(
+                            "processed_by".to_string(),
+                            json!(format!("{} v{}", PLUGIN_NAME, PLUGIN_VERSION)),
+                        );
+                        obj.insert(
+                            "processed_at".to_string(),
+                            json!(Self::get_current_timestamp()),
+                        );
                     }
                 }
                 JsonValue::Array(arr)
@@ -407,7 +493,11 @@ impl HelloPlugin {
                 if let Err(e) = Database::create("processed_data", &processed_data) {
                     log_warn!("Failed to save processed data: {}", e);
                 } else {
-                    log_info!("Processed data saved to database by {} v{}", PLUGIN_NAME, PLUGIN_VERSION);
+                    log_info!(
+                        "Processed data saved to database by {} v{}",
+                        PLUGIN_NAME,
+                        PLUGIN_VERSION
+                    );
                 }
             }
         }
@@ -427,7 +517,11 @@ impl HelloPlugin {
             }
         });
 
-        log_info!("Successfully processed data with {} v{}", PLUGIN_NAME, PLUGIN_VERSION);
+        log_info!(
+            "Successfully processed data with {} v{}",
+            PLUGIN_NAME,
+            PLUGIN_VERSION
+        );
         JsonResponseBuilder::new()
             .header("X-Plugin-Name".to_string(), PLUGIN_NAME.to_string())
             .header("X-Plugin-Version".to_string(), PLUGIN_VERSION.to_string())
@@ -441,7 +535,7 @@ impl HelloPlugin {
         let metadata_response = json!({
             "plugin_metadata": {
                 "name": PLUGIN_NAME,
-                "version": PLUGIN_VERSION, 
+                "version": PLUGIN_VERSION,
                 "author": PLUGIN_AUTHOR,
                 "description": PLUGIN_DESCRIPTION,
                 "homepage": PLUGIN_HOMEPAGE
@@ -449,7 +543,7 @@ impl HelloPlugin {
             "runtime_info": Self::get_runtime_info(),
             "capabilities": [
                 "database_operations",
-                "http_routes", 
+                "http_routes",
                 "data_validation",
                 "event_handling",
                 "security_checks"
@@ -511,15 +605,17 @@ fn capitalize_name(name: &str) -> String {
             let mut chars = word.chars();
             match chars.next() {
                 None => String::new(),
-                Some(first) => first.to_uppercase().collect::<String>() + &chars.as_str().to_lowercase(),
+                Some(first) => {
+                    first.to_uppercase().collect::<String>() + &chars.as_str().to_lowercase()
+                }
             }
         })
         .collect::<Vec<_>>()
         .join(" ")
 }
 
-// Export the plugin with all capabilities
-oxide_plugin_sdk::export_plugin!(HelloPlugin);
+// Export the plugin with all event and HTTP capabilities
+oxide_plugin_sdk::export_http_plugin!(HelloPlugin);
 
 #[cfg(test)]
 mod tests {

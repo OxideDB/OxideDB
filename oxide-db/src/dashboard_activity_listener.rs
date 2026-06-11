@@ -4,14 +4,13 @@
 //! activities based on system events. It follows the Hook-First Principle by
 //! listening to events dispatched by the EventBus.
 
+use chrono::Utc;
 use std::sync::Arc;
 use tracing::{debug, warn};
-use chrono::Utc;
 
 use oxide_core::{
-    event::{AfterEventContext, HandlerMetadata, AfterEventHandler},
-    ActivityEntry, ActivityType, DashboardStatsService,
-    AppError,
+    event::{AfterEventContext, AfterEventHandler, HandlerMetadata},
+    ActivityEntry, ActivityType, AppError, DashboardStatsService,
 };
 
 /// Dashboard activity listener that records activities from system events
@@ -23,9 +22,7 @@ pub struct DashboardActivityListener {
 impl DashboardActivityListener {
     /// Create a new dashboard activity listener
     pub fn new(dashboard_service: Arc<dyn DashboardStatsService>) -> Self {
-        Self {
-            dashboard_service,
-        }
+        Self { dashboard_service }
     }
 
     /// Convert an after event context to an activity entry
@@ -33,13 +30,24 @@ impl DashboardActivityListener {
         let timestamp = Utc::now().to_rfc3339();
 
         match context {
-            AfterEventContext::RecordCreated { collection, record_id, request_context, .. } => {
-                let user = request_context.user_id.clone().unwrap_or_else(|| "system".to_string());
+            AfterEventContext::RecordCreated {
+                collection,
+                record_id,
+                request_context,
+                ..
+            } => {
+                let user = request_context
+                    .user_id
+                    .clone()
+                    .unwrap_or_else(|| "system".to_string());
                 Some(ActivityEntry {
                     timestamp,
                     activity_type: ActivityType::RecordCreated,
                     user,
-                    description: format!("Created record {} in collection '{}'", record_id, collection),
+                    description: format!(
+                        "Created record {} in collection '{}'",
+                        record_id, collection
+                    ),
                     collection: Some(collection.clone()),
                     metadata: Some(serde_json::json!({
                         "record_id": record_id,
@@ -47,13 +55,24 @@ impl DashboardActivityListener {
                     })),
                 })
             }
-            AfterEventContext::RecordUpdated { collection, record_id, request_context, .. } => {
-                let user = request_context.user_id.clone().unwrap_or_else(|| "system".to_string());
+            AfterEventContext::RecordUpdated {
+                collection,
+                record_id,
+                request_context,
+                ..
+            } => {
+                let user = request_context
+                    .user_id
+                    .clone()
+                    .unwrap_or_else(|| "system".to_string());
                 Some(ActivityEntry {
                     timestamp,
                     activity_type: ActivityType::RecordUpdated,
                     user,
-                    description: format!("Updated record {} in collection '{}'", record_id, collection),
+                    description: format!(
+                        "Updated record {} in collection '{}'",
+                        record_id, collection
+                    ),
                     collection: Some(collection.clone()),
                     metadata: Some(serde_json::json!({
                         "record_id": record_id,
@@ -61,13 +80,24 @@ impl DashboardActivityListener {
                     })),
                 })
             }
-            AfterEventContext::RecordDeleted { collection, record_id, request_context, .. } => {
-                let user = request_context.user_id.clone().unwrap_or_else(|| "system".to_string());
+            AfterEventContext::RecordDeleted {
+                collection,
+                record_id,
+                request_context,
+                ..
+            } => {
+                let user = request_context
+                    .user_id
+                    .clone()
+                    .unwrap_or_else(|| "system".to_string());
                 Some(ActivityEntry {
                     timestamp,
                     activity_type: ActivityType::RecordDeleted,
                     user,
-                    description: format!("Deleted record {} from collection '{}'", record_id, collection),
+                    description: format!(
+                        "Deleted record {} from collection '{}'",
+                        record_id, collection
+                    ),
                     collection: Some(collection.clone()),
                     metadata: Some(serde_json::json!({
                         "record_id": record_id,
@@ -75,8 +105,15 @@ impl DashboardActivityListener {
                     })),
                 })
             }
-            AfterEventContext::CollectionCreated { collection, request_context, .. } => {
-                let user = request_context.user_id.clone().unwrap_or_else(|| "system".to_string());
+            AfterEventContext::CollectionCreated {
+                collection,
+                request_context,
+                ..
+            } => {
+                let user = request_context
+                    .user_id
+                    .clone()
+                    .unwrap_or_else(|| "system".to_string());
                 Some(ActivityEntry {
                     timestamp,
                     activity_type: ActivityType::CollectionCreated,
@@ -88,8 +125,15 @@ impl DashboardActivityListener {
                     })),
                 })
             }
-            AfterEventContext::CollectionUpdated { collection, request_context, .. } => {
-                let user = request_context.user_id.clone().unwrap_or_else(|| "system".to_string());
+            AfterEventContext::CollectionUpdated {
+                collection,
+                request_context,
+                ..
+            } => {
+                let user = request_context
+                    .user_id
+                    .clone()
+                    .unwrap_or_else(|| "system".to_string());
                 Some(ActivityEntry {
                     timestamp,
                     activity_type: ActivityType::CollectionModified,
@@ -101,8 +145,15 @@ impl DashboardActivityListener {
                     })),
                 })
             }
-            AfterEventContext::CollectionDeleted { collection, request_context, .. } => {
-                let user = request_context.user_id.clone().unwrap_or_else(|| "system".to_string());
+            AfterEventContext::CollectionDeleted {
+                collection,
+                request_context,
+                ..
+            } => {
+                let user = request_context
+                    .user_id
+                    .clone()
+                    .unwrap_or_else(|| "system".to_string());
                 Some(ActivityEntry {
                     timestamp,
                     activity_type: ActivityType::CollectionDeleted,
@@ -114,90 +165,93 @@ impl DashboardActivityListener {
                     })),
                 })
             }
-            AfterEventContext::UserRegistered { user_id, email, .. } => {
-                Some(ActivityEntry {
-                    timestamp,
-                    activity_type: ActivityType::UserRegistered,
-                    user: "system".to_string(),
-                    description: format!("New user '{}' registered with email '{}'", user_id, email),
-                    collection: Some("_users".to_string()),
-                    metadata: Some(serde_json::json!({
-                        "user_id": user_id,
-                        "email": email,
-                        "operation": "user_register"
-                    })),
-                })
-            }
-            AfterEventContext::UserAuthenticated { user_id, email, .. } => {
-                Some(ActivityEntry {
-                    timestamp,
-                    activity_type: ActivityType::UserLogin,
-                    user: user_id.clone(),
-                    description: format!("User '{}' logged in", email),
-                    collection: None,
-                    metadata: Some(serde_json::json!({
-                        "user_id": user_id,
-                        "email": email,
-                        "operation": "user_login"
-                    })),
-                })
-            }
-            AfterEventContext::PluginLoaded { plugin_name, plugin_version, .. } => {
-                Some(ActivityEntry {
-                    timestamp,
-                    activity_type: ActivityType::PluginInstalled,
-                    user: "system".to_string(),
-                    description: format!("Plugin '{}' v{} loaded", plugin_name, plugin_version),
-                    collection: None,
-                    metadata: Some(serde_json::json!({
-                        "plugin_name": plugin_name,
-                        "plugin_version": plugin_version,
-                        "operation": "plugin_loaded"
-                    })),
-                })
-            }
-            AfterEventContext::PluginUnloaded { plugin_name, .. } => {
-                Some(ActivityEntry {
-                    timestamp,
-                    activity_type: ActivityType::PluginToggled,
-                    user: "system".to_string(),
-                    description: format!("Plugin '{}' unloaded", plugin_name),
-                    collection: None,
-                    metadata: Some(serde_json::json!({
-                        "plugin_name": plugin_name,
-                        "operation": "plugin_unloaded"
-                    })),
-                })
-            }
-            AfterEventContext::SystemStartup { version, .. } => {
-                Some(ActivityEntry {
-                    timestamp,
-                    activity_type: ActivityType::SystemMaintenance,
-                    user: "system".to_string(),
-                    description: format!("System started up (version {})", version),
-                    collection: None,
-                    metadata: Some(serde_json::json!({
-                        "version": version,
-                        "operation": "system_startup"
-                    })),
-                })
-            }
-            AfterEventContext::SystemShutdown { reason, uptime_ms, .. } => {
-                Some(ActivityEntry {
-                    timestamp,
-                    activity_type: ActivityType::SystemMaintenance,
-                    user: "system".to_string(),
-                    description: format!("System shutdown: {} (uptime: {}ms)", reason, uptime_ms),
-                    collection: None,
-                    metadata: Some(serde_json::json!({
-                        "reason": reason,
-                        "uptime_ms": uptime_ms,
-                        "operation": "system_shutdown"
-                    })),
-                })
-            }
-            AfterEventContext::FileDeleted { namespace, file_id, path, request_context, .. } => {
-                let user = request_context.user_id.clone().unwrap_or_else(|| "system".to_string());
+            AfterEventContext::UserRegistered { user_id, email, .. } => Some(ActivityEntry {
+                timestamp,
+                activity_type: ActivityType::UserRegistered,
+                user: "system".to_string(),
+                description: format!("New user '{}' registered with email '{}'", user_id, email),
+                collection: Some("_users".to_string()),
+                metadata: Some(serde_json::json!({
+                    "user_id": user_id,
+                    "email": email,
+                    "operation": "user_register"
+                })),
+            }),
+            AfterEventContext::UserAuthenticated { user_id, email, .. } => Some(ActivityEntry {
+                timestamp,
+                activity_type: ActivityType::UserLogin,
+                user: user_id.clone(),
+                description: format!("User '{}' logged in", email),
+                collection: None,
+                metadata: Some(serde_json::json!({
+                    "user_id": user_id,
+                    "email": email,
+                    "operation": "user_login"
+                })),
+            }),
+            AfterEventContext::PluginLoaded {
+                plugin_name,
+                plugin_version,
+                ..
+            } => Some(ActivityEntry {
+                timestamp,
+                activity_type: ActivityType::PluginInstalled,
+                user: "system".to_string(),
+                description: format!("Plugin '{}' v{} loaded", plugin_name, plugin_version),
+                collection: None,
+                metadata: Some(serde_json::json!({
+                    "plugin_name": plugin_name,
+                    "plugin_version": plugin_version,
+                    "operation": "plugin_loaded"
+                })),
+            }),
+            AfterEventContext::PluginUnloaded { plugin_name, .. } => Some(ActivityEntry {
+                timestamp,
+                activity_type: ActivityType::PluginToggled,
+                user: "system".to_string(),
+                description: format!("Plugin '{}' unloaded", plugin_name),
+                collection: None,
+                metadata: Some(serde_json::json!({
+                    "plugin_name": plugin_name,
+                    "operation": "plugin_unloaded"
+                })),
+            }),
+            AfterEventContext::SystemStartup { version, .. } => Some(ActivityEntry {
+                timestamp,
+                activity_type: ActivityType::SystemMaintenance,
+                user: "system".to_string(),
+                description: format!("System started up (version {})", version),
+                collection: None,
+                metadata: Some(serde_json::json!({
+                    "version": version,
+                    "operation": "system_startup"
+                })),
+            }),
+            AfterEventContext::SystemShutdown {
+                reason, uptime_ms, ..
+            } => Some(ActivityEntry {
+                timestamp,
+                activity_type: ActivityType::SystemMaintenance,
+                user: "system".to_string(),
+                description: format!("System shutdown: {} (uptime: {}ms)", reason, uptime_ms),
+                collection: None,
+                metadata: Some(serde_json::json!({
+                    "reason": reason,
+                    "uptime_ms": uptime_ms,
+                    "operation": "system_shutdown"
+                })),
+            }),
+            AfterEventContext::FileDeleted {
+                namespace,
+                file_id,
+                path,
+                request_context,
+                ..
+            } => {
+                let user = request_context
+                    .user_id
+                    .clone()
+                    .unwrap_or_else(|| "system".to_string());
                 Some(ActivityEntry {
                     timestamp,
                     activity_type: ActivityType::Other("file_deleted".to_string()),
@@ -212,29 +266,32 @@ impl DashboardActivityListener {
                     })),
                 })
             }
-            AfterEventContext::ErrorOccurred { error_type, message, severity, .. } => {
-                Some(ActivityEntry {
-                    timestamp,
-                    activity_type: ActivityType::Other("error_occurred".to_string()),
-                    user: "system".to_string(),
-                    description: format!("Error occurred: {} - {}", error_type, message),
-                    collection: None,
-                    metadata: Some(serde_json::json!({
-                        "error_type": error_type,
-                        "message": message,
-                        "severity": format!("{:?}", severity),
-                        "operation": "error"
-                    })),
-                })
-            }
+            AfterEventContext::ErrorOccurred {
+                error_type,
+                message,
+                severity,
+                ..
+            } => Some(ActivityEntry {
+                timestamp,
+                activity_type: ActivityType::Other("error_occurred".to_string()),
+                user: "system".to_string(),
+                description: format!("Error occurred: {} - {}", error_type, message),
+                collection: None,
+                metadata: Some(serde_json::json!({
+                    "error_type": error_type,
+                    "message": message,
+                    "severity": format!("{:?}", severity),
+                    "operation": "error"
+                })),
+            }),
             // Skip read events and other non-activity events
-            AfterEventContext::RecordRead { .. } |
-            AfterEventContext::DatabaseConnected { .. } |
-            AfterEventContext::DatabaseDisconnected { .. } |
-            AfterEventContext::PluginError { .. } |
-            AfterEventContext::ApiRequestProcessed { .. } |
-            AfterEventContext::FileWritten { .. } |
-            AfterEventContext::FileRead { .. } => None,
+            AfterEventContext::RecordRead { .. }
+            | AfterEventContext::DatabaseConnected { .. }
+            | AfterEventContext::DatabaseDisconnected { .. }
+            | AfterEventContext::PluginError { .. }
+            | AfterEventContext::ApiRequestProcessed { .. }
+            | AfterEventContext::FileWritten { .. }
+            | AfterEventContext::FileRead { .. } => None,
         }
     }
 
@@ -265,9 +322,7 @@ impl DashboardActivityListener {
     pub fn create_handler(self: Arc<Self>) -> AfterEventHandler {
         Arc::new(move |context| {
             let listener = Arc::clone(&self);
-            Box::pin(async move {
-                listener.handle_after_event(context).await
-            })
+            Box::pin(async move { listener.handle_after_event(context).await })
         })
     }
 
@@ -275,7 +330,7 @@ impl DashboardActivityListener {
     pub fn create_metadata() -> HandlerMetadata {
         HandlerMetadata::new(
             "dashboard_activity_listener".to_string(),
-            "Dashboard Activity Listener".to_string()
+            "Dashboard Activity Listener".to_string(),
         )
         .with_description("Records user and system activities for the dashboard".to_string())
         .with_priority(10) // Low priority since it's for display purposes
@@ -313,18 +368,26 @@ pub async fn register_dashboard_activity_listener(
         // Create unique metadata for each subscription
         let metadata = oxide_core::event::handlers::HandlerMetadata::new(
             format!("dashboard_activity_listener_{}", i),
-            "Dashboard Activity Listener".to_string()
+            "Dashboard Activity Listener".to_string(),
         )
         .with_description("Records user and system activities for the dashboard".to_string())
         .with_priority(10); // Low priority since it's for display purposes
 
         // Clone the handler for each subscription
         let handler_clone = Arc::clone(&handler);
-        
-        event_bus.subscribe_after(event_type.name(), handler_clone, metadata).await?;
-        debug!("Dashboard activity listener registered for event: {}", event_type.name());
+
+        event_bus
+            .subscribe_after(event_type.name(), handler_clone, metadata)
+            .await?;
+        debug!(
+            "Dashboard activity listener registered for event: {}",
+            event_type.name()
+        );
     }
 
-    debug!("Dashboard activity listener registered successfully for {} event types", events_to_track.len());
+    debug!(
+        "Dashboard activity listener registered successfully for {} event types",
+        events_to_track.len()
+    );
     Ok(())
 }

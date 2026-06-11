@@ -13,17 +13,17 @@ use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 use super::bus::{EventBus, EventBusConfig, EventBusHealth};
-use super::context::{BeforeEventContext, AfterEventContext};
+use super::context::{AfterEventContext, BeforeEventContext};
 use super::handlers::{
-    BeforeEventHandler, AfterEventHandler, HandlerExecutionResult, HandlerMetadata,
-    ManagedBeforeHandler, ManagedAfterHandler, EventFilter,
+    AfterEventHandler, BeforeEventHandler, EventFilter, HandlerExecutionResult, HandlerMetadata,
+    ManagedAfterHandler, ManagedBeforeHandler,
 };
 use super::metrics::{EventMetrics, EventMetricsCollector};
 use super::middleware::{
-    BeforeHandlerMiddleware, AfterHandlerMiddleware, CompositeBeforeMiddleware,
-    CompositeAfterMiddleware, TimeoutMiddleware, RetryMiddleware, CircuitBreakerMiddleware,
+    AfterHandlerMiddleware, BeforeHandlerMiddleware, CircuitBreakerMiddleware,
+    CompositeAfterMiddleware, CompositeBeforeMiddleware, RetryMiddleware, TimeoutMiddleware,
 };
-use super::types::{BeforeEventType, AfterEventType};
+use super::types::{AfterEventType, BeforeEventType};
 
 /// Production-ready in-memory implementation of EventBus
 pub struct InMemoryEventBus {
@@ -96,20 +96,20 @@ impl InMemoryEventBus {
         let mut middleware = CompositeBeforeMiddleware::new();
 
         // Add timeout middleware
-        middleware = middleware.add(Box::new(TimeoutMiddleware::new(
+        middleware = middleware.with_middleware(Box::new(TimeoutMiddleware::new(
             Duration::from_millis(config.default_handler_timeout_ms),
         )));
 
         // Add retry middleware if retries are enabled
         if config.max_handler_retries > 0 {
-            middleware = middleware.add(Box::new(RetryMiddleware::exponential_backoff(
-                config.max_handler_retries,
-            )));
+            middleware = middleware.with_middleware(Box::new(
+                RetryMiddleware::exponential_backoff(config.max_handler_retries),
+            ));
         }
 
         // Add circuit breaker in production environments
         if config.max_concurrent_handlers > 50 {
-            middleware = middleware.add(Box::new(CircuitBreakerMiddleware::default()));
+            middleware = middleware.with_middleware(Box::new(CircuitBreakerMiddleware::default()));
         }
 
         middleware
@@ -119,15 +119,15 @@ impl InMemoryEventBus {
         let mut middleware = CompositeAfterMiddleware::new();
 
         // Add timeout middleware
-        middleware = middleware.add(Box::new(TimeoutMiddleware::new(
+        middleware = middleware.with_middleware(Box::new(TimeoutMiddleware::new(
             Duration::from_millis(config.default_handler_timeout_ms),
         )));
 
         // Add retry middleware if retries are enabled
         if config.max_handler_retries > 0 {
-            middleware = middleware.add(Box::new(RetryMiddleware::exponential_backoff(
-                config.max_handler_retries,
-            )));
+            middleware = middleware.with_middleware(Box::new(
+                RetryMiddleware::exponential_backoff(config.max_handler_retries),
+            ));
         }
 
         middleware
@@ -156,9 +156,9 @@ impl InMemoryEventBus {
             // Apply filters
             if self.config.enable_filtering {
                 let filters = self.filters.read().await;
-                let should_execute = filters.values().all(|filter| {
-                    filter.should_execute_before(&handler.metadata, context)
-                });
+                let should_execute = filters
+                    .values()
+                    .all(|filter| filter.should_execute_before(&handler.metadata, context));
 
                 if !should_execute {
                     results.push(HandlerExecutionResult::skipped(handler.metadata.id.clone()));
@@ -167,23 +167,29 @@ impl InMemoryEventBus {
             }
 
             // Acquire semaphore permit for concurrency control
-            let _permit = semaphore.acquire().await.map_err(|_| {
-                AppError::internal("Failed to acquire execution permit")
-            })?;
+            let _permit = semaphore
+                .acquire()
+                .await
+                .map_err(|_| AppError::internal("Failed to acquire execution permit"))?;
 
             let start_time = Instant::now();
             let handler_id = handler.metadata.id.clone();
             let handler_name = handler.metadata.name.clone();
 
             // Apply middleware and execute handler
-            let wrapped_handler = self.before_middleware.wrap(handler.handler.clone(), handler_id.clone());
-            
+            let wrapped_handler = self
+                .before_middleware
+                .wrap(handler.handler.clone(), handler_id.clone());
+
             match wrapped_handler(context).await {
                 Ok(()) => {
                     let execution_time = start_time.elapsed().as_millis() as f64;
-                    
-                    results.push(HandlerExecutionResult::success(handler_id.clone(), execution_time as u64));
-                    
+
+                    results.push(HandlerExecutionResult::success(
+                        handler_id.clone(),
+                        execution_time as u64,
+                    ));
+
                     self.metrics.record_handler_execution(
                         &handler_id,
                         &handler_name,
@@ -193,17 +199,20 @@ impl InMemoryEventBus {
                         0,
                     );
 
-                    debug!("Handler {} executed successfully in {:.2}ms", handler_id, execution_time);
+                    debug!(
+                        "Handler {} executed successfully in {:.2}ms",
+                        handler_id, execution_time
+                    );
                 }
                 Err(err) => {
                     let execution_time = start_time.elapsed().as_millis() as f64;
-                    
+
                     results.push(HandlerExecutionResult::failure(
                         handler_id.clone(),
                         execution_time as u64,
                         err.to_string(),
                     ));
-                    
+
                     self.metrics.record_handler_execution(
                         &handler_id,
                         &handler_name,
@@ -220,7 +229,10 @@ impl InMemoryEventBus {
                         Some(event_type.name().to_string()),
                     );
 
-                    warn!("Handler {} failed after {:.2}ms: {}", handler_id, execution_time, err);
+                    warn!(
+                        "Handler {} failed after {:.2}ms: {}",
+                        handler_id, execution_time, err
+                    );
 
                     // Check if we should continue on failure
                     if !self.config.continue_on_handler_failure {
@@ -256,9 +268,9 @@ impl InMemoryEventBus {
             // Apply filters
             if self.config.enable_filtering {
                 let filters = self.filters.read().await;
-                let should_execute = filters.values().all(|filter| {
-                    filter.should_execute_after(&handler.metadata, context)
-                });
+                let should_execute = filters
+                    .values()
+                    .all(|filter| filter.should_execute_after(&handler.metadata, context));
 
                 if !should_execute {
                     results.push(HandlerExecutionResult::skipped(handler.metadata.id.clone()));
@@ -267,23 +279,29 @@ impl InMemoryEventBus {
             }
 
             // Acquire semaphore permit for concurrency control
-            let _permit = semaphore.acquire().await.map_err(|_| {
-                AppError::internal("Failed to acquire execution permit")
-            })?;
+            let _permit = semaphore
+                .acquire()
+                .await
+                .map_err(|_| AppError::internal("Failed to acquire execution permit"))?;
 
             let start_time = Instant::now();
             let handler_id = handler.metadata.id.clone();
             let handler_name = handler.metadata.name.clone();
 
             // Apply middleware and execute handler
-            let wrapped_handler = self.after_middleware.wrap(handler.handler.clone(), handler_id.clone());
-            
+            let wrapped_handler = self
+                .after_middleware
+                .wrap(handler.handler.clone(), handler_id.clone());
+
             match wrapped_handler(context).await {
                 Ok(()) => {
                     let execution_time = start_time.elapsed().as_millis() as f64;
-                    
-                    results.push(HandlerExecutionResult::success(handler_id.clone(), execution_time as u64));
-                    
+
+                    results.push(HandlerExecutionResult::success(
+                        handler_id.clone(),
+                        execution_time as u64,
+                    ));
+
                     self.metrics.record_handler_execution(
                         &handler_id,
                         &handler_name,
@@ -293,17 +311,20 @@ impl InMemoryEventBus {
                         0,
                     );
 
-                    debug!("Handler {} executed successfully in {:.2}ms", handler_id, execution_time);
+                    debug!(
+                        "Handler {} executed successfully in {:.2}ms",
+                        handler_id, execution_time
+                    );
                 }
                 Err(err) => {
                     let execution_time = start_time.elapsed().as_millis() as f64;
-                    
+
                     results.push(HandlerExecutionResult::failure(
                         handler_id.clone(),
                         execution_time as u64,
                         err.to_string(),
                     ));
-                    
+
                     self.metrics.record_handler_execution(
                         &handler_id,
                         &handler_name,
@@ -320,7 +341,10 @@ impl InMemoryEventBus {
                         Some(event_type.name().to_string()),
                     );
 
-                    warn!("Handler {} failed after {:.2}ms: {}", handler_id, execution_time, err);
+                    warn!(
+                        "Handler {} failed after {:.2}ms: {}",
+                        handler_id, execution_time, err
+                    );
 
                     // Check if we should continue on failure
                     if !self.config.continue_on_handler_failure {
@@ -364,7 +388,10 @@ impl EventBus for InMemoryEventBus {
         let event_name = event_type.name();
         let start_time = Instant::now();
 
-        info!("Dispatching Before event: {} for collection: {}", event_name, context.collection);
+        info!(
+            "Dispatching Before event: {} for collection: {}",
+            event_name, context.collection
+        );
 
         // Get handlers (clone them to avoid holding the lock during execution)
         let handlers = {
@@ -379,21 +406,26 @@ impl EventBus for InMemoryEventBus {
 
         // Sort handlers by priority (higher priority first)
         let mut sorted_handlers = handlers;
-        sorted_handlers.sort_by(|a, b| b.metadata.priority.cmp(&a.metadata.priority));
+        sorted_handlers.sort_by_key(|handler| std::cmp::Reverse(handler.metadata.priority));
 
         // Execute handlers
-        let results = self.execute_before_handlers(&event_type, context, sorted_handlers).await?;
+        let results = self
+            .execute_before_handlers(&event_type, context, sorted_handlers)
+            .await?;
 
         // Record metrics
         let execution_time = start_time.elapsed().as_millis() as f64;
         let success = results.iter().all(|r| r.success || r.skipped);
         let skipped = results.iter().all(|r| r.skipped);
 
-        self.metrics.record_before_event(&event_type, execution_time, success, skipped);
+        self.metrics
+            .record_before_event(&event_type, execution_time, success, skipped);
 
         // Update system metrics
-        let active_handlers = self.before_listener_count(event_name) + self.after_listener_count(event_name);
-        self.metrics.update_system_metrics(active_handlers as u64, results.len() as u64);
+        let active_handlers =
+            self.before_listener_count(event_name) + self.after_listener_count(event_name);
+        self.metrics
+            .update_system_metrics(active_handlers as u64, results.len() as u64);
 
         Ok(results)
     }
@@ -425,21 +457,26 @@ impl EventBus for InMemoryEventBus {
 
         // Sort handlers by priority (higher priority first)
         let mut sorted_handlers = handlers;
-        sorted_handlers.sort_by(|a, b| b.metadata.priority.cmp(&a.metadata.priority));
+        sorted_handlers.sort_by_key(|handler| std::cmp::Reverse(handler.metadata.priority));
 
         // Execute handlers
-        let results = self.execute_after_handlers(&event_type, context, sorted_handlers).await?;
+        let results = self
+            .execute_after_handlers(&event_type, context, sorted_handlers)
+            .await?;
 
         // Record metrics
         let execution_time = start_time.elapsed().as_millis() as f64;
         let success = results.iter().all(|r| r.success || r.skipped);
         let skipped = results.iter().all(|r| r.skipped);
 
-        self.metrics.record_after_event(&event_type, execution_time, success, skipped);
+        self.metrics
+            .record_after_event(&event_type, execution_time, success, skipped);
 
         // Update system metrics
-        let active_handlers = self.before_listener_count(event_name) + self.after_listener_count(event_name);
-        self.metrics.update_system_metrics(active_handlers as u64, results.len() as u64);
+        let active_handlers =
+            self.before_listener_count(event_name) + self.after_listener_count(event_name);
+        self.metrics
+            .update_system_metrics(active_handlers as u64, results.len() as u64);
 
         Ok(results)
     }
@@ -454,21 +491,26 @@ impl EventBus for InMemoryEventBus {
         let managed_handler = ManagedBeforeHandler { metadata, handler };
 
         let mut handlers_map = self.before_handlers.write().await;
-        let handlers = handlers_map.entry(event_name.to_string()).or_insert_with(Vec::new);
+        let handlers = handlers_map
+            .entry(event_name.to_string())
+            .or_insert_with(Vec::new);
 
         // Check for duplicate IDs if not allowed
-        if !self.config.continue_on_handler_failure {
-            if handlers.iter().any(|h| h.metadata.id == handler_id) {
-                return Err(AppError::internal(format!(
-                    "Handler with ID {} already exists for event {}",
-                    handler_id, event_name
-                )));
-            }
+        if !self.config.continue_on_handler_failure
+            && handlers.iter().any(|h| h.metadata.id == handler_id)
+        {
+            return Err(AppError::internal(format!(
+                "Handler with ID {} already exists for event {}",
+                handler_id, event_name
+            )));
         }
 
         handlers.push(managed_handler);
 
-        info!("Subscribed Before handler {} to event: {}", handler_id, event_name);
+        info!(
+            "Subscribed Before handler {} to event: {}",
+            handler_id, event_name
+        );
         Ok(handler_id)
     }
 
@@ -482,64 +524,83 @@ impl EventBus for InMemoryEventBus {
         let managed_handler = ManagedAfterHandler { metadata, handler };
 
         let mut handlers_map = self.after_handlers.write().await;
-        let handlers = handlers_map.entry(event_name.to_string()).or_insert_with(Vec::new);
+        let handlers = handlers_map
+            .entry(event_name.to_string())
+            .or_insert_with(Vec::new);
 
         // Check for duplicate IDs if not allowed
-        if !self.config.continue_on_handler_failure {
-            if handlers.iter().any(|h| h.metadata.id == handler_id) {
-                return Err(AppError::internal(format!(
-                    "Handler with ID {} already exists for event {}",
-                    handler_id, event_name
-                )));
-            }
+        if !self.config.continue_on_handler_failure
+            && handlers.iter().any(|h| h.metadata.id == handler_id)
+        {
+            return Err(AppError::internal(format!(
+                "Handler with ID {} already exists for event {}",
+                handler_id, event_name
+            )));
         }
 
         handlers.push(managed_handler);
 
-        info!("Subscribed After handler {} to event: {}", handler_id, event_name);
+        info!(
+            "Subscribed After handler {} to event: {}",
+            handler_id, event_name
+        );
         Ok(handler_id)
     }
 
-    async fn unsubscribe_before(&self, event_name: &str, handler_id: &str) -> Result<bool, AppError> {
+    async fn unsubscribe_before(
+        &self,
+        event_name: &str,
+        handler_id: &str,
+    ) -> Result<bool, AppError> {
         let mut handlers_map = self.before_handlers.write().await;
-        
+
         if let Some(handlers) = handlers_map.get_mut(event_name) {
             let initial_len = handlers.len();
             handlers.retain(|h| h.metadata.id != handler_id);
-            
+
             let removed = handlers.len() < initial_len;
             if removed {
-                info!("Unsubscribed Before handler {} from event: {}", handler_id, event_name);
+                info!(
+                    "Unsubscribed Before handler {} from event: {}",
+                    handler_id, event_name
+                );
             }
-            
+
             // Remove empty event entries
             if handlers.is_empty() {
                 handlers_map.remove(event_name);
             }
-            
+
             Ok(removed)
         } else {
             Ok(false)
         }
     }
 
-    async fn unsubscribe_after(&self, event_name: &str, handler_id: &str) -> Result<bool, AppError> {
+    async fn unsubscribe_after(
+        &self,
+        event_name: &str,
+        handler_id: &str,
+    ) -> Result<bool, AppError> {
         let mut handlers_map = self.after_handlers.write().await;
-        
+
         if let Some(handlers) = handlers_map.get_mut(event_name) {
             let initial_len = handlers.len();
             handlers.retain(|h| h.metadata.id != handler_id);
-            
+
             let removed = handlers.len() < initial_len;
             if removed {
-                info!("Unsubscribed After handler {} from event: {}", handler_id, event_name);
+                info!(
+                    "Unsubscribed After handler {} from event: {}",
+                    handler_id, event_name
+                );
             }
-            
+
             // Remove empty event entries
             if handlers.is_empty() {
                 handlers_map.remove(event_name);
             }
-            
+
             Ok(removed)
         } else {
             Ok(false)
@@ -608,10 +669,8 @@ impl EventBus for InMemoryEventBus {
         // Add Before handlers
         if let Ok(before_handlers) = self.before_handlers.try_read() {
             for (event_name, handlers) in before_handlers.iter() {
-                let metadata: Vec<HandlerMetadata> = handlers
-                    .iter()
-                    .map(|h| h.metadata.clone())
-                    .collect();
+                let metadata: Vec<HandlerMetadata> =
+                    handlers.iter().map(|h| h.metadata.clone()).collect();
                 result.insert(format!("before:{}", event_name), metadata);
             }
         }
@@ -619,10 +678,8 @@ impl EventBus for InMemoryEventBus {
         // Add After handlers
         if let Ok(after_handlers) = self.after_handlers.try_read() {
             for (event_name, handlers) in after_handlers.iter() {
-                let metadata: Vec<HandlerMetadata> = handlers
-                    .iter()
-                    .map(|h| h.metadata.clone())
-                    .collect();
+                let metadata: Vec<HandlerMetadata> =
+                    handlers.iter().map(|h| h.metadata.clone()).collect();
                 result.insert(format!("after:{}", event_name), metadata);
             }
         }
@@ -638,7 +695,7 @@ impl EventBus for InMemoryEventBus {
         let filter_id = Uuid::new_v4().to_string();
         let mut filters = self.filters.write().await;
         filters.insert(filter_id.clone(), filter);
-        
+
         info!("Added event filter: {}", filter_id);
         Ok(filter_id)
     }
@@ -646,20 +703,25 @@ impl EventBus for InMemoryEventBus {
     async fn remove_filter(&self, filter_id: &str) -> Result<bool, AppError> {
         let mut filters = self.filters.write().await;
         let removed = filters.remove(filter_id).is_some();
-        
+
         if removed {
             info!("Removed event filter: {}", filter_id);
         }
-        
+
         Ok(removed)
     }
 
     fn health_status(&self) -> EventBusHealth {
         let metrics = self.metrics.snapshot();
         let uptime_ms = self.start_time.elapsed().as_millis() as u64;
-        
-        let total_handlers = self.list_handlers().values().map(|v| v.len()).sum::<usize>();
-        let enabled_handlers = self.list_handlers()
+
+        let total_handlers = self
+            .list_handlers()
+            .values()
+            .map(|v| v.len())
+            .sum::<usize>();
+        let enabled_handlers = self
+            .list_handlers()
             .values()
             .flatten()
             .filter(|h| h.enabled)
@@ -682,19 +744,36 @@ impl EventBus for InMemoryEventBus {
         };
 
         // Add diagnostic information
-        health.diagnostics.insert("uptime_ms".to_string(), uptime_ms.to_string());
-        health.diagnostics.insert("total_events_processed".to_string(), metrics.total_events().to_string());
-        health.diagnostics.insert("success_rate_percent".to_string(), format!("{:.2}", metrics.success_rate()));
-        health.diagnostics.insert("is_shutting_down".to_string(), self.is_shutting_down().to_string());
+        health
+            .diagnostics
+            .insert("uptime_ms".to_string(), uptime_ms.to_string());
+        health.diagnostics.insert(
+            "total_events_processed".to_string(),
+            metrics.total_events().to_string(),
+        );
+        health.diagnostics.insert(
+            "success_rate_percent".to_string(),
+            format!("{:.2}", metrics.success_rate()),
+        );
+        health.diagnostics.insert(
+            "is_shutting_down".to_string(),
+            self.is_shutting_down().to_string(),
+        );
 
         // Check if healthy based on metrics
         health.healthy = health.is_healthy_by_metrics() && !self.is_shutting_down();
 
         if !health.healthy {
             if self.is_shutting_down() {
-                health.diagnostics.insert("unhealthy_reason".to_string(), "Event bus is shutting down".to_string());
+                health.diagnostics.insert(
+                    "unhealthy_reason".to_string(),
+                    "Event bus is shutting down".to_string(),
+                );
             } else {
-                health.diagnostics.insert("unhealthy_reason".to_string(), "Poor performance metrics".to_string());
+                health.diagnostics.insert(
+                    "unhealthy_reason".to_string(),
+                    "Poor performance metrics".to_string(),
+                );
             }
         }
 
@@ -703,13 +782,14 @@ impl EventBus for InMemoryEventBus {
 
     async fn shutdown(&self) -> Result<(), AppError> {
         info!("Shutting down event bus...");
-        
-        self.shutdown.store(true, std::sync::atomic::Ordering::SeqCst);
-        
+
+        self.shutdown
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+
         // Wait for existing operations to complete with timeout
         let shutdown_timeout = Duration::from_millis(self.config.shutdown_timeout_ms);
         let start = Instant::now();
-        
+
         while self.execution_semaphore.available_permits() < self.config.max_concurrent_handlers {
             if start.elapsed() > shutdown_timeout {
                 warn!("Shutdown timeout reached, forcing shutdown");
@@ -717,7 +797,7 @@ impl EventBus for InMemoryEventBus {
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
-        
+
         info!("Event bus shutdown complete");
         Ok(())
     }
@@ -726,10 +806,10 @@ impl EventBus for InMemoryEventBus {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::future::Future;
+    use std::pin::Pin;
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::Arc;
-    use std::pin::Pin;
-    use std::future::Future;
 
     #[tokio::test]
     async fn test_before_event_execution() {
@@ -751,7 +831,9 @@ mod tests {
         });
 
         let metadata = HandlerMetadata::new("test-handler".to_string(), "Test Handler".to_string());
-        bus.subscribe_before("BeforeRecordCreate", handler, metadata).await.unwrap();
+        bus.subscribe_before("BeforeRecordCreate", handler, metadata)
+            .await
+            .unwrap();
 
         // Dispatch an event
         let mut context = BeforeEventContext::new_create(
@@ -759,7 +841,10 @@ mod tests {
             serde_json::json!({"name": "John"}),
         );
 
-        let results = bus.dispatch_before(BeforeEventType::RecordCreate, &mut context).await.unwrap();
+        let results = bus
+            .dispatch_before(BeforeEventType::RecordCreate, &mut context)
+            .await
+            .unwrap();
 
         // Verify handler was called and data was modified
         assert_eq!(call_count.load(Ordering::SeqCst), 1);
@@ -784,7 +869,9 @@ mod tests {
         });
 
         let metadata = HandlerMetadata::new("test-handler".to_string(), "Test Handler".to_string());
-        bus.subscribe_after("AfterRecordCreate", handler, metadata).await.unwrap();
+        bus.subscribe_after("AfterRecordCreate", handler, metadata)
+            .await
+            .unwrap();
 
         // Dispatch an event
         let context = AfterEventContext::record_created(
@@ -794,7 +881,10 @@ mod tests {
             Default::default(),
         );
 
-        let results = bus.dispatch_after(AfterEventType::RecordCreated, &context).await.unwrap();
+        let results = bus
+            .dispatch_after(AfterEventType::RecordCreated, &context)
+            .await
+            .unwrap();
 
         // Verify handler was called
         assert_eq!(call_count.load(Ordering::SeqCst), 1);
@@ -811,31 +901,35 @@ mod tests {
         for (priority, name) in [(100, "high"), (0, "normal"), (50, "medium")] {
             let order_clone = execution_order.clone();
             let name_clone = name.to_string();
-            
+
             let handler: BeforeEventHandler = Arc::new(move |_context: &mut BeforeEventContext| {
                 let order = order_clone.clone();
                 let name = name_clone.clone();
                 Box::pin(async move {
                     order.lock().unwrap().push(name);
                     Ok(())
-                }) as Pin<Box<dyn Future<Output = Result<(), AppError>> + Send + '_>>
+                })
+                    as Pin<Box<dyn Future<Output = Result<(), AppError>> + Send + '_>>
             });
 
             let metadata = HandlerMetadata::new(
                 format!("{}-handler", name),
                 format!("{} Priority Handler", name),
-            ).with_priority(priority);
+            )
+            .with_priority(priority);
 
-            bus.subscribe_before("BeforeRecordCreate", handler, metadata).await.unwrap();
+            bus.subscribe_before("BeforeRecordCreate", handler, metadata)
+                .await
+                .unwrap();
         }
 
         // Dispatch event
-        let mut context = BeforeEventContext::new_create(
-            "users".to_string(),
-            serde_json::json!({}),
-        );
+        let mut context =
+            BeforeEventContext::new_create("users".to_string(), serde_json::json!({}));
 
-        bus.dispatch_before(BeforeEventType::RecordCreate, &mut context).await.unwrap();
+        bus.dispatch_before(BeforeEventType::RecordCreate, &mut context)
+            .await
+            .unwrap();
 
         // Verify execution order (highest priority first)
         let order = execution_order.lock().unwrap();
@@ -864,25 +958,27 @@ mod tests {
         });
 
         let metadata = HandlerMetadata::new("test-handler".to_string(), "Test Handler".to_string());
-        bus.subscribe_before("BeforeRecordCreate", handler, metadata).await.unwrap();
+        bus.subscribe_before("BeforeRecordCreate", handler, metadata)
+            .await
+            .unwrap();
 
         // Add a filter that only allows "users" collection
         let filter = Box::new(CollectionFilter::allow(vec!["users".to_string()]));
         bus.add_filter(filter).await.unwrap();
 
         // Test with allowed collection
-        let mut context_users = BeforeEventContext::new_create(
-            "users".to_string(),
-            serde_json::json!({}),
-        );
-        bus.dispatch_before(BeforeEventType::RecordCreate, &mut context_users).await.unwrap();
+        let mut context_users =
+            BeforeEventContext::new_create("users".to_string(), serde_json::json!({}));
+        bus.dispatch_before(BeforeEventType::RecordCreate, &mut context_users)
+            .await
+            .unwrap();
 
         // Test with disallowed collection
-        let mut context_admin = BeforeEventContext::new_create(
-            "admin".to_string(),
-            serde_json::json!({}),
-        );
-        bus.dispatch_before(BeforeEventType::RecordCreate, &mut context_admin).await.unwrap();
+        let mut context_admin =
+            BeforeEventContext::new_create("admin".to_string(), serde_json::json!({}));
+        bus.dispatch_before(BeforeEventType::RecordCreate, &mut context_admin)
+            .await
+            .unwrap();
 
         // Should only have been called once (for users collection)
         assert_eq!(call_count.load(Ordering::SeqCst), 1);
@@ -891,7 +987,7 @@ mod tests {
     #[tokio::test]
     async fn test_metrics_collection() {
         let bus = InMemoryEventBus::new();
-        
+
         // Subscribe a handler
         let handler: BeforeEventHandler = Arc::new(|_context: &mut BeforeEventContext| {
             Box::pin(async move {
@@ -901,15 +997,17 @@ mod tests {
         });
 
         let metadata = HandlerMetadata::new("test-handler".to_string(), "Test Handler".to_string());
-        bus.subscribe_before("BeforeRecordCreate", handler, metadata).await.unwrap();
+        bus.subscribe_before("BeforeRecordCreate", handler, metadata)
+            .await
+            .unwrap();
 
         // Dispatch events
         for _ in 0..3 {
-            let mut context = BeforeEventContext::new_create(
-                "users".to_string(),
-                serde_json::json!({}),
-            );
-            bus.dispatch_before(BeforeEventType::RecordCreate, &mut context).await.unwrap();
+            let mut context =
+                BeforeEventContext::new_create("users".to_string(), serde_json::json!({}));
+            bus.dispatch_before(BeforeEventType::RecordCreate, &mut context)
+                .await
+                .unwrap();
         }
 
         // Check metrics
@@ -922,7 +1020,7 @@ mod tests {
     #[tokio::test]
     async fn test_graceful_shutdown() {
         let bus = InMemoryEventBus::new();
-        
+
         // Start a long-running handler
         let handler: BeforeEventHandler = Arc::new(|_context: &mut BeforeEventContext| {
             Box::pin(async move {
@@ -932,17 +1030,19 @@ mod tests {
         });
 
         let metadata = HandlerMetadata::new("test-handler".to_string(), "Test Handler".to_string());
-        bus.subscribe_before("BeforeRecordCreate", handler, metadata).await.unwrap();
+        bus.subscribe_before("BeforeRecordCreate", handler, metadata)
+            .await
+            .unwrap();
 
         // Start event processing
         let bus_clone = Arc::new(bus);
         let bus_task = bus_clone.clone();
         let _handle = tokio::spawn(async move {
-            let mut context = BeforeEventContext::new_create(
-                "users".to_string(),
-                serde_json::json!({}),
-            );
-            let _ = bus_task.dispatch_before(BeforeEventType::RecordCreate, &mut context).await;
+            let mut context =
+                BeforeEventContext::new_create("users".to_string(), serde_json::json!({}));
+            let _ = bus_task
+                .dispatch_before(BeforeEventType::RecordCreate, &mut context)
+                .await;
         });
 
         // Wait a bit then shutdown
@@ -955,11 +1055,11 @@ mod tests {
     #[tokio::test]
     async fn test_health_status() {
         let bus = InMemoryEventBus::new();
-        
+
         let health = bus.health_status();
         assert!(health.healthy);
         assert_eq!(health.total_handlers, 0);
         assert!(health.diagnostics.contains_key("uptime_ms"));
         assert!(health.diagnostics.contains_key("total_events_processed"));
     }
-} 
+}

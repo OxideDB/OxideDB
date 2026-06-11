@@ -11,7 +11,7 @@ impl FieldTypeDefinition for UrlFieldType {
     fn type_name(&self) -> &'static str {
         "url"
     }
-    
+
     fn validate(&self, field_name: &str, value: &JsonValue) -> Result<(), String> {
         if let Some(url) = value.as_str() {
             if !url.starts_with("http://") && !url.starts_with("https://") {
@@ -22,7 +22,7 @@ impl FieldTypeDefinition for UrlFieldType {
         }
         Ok(())
     }
-    
+
     fn convert_value(&self, value: &JsonValue) -> Result<JsonValue, String> {
         match value {
             JsonValue::String(s) => {
@@ -36,7 +36,7 @@ impl FieldTypeDefinition for UrlFieldType {
             _ => Err("URL must be a string".to_string()),
         }
     }
-    
+
     fn sql_type(&self) -> &'static str {
         "TEXT"
     }
@@ -50,36 +50,54 @@ mod tests {
     #[test]
     fn test_url_validation() {
         let field_type = UrlFieldType;
-        
+
         // Valid URLs
-        assert!(field_type.validate("test", &json!("https://example.com")).is_ok());
-        assert!(field_type.validate("test", &json!("http://test.org")).is_ok());
-        assert!(field_type.validate("test", &json!("https://subdomain.example.com/path")).is_ok());
-        
+        assert!(field_type
+            .validate("test", &json!("https://example.com"))
+            .is_ok());
+        assert!(field_type
+            .validate("test", &json!("http://test.org"))
+            .is_ok());
+        assert!(field_type
+            .validate("test", &json!("https://subdomain.example.com/path"))
+            .is_ok());
+
         // Invalid URLs
         assert!(field_type.validate("test", &json!("not-a-url")).is_err());
-        assert!(field_type.validate("test", &json!("ftp://example.com")).is_err());
+        assert!(field_type
+            .validate("test", &json!("ftp://example.com"))
+            .is_err());
         assert!(field_type.validate("test", &json!("example.com")).is_err());
-        
+
         // Invalid types
         assert!(field_type.validate("test", &json!(123)).is_err());
         assert!(field_type.validate("test", &json!(true)).is_err());
         assert!(field_type.validate("test", &json!({})).is_err());
     }
-    
+
     #[test]
     fn test_url_conversion() {
         let field_type = UrlFieldType;
-        
+
         // Valid URLs
-        assert_eq!(field_type.convert_value(&json!("https://example.com")).unwrap(), json!("https://example.com"));
-        assert_eq!(field_type.convert_value(&json!("http://test.org")).unwrap(), json!("http://test.org"));
-        
+        assert_eq!(
+            field_type
+                .convert_value(&json!("https://example.com"))
+                .unwrap(),
+            json!("https://example.com")
+        );
+        assert_eq!(
+            field_type.convert_value(&json!("http://test.org")).unwrap(),
+            json!("http://test.org")
+        );
+
         // Invalid URL format
         assert!(field_type.convert_value(&json!("not-a-url")).is_err());
-        assert!(field_type.convert_value(&json!("ftp://example.com")).is_err());
-        
+        assert!(field_type
+            .convert_value(&json!("ftp://example.com"))
+            .is_err());
+
         // Non-string input
         assert!(field_type.convert_value(&json!(123)).is_err());
     }
-} 
+}

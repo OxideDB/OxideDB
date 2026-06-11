@@ -8,16 +8,15 @@
 
 use crate::{
     error::LoggingResult,
-    models::{SecurityAuditEvent, AuditEventType, LogLevel, LogContext, CorrelationId},
+    models::{AuditEventType, CorrelationId, LogContext, LogLevel, SecurityAuditEvent},
     storage::SqliteLogStorage,
 };
-use std::collections::HashMap;
-use std::sync::Arc;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::sync::Arc;
 use tracing::debug;
 use uuid::Uuid;
-
 
 /// Security audit service for tamper-evident logging
 pub struct SecurityAuditService {
@@ -48,7 +47,7 @@ impl SecurityAuditService {
         let actor_str = actor.into();
         let action_str = action.into();
         let result_str = result.into();
-        
+
         let event = SecurityAuditEvent::new(
             AuditEventType::Authentication,
             if result_str.to_lowercase().contains("success") {
@@ -81,7 +80,7 @@ impl SecurityAuditService {
         let target_str = target.into();
         let action_str = action.into();
         let result_str = result.into();
-        
+
         let event = SecurityAuditEvent::new(
             AuditEventType::Authorization,
             if result_str.to_lowercase().contains("granted") {
@@ -89,8 +88,10 @@ impl SecurityAuditService {
             } else {
                 LogLevel::Warn
             },
-            format!("Authorization check: {} attempted {} on {}", 
-                actor_str, action_str, target_str),
+            format!(
+                "Authorization check: {} attempted {} on {}",
+                actor_str, action_str, target_str
+            ),
             actor_str,
             action_str,
             result_str,
@@ -113,12 +114,14 @@ impl SecurityAuditService {
         let actor_str = actor.into();
         let target_str = target.into();
         let action_str = action.into();
-        
+
         let event = SecurityAuditEvent::new(
             AuditEventType::DataAccess,
             LogLevel::Info,
-            format!("Data access: {} performed {} on {}", 
-                actor_str, action_str, target_str),
+            format!(
+                "Data access: {} performed {} on {}",
+                actor_str, action_str, target_str
+            ),
             actor_str,
             action_str,
             "success".to_string(),
@@ -141,12 +144,14 @@ impl SecurityAuditService {
         let actor_str = actor.into();
         let target_str = target.into();
         let action_str = action.into();
-        
+
         let event = SecurityAuditEvent::new(
             AuditEventType::DataModification,
             LogLevel::Warn, // Data modifications are always notable
-            format!("Data modification: {} performed {} on {}", 
-                actor_str, action_str, target_str),
+            format!(
+                "Data modification: {} performed {} on {}",
+                actor_str, action_str, target_str
+            ),
             actor_str,
             action_str,
             "success".to_string(),
@@ -169,12 +174,14 @@ impl SecurityAuditService {
         let actor_str = actor.into();
         let target_str = target.into();
         let action_str = action.into();
-        
+
         let event = SecurityAuditEvent::new(
             AuditEventType::ConfigurationChange,
             LogLevel::Warn, // Config changes are always notable
-            format!("Configuration change: {} performed {} on {}", 
-                actor_str, action_str, target_str),
+            format!(
+                "Configuration change: {} performed {} on {}",
+                actor_str, action_str, target_str
+            ),
             actor_str,
             action_str,
             "success".to_string(),
@@ -197,7 +204,7 @@ impl SecurityAuditService {
         let actor_str = actor.into();
         let violation_type_str = violation_type.into();
         let description_str = description.into();
-        
+
         let event = SecurityAuditEvent::new(
             AuditEventType::SecurityViolation,
             LogLevel::Error, // Security violations are errors
@@ -223,7 +230,7 @@ impl SecurityAuditService {
         let plugin_name_str = plugin_name.into();
         let action_str = action.into();
         let result_str = result.into();
-        
+
         let event = SecurityAuditEvent::new(
             AuditEventType::PluginEvent,
             LogLevel::Info,
@@ -247,7 +254,7 @@ impl SecurityAuditService {
     ) -> LoggingResult<Uuid> {
         let event_type_str = event_type.into();
         let description_str = description.into();
-        
+
         let event = SecurityAuditEvent::new(
             AuditEventType::SystemEvent,
             LogLevel::Info,
@@ -275,8 +282,10 @@ impl SecurityAuditService {
         let mut last_hash = self.last_event_hash.write().await;
         *last_hash = Some(integrity_hash);
 
-        debug!("Logged audit event: {} (type: {:?}, risk: {:?})", 
-               event.id, event.event_type, event.risk_score);
+        debug!(
+            "Logged audit event: {} (type: {:?}, risk: {:?})",
+            event.id, event.event_type, event.risk_score
+        );
 
         Ok(event.id)
     }
@@ -317,7 +326,7 @@ impl SecurityAuditService {
         // Calculate SHA-256 hash
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
-        
+
         let mut hasher = DefaultHasher::new();
         event_data.hash(&mut hasher);
         let hash = hasher.finish();
@@ -354,7 +363,10 @@ impl SecurityAuditService {
 
         // Higher risk for admin operations
         if let Some(ref operation) = context.operation {
-            if operation.contains("admin") || operation.contains("delete") || operation.contains("modify") {
+            if operation.contains("admin")
+                || operation.contains("delete")
+                || operation.contains("modify")
+            {
                 risk += 25;
             }
         }
@@ -368,7 +380,10 @@ impl SecurityAuditService {
 
         // Higher risk for sensitive collections
         if let Some(ref collection) = context.collection {
-            if collection.contains("user") || collection.contains("auth") || collection.contains("admin") {
+            if collection.contains("user")
+                || collection.contains("auth")
+                || collection.contains("admin")
+            {
                 risk += 20;
             }
         }
@@ -382,7 +397,10 @@ impl SecurityAuditService {
 
         // Much higher risk for sensitive collections
         if let Some(ref collection) = context.collection {
-            if collection.contains("user") || collection.contains("auth") || collection.contains("admin") {
+            if collection.contains("user")
+                || collection.contains("auth")
+                || collection.contains("admin")
+            {
                 risk += 40;
             }
         }
@@ -481,4 +499,4 @@ pub struct AuditCorrelation {
     pub end_time: DateTime<Utc>,
     /// Summary of the correlated activity
     pub summary: String,
-} 
+}

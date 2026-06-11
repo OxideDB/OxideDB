@@ -8,72 +8,70 @@ use axum::{
     routing::{delete, get, post},
     Router,
 };
-use tower_http::{cors::CorsLayer, trace::TraceLayer};
 use std::path::PathBuf;
-use tracing::{info, debug};
+use tower_http::{cors::CorsLayer, trace::TraceLayer};
+use tracing::{debug, info};
 
 use crate::{
     handlers::{
-        admin::{serve_admin_static, serve_admin_ui, serve_external_admin_ui, serve_external_admin_static},
-        auth::{
-            validate_token, get_current_user, logout, refresh_token,
-            list_auth_collections, login_collection, register_collection,
+        admin::{
+            serve_admin_static, serve_admin_ui, serve_external_admin_static,
+            serve_external_admin_ui,
         },
+        api_keys::{list_api_key_rules, revoke_api_key_rule, upsert_api_key_rule},
+        auth::{
+            get_current_user, list_auth_collections, login_collection, logout, refresh_token,
+            register_collection, validate_token,
+        },
+        backups::{export_backup, get_backup_manifest, restore_backup},
         collections::{
             collection_schema, collection_stats, create_collection, delete_collection,
             list_collections, update_collection_schema,
         },
         dashboard::{
-            get_dashboard_statistics, get_system_statistics,
-            record_dashboard_activity, get_recent_dashboard_activities,
+            get_dashboard_statistics, get_recent_dashboard_activities, get_system_statistics,
+            record_dashboard_activity,
         },
         health::health_check,
         logs::{
-            get_logs, get_audit_events, get_dashboard_metrics, get_recent_logs,
-            get_retention_stats, create_log_entry, create_audit_event, flush_logs,
-            get_logs_by_correlation, get_user_logs, get_collection_logs, logging_health,
+            create_audit_event, create_log_entry, flush_logs, get_audit_events,
+            get_collection_logs, get_dashboard_metrics, get_logs, get_logs_by_correlation,
+            get_recent_logs, get_retention_stats, get_user_logs, logging_health,
         },
         permissions::{
-            get_collection_permissions, update_collection_permissions, list_all_permissions,
-            reset_collection_permissions, create_permissions_from_preset,
+            create_permissions_from_preset, get_collection_permissions, list_all_permissions,
+            reset_collection_permissions, update_collection_permissions,
         },
         plugins::{
-            handle_plugin_route, get_plugin_permissions, update_plugin_permissions, list_plugin_routes,
-            list_plugins, get_plugin_details, register_plugin, enable_plugin, disable_plugin,
-            unregister_plugin, grant_plugin_capability, revoke_plugin_capability, update_plugin_trust_level,
-            analyze_plugin,
+            analyze_plugin, disable_plugin, enable_plugin, get_plugin_details,
+            get_plugin_permissions, grant_plugin_capability, handle_plugin_route,
+            list_plugin_routes, list_plugins, register_plugin, revoke_plugin_capability,
+            unregister_plugin, update_plugin_permissions, update_plugin_trust_level,
         },
         records::{create_record, delete_record, get_record, list_records, update_record},
         site_settings::{
-            get_site_settings, update_site_settings, reset_site_settings,
-            get_settings_section, update_settings_section, test_email_configuration,
-            get_settings_health,
+            get_settings_health, get_settings_section, get_site_settings, reset_site_settings,
+            test_email_configuration, update_settings_section, update_site_settings,
         },
         user_preferences::{
-            store_user_preference, get_user_preference, list_user_preferences,
-            delete_user_preference, delete_all_user_preferences,
+            delete_all_user_preferences, delete_user_preference, get_user_preference,
+            list_user_preferences, store_user_preference,
         },
         vfs,
     },
-
     server::AppState,
 };
 
 /// Admin UI mode configuration
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub enum AdminUiMode {
     /// Use embedded admin UI (built into the binary)
+    #[default]
     Embedded,
     /// Serve admin UI from external filesystem path
     External(PathBuf),
     /// Admin UI is completely disabled
     Disabled,
-}
-
-impl Default for AdminUiMode {
-    fn default() -> Self {
-        Self::Embedded
-    }
 }
 
 /// Route configuration for different environments
@@ -110,11 +108,11 @@ impl RouteConfig {
             enable_admin: false, // Disable admin UI in production
             admin_mode: AdminUiMode::Disabled,
             admin_path: "/admin".to_string(),
-            enable_cors: false,  // Configure CORS more restrictively
+            enable_cors: false, // Configure CORS more restrictively
             enable_tracing: true,
         }
     }
-    
+
     /// Create a development configuration
     pub fn development() -> Self {
         Self {
@@ -157,6 +155,8 @@ pub enum EndpointCategory {
     Collections,
     Records,
     Permissions,
+    ApiKeys,
+    Backups,
     SiteSettings,
     UserPreferences,
     Plugins,
@@ -174,12 +174,16 @@ impl std::fmt::Display for EndpointCategory {
             EndpointCategory::Collections => write!(f, "Collections"),
             EndpointCategory::Records => write!(f, "Records"),
             EndpointCategory::Permissions => write!(f, "Permissions"),
+            EndpointCategory::ApiKeys => write!(f, "API Keys"),
+            EndpointCategory::Backups => write!(f, "Backups"),
             EndpointCategory::SiteSettings => write!(f, "Site Settings"),
             EndpointCategory::UserPreferences => write!(f, "User Preferences"),
             EndpointCategory::Plugins => write!(f, "Plugins"),
             EndpointCategory::Logging => write!(f, "Logging"),
             EndpointCategory::Admin => write!(f, "Admin UI"),
-            EndpointCategory::PluginRegistered { plugin_name } => write!(f, "Plugin: {}", plugin_name),
+            EndpointCategory::PluginRegistered { plugin_name } => {
+                write!(f, "Plugin: {}", plugin_name)
+            }
             EndpointCategory::VFS => write!(f, "VFS"),
         }
     }
@@ -189,9 +193,9 @@ impl std::fmt::Display for EndpointCategory {
 pub fn log_registered_endpoints(state: &AppState, config: &RouteConfig) {
     info!("📋 Registered API Endpoints Summary");
     info!("=====================================");
-    
+
     let mut endpoints = get_static_endpoints(config);
-    
+
     // Add plugin endpoints if plugin manager is available
     if let Some(plugin_manager) = &state.plugin_manager {
         match plugin_manager.get_registered_routes() {
@@ -201,8 +205,8 @@ pub fn log_registered_endpoints(state: &AppState, config: &RouteConfig) {
                         method: route.method.clone(),
                         path: format!("/plugin{}", route.path),
                         handler: format!("{}::{}", route.plugin_name, route.handler_function),
-                        category: EndpointCategory::PluginRegistered { 
-                            plugin_name: route.plugin_name.clone() 
+                        category: EndpointCategory::PluginRegistered {
+                            plugin_name: route.plugin_name.clone(),
                         },
                         auth_required: true, // Plugin routes require auth by default
                         description: Some(format!("Plugin route handled by {}", route.plugin_name)),
@@ -215,40 +219,42 @@ pub fn log_registered_endpoints(state: &AppState, config: &RouteConfig) {
             }
         }
     }
-    
+
     // Group endpoints by category
-    let mut categories: std::collections::HashMap<String, Vec<RegisteredEndpoint>> = std::collections::HashMap::new();
+    let mut categories: std::collections::HashMap<String, Vec<RegisteredEndpoint>> =
+        std::collections::HashMap::new();
     for endpoint in endpoints {
         let category_name = endpoint.category.to_string();
-        categories.entry(category_name).or_insert_with(Vec::new).push(endpoint);
+        categories.entry(category_name).or_default().push(endpoint);
     }
-    
+
     // Log each category
     for (category_name, mut endpoints_in_category) in categories {
         info!("\n📂 {} Endpoints:", category_name);
-        
+
         // Sort endpoints by method then path
-        endpoints_in_category.sort_by(|a, b| {
-            match a.method.cmp(&b.method) {
-                std::cmp::Ordering::Equal => a.path.cmp(&b.path),
-                other => other,
-            }
+        endpoints_in_category.sort_by(|a, b| match a.method.cmp(&b.method) {
+            std::cmp::Ordering::Equal => a.path.cmp(&b.path),
+            other => other,
         });
-        
+
         for endpoint in endpoints_in_category {
-            let auth_indicator = if endpoint.auth_required { "🔒" } else { "🔓" };
-            info!("  {} {:>6} {:<30} → {}", 
-                  auth_indicator, 
-                  endpoint.method, 
-                  endpoint.path, 
-                  endpoint.handler);
-            
+            let auth_indicator = if endpoint.auth_required {
+                "🔒"
+            } else {
+                "🔓"
+            };
+            info!(
+                "  {} {:>6} {:<30} → {}",
+                auth_indicator, endpoint.method, endpoint.path, endpoint.handler
+            );
+
             if let Some(description) = endpoint.description {
                 debug!("      └─ {}", description);
             }
         }
     }
-    
+
     let total_endpoints = get_total_endpoint_count(state, config);
     info!("\n📊 Total registered endpoints: {}", total_endpoints);
     info!("   🔒 = Authentication required");
@@ -260,7 +266,10 @@ pub fn log_registered_endpoints(state: &AppState, config: &RouteConfig) {
 fn get_total_endpoint_count(state: &AppState, config: &RouteConfig) -> usize {
     let static_count = get_static_endpoints(config).len();
     let plugin_count = if let Some(plugin_manager) = &state.plugin_manager {
-        plugin_manager.get_registered_routes().unwrap_or_default().len()
+        plugin_manager
+            .get_registered_routes()
+            .unwrap_or_default()
+            .len()
     } else {
         0
     };
@@ -270,7 +279,7 @@ fn get_total_endpoint_count(state: &AppState, config: &RouteConfig) -> usize {
 /// Get all static (non-plugin) API endpoints
 fn get_static_endpoints(config: &RouteConfig) -> Vec<RegisteredEndpoint> {
     let mut endpoints = Vec::new();
-    
+
     // Health endpoints
     endpoints.push(RegisteredEndpoint {
         method: "GET".to_string(),
@@ -280,18 +289,54 @@ fn get_static_endpoints(config: &RouteConfig) -> Vec<RegisteredEndpoint> {
         auth_required: false,
         description: Some("System health check".to_string()),
     });
-    
+
     // Authentication endpoints
     let auth_endpoints = vec![
-        ("GET", "/auth/collections", "auth::list_auth_collections", false, "List authentication collections"),
-        ("POST", "/auth/:collection/login", "auth::login_collection", false, "Login to collection"),
-        ("POST", "/auth/:collection/register", "auth::register_collection", false, "Register in collection"),
-        ("POST", "/auth/validate", "auth::validate_token", false, "Validate JWT token"),
+        (
+            "GET",
+            "/auth/collections",
+            "auth::list_auth_collections",
+            false,
+            "List authentication collections",
+        ),
+        (
+            "POST",
+            "/auth/:collection/login",
+            "auth::login_collection",
+            false,
+            "Login to collection",
+        ),
+        (
+            "POST",
+            "/auth/:collection/register",
+            "auth::register_collection",
+            false,
+            "Register in collection",
+        ),
+        (
+            "POST",
+            "/auth/validate",
+            "auth::validate_token",
+            false,
+            "Validate JWT token",
+        ),
         ("POST", "/auth/logout", "auth::logout", false, "Logout user"),
-        ("POST", "/auth/refresh", "auth::refresh_token", false, "Refresh JWT token"),
-        ("GET", "/auth/me", "auth::get_current_user", true, "Get current user info"),
+        (
+            "POST",
+            "/auth/refresh",
+            "auth::refresh_token",
+            false,
+            "Refresh JWT token",
+        ),
+        (
+            "GET",
+            "/auth/me",
+            "auth::get_current_user",
+            true,
+            "Get current user info",
+        ),
     ];
-    
+
     for (method, path, handler, auth_required, description) in auth_endpoints {
         endpoints.push(RegisteredEndpoint {
             method: method.to_string(),
@@ -302,17 +347,53 @@ fn get_static_endpoints(config: &RouteConfig) -> Vec<RegisteredEndpoint> {
             description: Some(description.to_string()),
         });
     }
-    
+
     // Collection endpoints
     let collection_endpoints = vec![
-        ("GET", "/collections", "collections::list_collections", true, "List all collections"),
-        ("POST", "/collections", "collections::create_collection", true, "Create new collection"),
-        ("DELETE", "/collections/:collection", "collections::delete_collection", true, "Delete collection"),
-        ("GET", "/collections/:collection/stats", "collections::collection_stats", true, "Get collection statistics"),
-        ("GET", "/collections/:collection/schema", "collections::collection_schema", true, "Get collection schema"),
-        ("PUT", "/collections/:collection/schema", "collections::update_collection_schema", true, "Update collection schema"),
+        (
+            "GET",
+            "/collections",
+            "collections::list_collections",
+            true,
+            "List all collections",
+        ),
+        (
+            "POST",
+            "/collections",
+            "collections::create_collection",
+            true,
+            "Create new collection",
+        ),
+        (
+            "DELETE",
+            "/collections/:collection",
+            "collections::delete_collection",
+            true,
+            "Delete collection",
+        ),
+        (
+            "GET",
+            "/collections/:collection/stats",
+            "collections::collection_stats",
+            true,
+            "Get collection statistics",
+        ),
+        (
+            "GET",
+            "/collections/:collection/schema",
+            "collections::collection_schema",
+            true,
+            "Get collection schema",
+        ),
+        (
+            "PUT",
+            "/collections/:collection/schema",
+            "collections::update_collection_schema",
+            true,
+            "Update collection schema",
+        ),
     ];
-    
+
     for (method, path, handler, auth_required, description) in collection_endpoints {
         endpoints.push(RegisteredEndpoint {
             method: method.to_string(),
@@ -323,16 +404,46 @@ fn get_static_endpoints(config: &RouteConfig) -> Vec<RegisteredEndpoint> {
             description: Some(description.to_string()),
         });
     }
-    
+
     // Record endpoints
     let record_endpoints = vec![
-        ("GET", "/collections/:collection/records", "records::list_records", true, "List records in collection"),
-        ("POST", "/collections/:collection/records", "records::create_record", true, "Create new record"),
-        ("GET", "/collections/:collection/records/:id", "records::get_record", true, "Get specific record"),
-        ("PUT", "/collections/:collection/records/:id", "records::update_record", true, "Update record"),
-        ("DELETE", "/collections/:collection/records/:id", "records::delete_record", true, "Delete record"),
+        (
+            "GET",
+            "/collections/:collection/records",
+            "records::list_records",
+            true,
+            "List records in collection",
+        ),
+        (
+            "POST",
+            "/collections/:collection/records",
+            "records::create_record",
+            true,
+            "Create new record",
+        ),
+        (
+            "GET",
+            "/collections/:collection/records/:id",
+            "records::get_record",
+            true,
+            "Get specific record",
+        ),
+        (
+            "PUT",
+            "/collections/:collection/records/:id",
+            "records::update_record",
+            true,
+            "Update record",
+        ),
+        (
+            "DELETE",
+            "/collections/:collection/records/:id",
+            "records::delete_record",
+            true,
+            "Delete record",
+        ),
     ];
-    
+
     for (method, path, handler, auth_required, description) in record_endpoints {
         endpoints.push(RegisteredEndpoint {
             method: method.to_string(),
@@ -343,16 +454,46 @@ fn get_static_endpoints(config: &RouteConfig) -> Vec<RegisteredEndpoint> {
             description: Some(description.to_string()),
         });
     }
-    
+
     // Permission endpoints
     let permission_endpoints = vec![
-        ("GET", "/permissions", "permissions::list_all_permissions", true, "List all permissions"),
-        ("GET", "/collections/:collection/permissions", "permissions::get_collection_permissions", true, "Get collection permissions"),
-        ("PUT", "/collections/:collection/permissions", "permissions::update_collection_permissions", true, "Update collection permissions"),
-        ("POST", "/collections/:collection/permissions/reset", "permissions::reset_collection_permissions", true, "Reset collection permissions"),
-        ("POST", "/collections/:collection/permissions/preset", "permissions::create_permissions_from_preset", true, "Create permissions from preset"),
+        (
+            "GET",
+            "/permissions",
+            "permissions::list_all_permissions",
+            true,
+            "List all permissions",
+        ),
+        (
+            "GET",
+            "/collections/:collection/permissions",
+            "permissions::get_collection_permissions",
+            true,
+            "Get collection permissions",
+        ),
+        (
+            "PUT",
+            "/collections/:collection/permissions",
+            "permissions::update_collection_permissions",
+            true,
+            "Update collection permissions",
+        ),
+        (
+            "POST",
+            "/collections/:collection/permissions/reset",
+            "permissions::reset_collection_permissions",
+            true,
+            "Reset collection permissions",
+        ),
+        (
+            "POST",
+            "/collections/:collection/permissions/preset",
+            "permissions::create_permissions_from_preset",
+            true,
+            "Create permissions from preset",
+        ),
     ];
-    
+
     for (method, path, handler, auth_required, description) in permission_endpoints {
         endpoints.push(RegisteredEndpoint {
             method: method.to_string(),
@@ -364,17 +505,131 @@ fn get_static_endpoints(config: &RouteConfig) -> Vec<RegisteredEndpoint> {
         });
     }
 
+    // API key endpoints
+    let api_key_endpoints = vec![
+        (
+            "GET",
+            "/admin/api-keys",
+            "api_keys::list_api_key_rules",
+            true,
+            "List API key access rules",
+        ),
+        (
+            "POST",
+            "/admin/api-keys",
+            "api_keys::upsert_api_key_rule",
+            true,
+            "Create or replace an API key access rule",
+        ),
+        (
+            "POST",
+            "/admin/api-keys/revoke",
+            "api_keys::revoke_api_key_rule",
+            true,
+            "Revoke an API key access rule",
+        ),
+    ];
+
+    for (method, path, handler, auth_required, description) in api_key_endpoints {
+        endpoints.push(RegisteredEndpoint {
+            method: method.to_string(),
+            path: path.to_string(),
+            handler: handler.to_string(),
+            category: EndpointCategory::ApiKeys,
+            auth_required,
+            description: Some(description.to_string()),
+        });
+    }
+
+    // Backup endpoints
+    let backup_endpoints = vec![
+        (
+            "GET",
+            "/admin/backups/manifest",
+            "backups::get_backup_manifest",
+            true,
+            "Preview backup/export contents",
+        ),
+        (
+            "GET",
+            "/admin/backups/export",
+            "backups::export_backup",
+            true,
+            "Export a JSON database snapshot",
+        ),
+        (
+            "POST",
+            "/admin/backups/restore",
+            "backups::restore_backup",
+            true,
+            "Restore a JSON database snapshot",
+        ),
+    ];
+
+    for (method, path, handler, auth_required, description) in backup_endpoints {
+        endpoints.push(RegisteredEndpoint {
+            method: method.to_string(),
+            path: path.to_string(),
+            handler: handler.to_string(),
+            category: EndpointCategory::Backups,
+            auth_required,
+            description: Some(description.to_string()),
+        });
+    }
+
     // Site settings endpoints
     let site_settings_endpoints = vec![
-        ("GET", "/admin/settings", "site_settings::get_site_settings", true, "Get site settings"),
-        ("PUT", "/admin/settings", "site_settings::update_site_settings", true, "Update site settings"),
-        ("POST", "/admin/settings/reset", "site_settings::reset_site_settings", true, "Reset site settings to defaults"),
-        ("GET", "/admin/settings/health", "site_settings::get_settings_health", true, "Get settings health status"),
-        ("POST", "/admin/settings/email/test", "site_settings::test_email_configuration", true, "Test email configuration"),
-        ("GET", "/admin/settings/:section", "site_settings::get_settings_section", true, "Get specific settings section"),
-        ("PUT", "/admin/settings/:section", "site_settings::update_settings_section", true, "Update specific settings section"),
+        (
+            "GET",
+            "/admin/settings",
+            "site_settings::get_site_settings",
+            true,
+            "Get site settings",
+        ),
+        (
+            "PUT",
+            "/admin/settings",
+            "site_settings::update_site_settings",
+            true,
+            "Update site settings",
+        ),
+        (
+            "POST",
+            "/admin/settings/reset",
+            "site_settings::reset_site_settings",
+            true,
+            "Reset site settings to defaults",
+        ),
+        (
+            "GET",
+            "/admin/settings/health",
+            "site_settings::get_settings_health",
+            true,
+            "Get settings health status",
+        ),
+        (
+            "POST",
+            "/admin/settings/email/test",
+            "site_settings::test_email_configuration",
+            true,
+            "Test email configuration",
+        ),
+        (
+            "GET",
+            "/admin/settings/:section",
+            "site_settings::get_settings_section",
+            true,
+            "Get specific settings section",
+        ),
+        (
+            "PUT",
+            "/admin/settings/:section",
+            "site_settings::update_settings_section",
+            true,
+            "Update specific settings section",
+        ),
     ];
-    
+
     for (method, path, handler, auth_required, description) in site_settings_endpoints {
         endpoints.push(RegisteredEndpoint {
             method: method.to_string(),
@@ -388,13 +643,43 @@ fn get_static_endpoints(config: &RouteConfig) -> Vec<RegisteredEndpoint> {
 
     // User preferences endpoints
     let user_preferences_endpoints = vec![
-        ("GET", "/user/preferences", "user_preferences::list_user_preferences", true, "List user preferences"),
-        ("DELETE", "/user/preferences", "user_preferences::delete_all_user_preferences", true, "Delete all user preferences"),
-        ("GET", "/user/preferences/:key", "user_preferences::get_user_preference", true, "Get user preference"),
-        ("PUT", "/user/preferences/:key", "user_preferences::store_user_preference", true, "Store user preference"),
-        ("DELETE", "/user/preferences/:key", "user_preferences::delete_user_preference", true, "Delete user preference"),
+        (
+            "GET",
+            "/user/preferences",
+            "user_preferences::list_user_preferences",
+            true,
+            "List user preferences",
+        ),
+        (
+            "DELETE",
+            "/user/preferences",
+            "user_preferences::delete_all_user_preferences",
+            true,
+            "Delete all user preferences",
+        ),
+        (
+            "GET",
+            "/user/preferences/:key",
+            "user_preferences::get_user_preference",
+            true,
+            "Get user preference",
+        ),
+        (
+            "PUT",
+            "/user/preferences/:key",
+            "user_preferences::store_user_preference",
+            true,
+            "Store user preference",
+        ),
+        (
+            "DELETE",
+            "/user/preferences/:key",
+            "user_preferences::delete_user_preference",
+            true,
+            "Delete user preference",
+        ),
     ];
-    
+
     for (method, path, handler, auth_required, description) in user_preferences_endpoints {
         endpoints.push(RegisteredEndpoint {
             method: method.to_string(),
@@ -405,25 +690,109 @@ fn get_static_endpoints(config: &RouteConfig) -> Vec<RegisteredEndpoint> {
             description: Some(description.to_string()),
         });
     }
-    
+
     // Plugin endpoints
     let plugin_endpoints = vec![
-        ("GET", "/plugins", "plugins::list_plugins", true, "List all plugins"),
-        ("POST", "/plugins", "plugins::register_plugin", true, "Register/install new plugin"),
-        ("GET", "/plugins/analyze", "plugins::analyze_plugin", true, "Analyze plugin"),
-        ("GET", "/plugins/:plugin_name", "plugins::get_plugin_details", true, "Get plugin details"),
-        ("DELETE", "/plugins/:plugin_name", "plugins::unregister_plugin", true, "Unregister/uninstall plugin"),
-        ("POST", "/plugins/:plugin_name/enable", "plugins::enable_plugin", true, "Enable plugin"),
-        ("POST", "/plugins/:plugin_name/disable", "plugins::disable_plugin", true, "Disable plugin"),
-        ("POST", "/plugins/:plugin_name/capabilities/:capability_name", "plugins::grant_plugin_capability", true, "Grant capability to plugin"),
-        ("DELETE", "/plugins/:plugin_name/capabilities/:capability_name", "plugins::revoke_plugin_capability", true, "Revoke capability from plugin"),
-        ("PUT", "/plugins/:plugin_name/trust-level", "plugins::update_plugin_trust_level", true, "Update plugin trust level"),
-        ("GET", "/plugins/routes", "plugins::list_plugin_routes", true, "List plugin routes"),
-        ("GET", "/plugins/:plugin_name/permissions", "plugins::get_plugin_permissions", true, "Get plugin permissions"),
-        ("PUT", "/plugins/:plugin_name/permissions", "plugins::update_plugin_permissions", true, "Update plugin permissions"),
-        ("ANY", "/plugin/*path", "plugins::handle_plugin_route", true, "Handle plugin routes"),
+        (
+            "GET",
+            "/plugins",
+            "plugins::list_plugins",
+            true,
+            "List all plugins",
+        ),
+        (
+            "POST",
+            "/plugins",
+            "plugins::register_plugin",
+            true,
+            "Register/install new plugin",
+        ),
+        (
+            "GET",
+            "/plugins/analyze",
+            "plugins::analyze_plugin",
+            true,
+            "Analyze plugin",
+        ),
+        (
+            "GET",
+            "/plugins/:plugin_name",
+            "plugins::get_plugin_details",
+            true,
+            "Get plugin details",
+        ),
+        (
+            "DELETE",
+            "/plugins/:plugin_name",
+            "plugins::unregister_plugin",
+            true,
+            "Unregister/uninstall plugin",
+        ),
+        (
+            "POST",
+            "/plugins/:plugin_name/enable",
+            "plugins::enable_plugin",
+            true,
+            "Enable plugin",
+        ),
+        (
+            "POST",
+            "/plugins/:plugin_name/disable",
+            "plugins::disable_plugin",
+            true,
+            "Disable plugin",
+        ),
+        (
+            "POST",
+            "/plugins/:plugin_name/capabilities/:capability_name",
+            "plugins::grant_plugin_capability",
+            true,
+            "Grant capability to plugin",
+        ),
+        (
+            "DELETE",
+            "/plugins/:plugin_name/capabilities/:capability_name",
+            "plugins::revoke_plugin_capability",
+            true,
+            "Revoke capability from plugin",
+        ),
+        (
+            "PUT",
+            "/plugins/:plugin_name/trust-level",
+            "plugins::update_plugin_trust_level",
+            true,
+            "Update plugin trust level",
+        ),
+        (
+            "GET",
+            "/plugins/routes",
+            "plugins::list_plugin_routes",
+            true,
+            "List plugin routes",
+        ),
+        (
+            "GET",
+            "/plugins/:plugin_name/permissions",
+            "plugins::get_plugin_permissions",
+            true,
+            "Get plugin permissions",
+        ),
+        (
+            "PUT",
+            "/plugins/:plugin_name/permissions",
+            "plugins::update_plugin_permissions",
+            true,
+            "Update plugin permissions",
+        ),
+        (
+            "ANY",
+            "/plugin/*path",
+            "plugins::handle_plugin_route",
+            true,
+            "Handle plugin routes",
+        ),
     ];
-    
+
     for (method, path, handler, auth_required, description) in plugin_endpoints {
         endpoints.push(RegisteredEndpoint {
             method: method.to_string(),
@@ -434,23 +803,95 @@ fn get_static_endpoints(config: &RouteConfig) -> Vec<RegisteredEndpoint> {
             description: Some(description.to_string()),
         });
     }
-    
+
     // Logging endpoints
     let logging_endpoints = vec![
-        ("GET", "/logs", "logs::get_logs", true, "Get application logs"),
-        ("GET", "/logs/audit", "logs::get_audit_events", true, "Get audit events"),
-        ("GET", "/logs/dashboard", "logs::get_dashboard_metrics", true, "Get dashboard metrics"),
-        ("GET", "/logs/recent", "logs::get_recent_logs", true, "Get recent logs"),
-        ("GET", "/logs/retention", "logs::get_retention_stats", true, "Get retention statistics"),
-        ("POST", "/logs/create", "logs::create_log_entry", true, "Create log entry"),
-        ("POST", "/logs/audit/create", "logs::create_audit_event", true, "Create audit event"),
-        ("POST", "/logs/flush", "logs::flush_logs", true, "Flush logs to storage"),
-        ("GET", "/logs/correlation/:correlation_id", "logs::get_logs_by_correlation", true, "Get logs by correlation ID"),
-        ("GET", "/logs/user/:user_id", "logs::get_user_logs", true, "Get user-specific logs"),
-        ("GET", "/logs/collection/:collection", "logs::get_collection_logs", true, "Get collection-specific logs"),
-        ("GET", "/logs/health", "logs::logging_health", true, "Get logging system health"),
+        (
+            "GET",
+            "/logs",
+            "logs::get_logs",
+            true,
+            "Get application logs",
+        ),
+        (
+            "GET",
+            "/logs/audit",
+            "logs::get_audit_events",
+            true,
+            "Get audit events",
+        ),
+        (
+            "GET",
+            "/logs/dashboard",
+            "logs::get_dashboard_metrics",
+            true,
+            "Get dashboard metrics",
+        ),
+        (
+            "GET",
+            "/logs/recent",
+            "logs::get_recent_logs",
+            true,
+            "Get recent logs",
+        ),
+        (
+            "GET",
+            "/logs/retention",
+            "logs::get_retention_stats",
+            true,
+            "Get retention statistics",
+        ),
+        (
+            "POST",
+            "/logs/create",
+            "logs::create_log_entry",
+            true,
+            "Create log entry",
+        ),
+        (
+            "POST",
+            "/logs/audit/create",
+            "logs::create_audit_event",
+            true,
+            "Create audit event",
+        ),
+        (
+            "POST",
+            "/logs/flush",
+            "logs::flush_logs",
+            true,
+            "Flush logs to storage",
+        ),
+        (
+            "GET",
+            "/logs/correlation/:correlation_id",
+            "logs::get_logs_by_correlation",
+            true,
+            "Get logs by correlation ID",
+        ),
+        (
+            "GET",
+            "/logs/user/:user_id",
+            "logs::get_user_logs",
+            true,
+            "Get user-specific logs",
+        ),
+        (
+            "GET",
+            "/logs/collection/:collection",
+            "logs::get_collection_logs",
+            true,
+            "Get collection-specific logs",
+        ),
+        (
+            "GET",
+            "/logs/health",
+            "logs::logging_health",
+            true,
+            "Get logging system health",
+        ),
     ];
-    
+
     for (method, path, handler, auth_required, description) in logging_endpoints {
         endpoints.push(RegisteredEndpoint {
             method: method.to_string(),
@@ -461,17 +902,53 @@ fn get_static_endpoints(config: &RouteConfig) -> Vec<RegisteredEndpoint> {
             description: Some(description.to_string()),
         });
     }
-    
+
     // VFS endpoints
     let vfs_endpoints = vec![
-        ("POST", "/collections/:collection/files", "vfs::upload_file", true, "Upload file to collection"),
-        ("GET", "/collections/:collection/files", "vfs::list_files", true, "List files in collection"),
-        ("GET", "/collections/:collection/files/:file_id", "vfs::download_file", true, "Download file from collection"),
-        ("DELETE", "/collections/:collection/files/:file_id", "vfs::delete_file", true, "Delete file from collection"),
-        ("GET", "/collections/:collection/vfs/usage", "vfs::get_collection_usage_stats", true, "Get collection VFS usage statistics"),
-        ("GET", "/vfs/usage", "vfs::get_usage_stats", true, "Get aggregate VFS usage statistics"),
+        (
+            "POST",
+            "/collections/:collection/files",
+            "vfs::upload_file",
+            true,
+            "Upload file to collection",
+        ),
+        (
+            "GET",
+            "/collections/:collection/files",
+            "vfs::list_files",
+            true,
+            "List files in collection",
+        ),
+        (
+            "GET",
+            "/collections/:collection/files/:file_id",
+            "vfs::download_file",
+            true,
+            "Download file from collection",
+        ),
+        (
+            "DELETE",
+            "/collections/:collection/files/:file_id",
+            "vfs::delete_file",
+            true,
+            "Delete file from collection",
+        ),
+        (
+            "GET",
+            "/collections/:collection/vfs/usage",
+            "vfs::get_collection_usage_stats",
+            true,
+            "Get collection VFS usage statistics",
+        ),
+        (
+            "GET",
+            "/vfs/usage",
+            "vfs::get_usage_stats",
+            true,
+            "Get aggregate VFS usage statistics",
+        ),
     ];
-    
+
     for (method, path, handler, auth_required, description) in vfs_endpoints {
         endpoints.push(RegisteredEndpoint {
             method: method.to_string(),
@@ -482,15 +959,27 @@ fn get_static_endpoints(config: &RouteConfig) -> Vec<RegisteredEndpoint> {
             description: Some(description.to_string()),
         });
     }
-    
+
     // Admin endpoints (if enabled)
     if config.enable_admin {
         let admin_wildcard_path = format!("{}/*path", config.admin_path);
         let admin_endpoints = vec![
-            ("GET", config.admin_path.as_str(), "admin::serve_admin_ui", false, "Admin UI main page"),
-            ("GET", admin_wildcard_path.as_str(), "admin::serve_admin_static", false, "Admin UI static assets"),
+            (
+                "GET",
+                config.admin_path.as_str(),
+                "admin::serve_admin_ui",
+                false,
+                "Admin UI main page",
+            ),
+            (
+                "GET",
+                admin_wildcard_path.as_str(),
+                "admin::serve_admin_static",
+                false,
+                "Admin UI static assets",
+            ),
         ];
-        
+
         for (method, path, handler, auth_required, description) in admin_endpoints {
             endpoints.push(RegisteredEndpoint {
                 method: method.to_string(),
@@ -502,24 +991,13 @@ fn get_static_endpoints(config: &RouteConfig) -> Vec<RegisteredEndpoint> {
             });
         }
     }
-    
+
     endpoints
 }
 
-/// Build the complete router with all routes and middleware
-pub fn build_router() -> Router<AppState> {
-    Router::new()
-        // Health routes (no auth required)
-        .merge(health_routes())
-        // Auth routes (no auth required for login/register)
-        .merge(auth_routes())
-        // Admin UI routes (no auth required for static files)
-        .merge(admin_routes(AdminUiMode::Embedded, "/admin".to_string()))
-        // API routes (with auth middleware)
-        .merge(api_routes())
-        // Apply middleware - note: logging middleware is only available with state
-        .layer(TraceLayer::new_for_http())
-        .layer(CorsLayer::permissive())
+/// Build the complete router with default configuration and middleware.
+pub fn build_router(state: AppState) -> Router<()> {
+    build_router_with_config(RouteConfig::default(), state)
 }
 
 /// Health check routes
@@ -532,13 +1010,19 @@ fn auth_routes() -> Router<AppState> {
     Router::new()
         // Collection-specific auth routes
         .route("/auth/collections", get(list_auth_collections))
-        .route("/auth/:collection/login", axum::routing::post(login_collection))
-        .route("/auth/:collection/register", axum::routing::post(register_collection))
+        .route(
+            "/auth/:collection/login",
+            axum::routing::post(login_collection),
+        )
+        .route(
+            "/auth/:collection/register",
+            axum::routing::post(register_collection),
+        )
         // Common auth routes
         .route("/auth/validate", axum::routing::post(validate_token))
         .route("/auth/logout", axum::routing::post(logout))
         .route("/auth/refresh", axum::routing::post(refresh_token))
-        // Note: /auth/me moved to protected_auth_routes()
+    // Note: /auth/me moved to protected_auth_routes()
 }
 
 /// Core API routes
@@ -554,6 +1038,10 @@ fn api_routes() -> Router<AppState> {
         .merge(record_routes())
         // Permission management routes
         .merge(permission_routes())
+        // API key rule management routes
+        .merge(api_key_routes())
+        // Backup and export routes
+        .merge(backup_routes())
         // Site settings routes
         .merge(site_settings_routes())
         // User preferences routes
@@ -568,8 +1056,7 @@ fn api_routes() -> Router<AppState> {
 
 /// Protected authentication routes that require authentication
 fn protected_auth_routes() -> Router<AppState> {
-    Router::new()
-        .route("/auth/me", get(get_current_user))
+    Router::new().route("/auth/me", get(get_current_user))
 }
 
 /// Dashboard statistics routes
@@ -580,8 +1067,10 @@ fn dashboard_routes() -> Router<AppState> {
         // Basic system statistics
         .route("/dashboard/system", get(get_system_statistics))
         // Activity management
-        .route("/dashboard/activities", 
-               post(record_dashboard_activity).get(get_recent_dashboard_activities))
+        .route(
+            "/dashboard/activities",
+            post(record_dashboard_activity).get(get_recent_dashboard_activities),
+        )
 }
 
 /// Collection management routes
@@ -635,6 +1124,24 @@ fn permission_routes() -> Router<AppState> {
         )
 }
 
+/// API key rule management routes
+fn api_key_routes() -> Router<AppState> {
+    Router::new()
+        .route(
+            "/admin/api-keys",
+            get(list_api_key_rules).post(upsert_api_key_rule),
+        )
+        .route("/admin/api-keys/revoke", post(revoke_api_key_rule))
+}
+
+/// Backup and export routes
+fn backup_routes() -> Router<AppState> {
+    Router::new()
+        .route("/admin/backups/manifest", get(get_backup_manifest))
+        .route("/admin/backups/export", get(export_backup))
+        .route("/admin/backups/restore", post(restore_backup))
+}
+
 /// Site settings routes
 fn site_settings_routes() -> Router<AppState> {
     Router::new()
@@ -647,10 +1154,7 @@ fn site_settings_routes() -> Router<AppState> {
             "/admin/settings/reset",
             axum::routing::post(reset_site_settings),
         )
-        .route(
-            "/admin/settings/health",
-            get(get_settings_health),
-        )
+        .route("/admin/settings/health", get(get_settings_health))
         .route(
             "/admin/settings/email/test",
             axum::routing::post(test_email_configuration),
@@ -680,37 +1184,49 @@ fn user_preferences_routes() -> Router<AppState> {
 /// Plugin management routes
 fn plugin_routes() -> Router<AppState> {
     use axum::extract::DefaultBodyLimit;
-    
+
     Router::new()
         // Plugin management
-        .route("/plugins", 
-               get(list_plugins)
-               .post(register_plugin)
-               .layer(DefaultBodyLimit::max(64 * 1024 * 1024)) // 64MB limit for plugin uploads
+        .route(
+            "/plugins",
+            get(list_plugins)
+                .post(register_plugin)
+                .layer(DefaultBodyLimit::max(64 * 1024 * 1024)), // 64MB limit for plugin uploads
         )
-        .route("/plugins/analyze", 
-               axum::routing::post(analyze_plugin)
-               .layer(DefaultBodyLimit::max(64 * 1024 * 1024)) // 64MB limit for plugin analysis
+        .route(
+            "/plugins/analyze",
+            axum::routing::post(analyze_plugin).layer(DefaultBodyLimit::max(64 * 1024 * 1024)), // 64MB limit for plugin analysis
         )
-        .route("/plugins/:plugin_name", get(get_plugin_details).delete(unregister_plugin))
-        .route("/plugins/:plugin_name/enable", axum::routing::post(enable_plugin))
-        .route("/plugins/:plugin_name/disable", axum::routing::post(disable_plugin))
-        
+        .route(
+            "/plugins/:plugin_name",
+            get(get_plugin_details).delete(unregister_plugin),
+        )
+        .route(
+            "/plugins/:plugin_name/enable",
+            axum::routing::post(enable_plugin),
+        )
+        .route(
+            "/plugins/:plugin_name/disable",
+            axum::routing::post(disable_plugin),
+        )
         // Plugin capability management
-        .route("/plugins/:plugin_name/capabilities/:capability_name", 
-               axum::routing::post(grant_plugin_capability).delete(revoke_plugin_capability))
-        .route("/plugins/:plugin_name/trust-level", axum::routing::put(update_plugin_trust_level))
-        
+        .route(
+            "/plugins/:plugin_name/capabilities/:capability_name",
+            axum::routing::post(grant_plugin_capability).delete(revoke_plugin_capability),
+        )
+        .route(
+            "/plugins/:plugin_name/trust-level",
+            axum::routing::put(update_plugin_trust_level),
+        )
         // Plugin route management
         .route("/plugins/routes", get(list_plugin_routes))
-        
         // Plugin permission management
-        .route("/plugins/:plugin_name/permissions", 
-               get(get_plugin_permissions).put(update_plugin_permissions))
-        
+        .route(
+            "/plugins/:plugin_name/permissions",
+            get(get_plugin_permissions).put(update_plugin_permissions),
+        )
         // Catch-all for plugin-registered routes
-        .route("/plugin/*path", 
-               axum::routing::any(handle_plugin_route))
+        .route("/plugin/*path", axum::routing::any(handle_plugin_route))
 }
 
 /// Logging routes
@@ -722,9 +1238,15 @@ fn logging_routes() -> Router<AppState> {
         .route("/logs/recent", get(get_recent_logs))
         .route("/logs/retention", get(get_retention_stats))
         .route("/logs/create", axum::routing::post(create_log_entry))
-        .route("/logs/audit/create", axum::routing::post(create_audit_event))
+        .route(
+            "/logs/audit/create",
+            axum::routing::post(create_audit_event),
+        )
         .route("/logs/flush", axum::routing::post(flush_logs))
-        .route("/logs/correlation/:correlation_id", get(get_logs_by_correlation))
+        .route(
+            "/logs/correlation/:correlation_id",
+            get(get_logs_by_correlation),
+        )
         .route("/logs/user/:user_id", get(get_user_logs))
         .route("/logs/collection/:collection", get(get_collection_logs))
         .route("/logs/health", get(logging_health))
@@ -733,38 +1255,57 @@ fn logging_routes() -> Router<AppState> {
 /// VFS routes
 fn vfs_routes() -> Router<AppState> {
     Router::new()
-        .route("/collections/:collection/files", axum::routing::post(vfs::upload_file))
-        .route("/collections/:collection/files", axum::routing::get(vfs::list_files))
-        .route("/collections/:collection/files/:file_id", axum::routing::get(vfs::download_file))
-        .route("/collections/:collection/files/:file_id", axum::routing::delete(vfs::delete_file))
-        .route("/collections/:collection/vfs/usage", axum::routing::get(vfs::get_collection_usage_stats))
+        .route(
+            "/collections/:collection/files",
+            axum::routing::post(vfs::upload_file),
+        )
+        .route(
+            "/collections/:collection/files",
+            axum::routing::get(vfs::list_files),
+        )
+        .route(
+            "/collections/:collection/files/:file_id",
+            axum::routing::get(vfs::download_file),
+        )
+        .route(
+            "/collections/:collection/files/:file_id",
+            axum::routing::delete(vfs::delete_file),
+        )
+        .route(
+            "/collections/:collection/vfs/usage",
+            axum::routing::get(vfs::get_collection_usage_stats),
+        )
         .route("/vfs/usage", axum::routing::get(vfs::get_usage_stats))
 }
 
 /// Admin UI routes with configurable mode
 fn admin_routes(mode: AdminUiMode, path_prefix: String) -> Router<AppState> {
     match mode {
-        AdminUiMode::Embedded => {
-            Router::new()
-                .route(&path_prefix, get(serve_admin_ui))
-                .route(&format!("{}/*path", path_prefix), get(serve_admin_static))
-        }
+        AdminUiMode::Embedded => Router::new()
+            .route(&path_prefix, get(serve_admin_ui))
+            .route(&format!("{}/*path", path_prefix), get(serve_admin_static)),
         AdminUiMode::External(admin_path) => {
             use axum::extract::Path;
-            
+
             // For external mode, we need to create a custom handler that includes the path
             // We'll use a simple approach that works with Axum's routing
             Router::new()
-                .route(&path_prefix, get({
-                    let admin_path = admin_path.clone();
-                    || async move { serve_external_admin_ui(admin_path).await }
-                }))
-                .route(&format!("{}/*path", path_prefix), get({
-                    let admin_path = admin_path.clone();
-                    |path: Path<String>| async move {
-                        serve_external_admin_static(admin_path, path).await
-                    }
-                }))
+                .route(
+                    &path_prefix,
+                    get({
+                        let admin_path = admin_path.clone();
+                        || async move { serve_external_admin_ui(admin_path).await }
+                    }),
+                )
+                .route(
+                    &format!("{}/*path", path_prefix),
+                    get({
+                        let admin_path = admin_path.clone();
+                        |path: Path<String>| async move {
+                            serve_external_admin_static(admin_path, path).await
+                        }
+                    }),
+                )
         }
         AdminUiMode::Disabled => {
             // Return empty router when admin is disabled
@@ -773,57 +1314,52 @@ fn admin_routes(mode: AdminUiMode, path_prefix: String) -> Router<AppState> {
     }
 }
 
-/// Build router with custom configuration
-pub fn build_router_with_config(config: RouteConfig) -> Router<AppState> {
-    let mut router = Router::new()
-        .merge(health_routes())
-        .merge(auth_routes());
-    
+/// Build the unlayered route tree. Authenticated app builders must wrap this
+/// with the state-aware auth middleware before serving protected API routes.
+fn build_route_tree(config: RouteConfig) -> Router<AppState> {
+    let mut router = Router::new().merge(health_routes()).merge(auth_routes());
+
     // Add API routes
     router = router.merge(api_routes());
-    
+
     // Conditionally add admin routes based on configuration
     if config.enable_admin {
         router = router.merge(admin_routes(config.admin_mode, config.admin_path));
     }
-    
+
     router
+}
+
+/// Build router with custom configuration and production middleware.
+pub fn build_router_with_config(config: RouteConfig, state: AppState) -> Router<()> {
+    build_router_with_config_and_middleware(config, state)
 }
 
 /// Build router with custom configuration and apply middleware in correct order
 pub fn build_router_with_config_and_middleware(config: RouteConfig, state: AppState) -> Router<()> {
-    let mut router = Router::new()
-        .merge(health_routes())
-        .merge(auth_routes());
-    
-    // Add API routes with auth middleware applied to protected routes only
-    router = router.merge(
-        api_routes()
-            .route_layer(axum::middleware::from_fn_with_state(
-                state.clone(),
-                crate::middleware::auth_middleware,
-            ))
-    );
-    
-    // Conditionally add admin routes based on configuration
-    if config.enable_admin {
-        router = router.merge(admin_routes(config.admin_mode, config.admin_path));
-    }
-    
+    let mut router = build_route_tree(config.clone());
+
+    // Apply auth middleware to protected API routes only. Public routes are
+    // already bypassed by auth_middleware via its public endpoint allowlist.
+    router = router.route_layer(axum::middleware::from_fn_with_state(
+        state.clone(),
+        crate::middleware::auth_middleware,
+    ));
+
     // Apply logging middleware to all routes (should be applied before CORS and tracing)
     router = router.layer(axum::middleware::from_fn_with_state(
         state.clone(),
         crate::middleware::request_logging_middleware,
     ));
-    
+
     // Apply middleware based on configuration - CORS should be outermost
     if config.enable_tracing {
         router = router.layer(TraceLayer::new_for_http());
     }
-    
+
     if config.enable_cors {
         router = router.layer(CorsLayer::permissive());
     }
-    
+
     router.with_state(state)
 }

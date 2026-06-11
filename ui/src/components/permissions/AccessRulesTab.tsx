@@ -321,7 +321,7 @@ export const AccessRulesTab: React.FC<AccessRulesTabProps> = ({
                               <div key={operation} className="group relative">
                                 <div className="flex items-center space-x-3 p-3 rounded-lg bg-gradient-to-r from-muted/30 to-muted/50 border border-border/50 hover:border-primary/30 transition-all duration-200">
                                   <div className="flex-shrink-0 p-1.5 bg-background rounded-md shadow-sm">
-                                    {getCrudOperationIcon(operation as any)}
+                                    {getCrudOperationIcon(operation)}
                                   </div>
                                   <div className="min-w-0 flex-1">
                                     <div className="text-sm font-medium capitalize truncate mb-1">{operation}</div>
@@ -358,7 +358,7 @@ export const AccessRulesTab: React.FC<AccessRulesTabProps> = ({
                                 <div key={operation} className="group relative">
                                   <div className="flex items-center space-x-3 p-3 rounded-lg bg-gradient-to-r from-purple-50 to-blue-50 border border-purple-200/50 hover:border-purple-300 transition-all duration-200">
                                     <div className="flex-shrink-0 p-1.5 bg-white rounded-md shadow-sm">
-                                      {getAuthOperationIcon(operation as any)}
+                                      {getAuthOperationIcon(operation)}
                                     </div>
                                     <div className="min-w-0 flex-1">
                                       <div className="text-sm font-medium capitalize truncate mb-1">{operation}</div>

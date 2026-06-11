@@ -20,4 +20,4 @@ pub use installation::*;
 pub use management::*;
 pub use permissions::*;
 pub use routes::*;
-pub use types::*; 
+pub use types::*;

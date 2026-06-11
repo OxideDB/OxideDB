@@ -328,7 +328,7 @@ pub async fn load_plugins_from_database(state: &AppState) -> Result<(), ApiError
         };
 
         // Load plugin into runtime
-        let loaded_successfully = {
+        let load_result = {
             let mut runtime_guard = match plugin_manager.runtime.lock() {
                 Ok(guard) => guard,
                 Err(_) => {
@@ -341,30 +341,32 @@ pub async fn load_plugins_from_database(state: &AppState) -> Result<(), ApiError
                 }
             };
 
-            match runtime_guard.load_plugin_with_trust(
+            runtime_guard.load_plugin_with_trust(
                 &config.name,
                 &wasm_data,
                 config.trust_level.clone(),
                 config.capabilities.clone(),
                 config.resource_limits.clone(),
-            ) {
-                Ok(_) => {
-                    info!("✅ Successfully loaded plugin: {}", config.name);
-                    true
-                }
-                Err(e) => {
-                    tracing::error!("❌ Failed to load plugin '{}': {}", config.name, e);
-                    // Update status to error
-                    let _ = state
-                        .plugin_config_service
-                        .update_plugin_status(
-                            &config.name,
-                            oxide_core::plugin_config::PluginStatus::Error,
-                        )
-                        .await;
-                    failed_count += 1;
-                    false
-                }
+            )
+        };
+
+        let loaded_successfully = match load_result {
+            Ok(_) => {
+                info!("✅ Successfully loaded plugin: {}", config.name);
+                true
+            }
+            Err(e) => {
+                tracing::error!("❌ Failed to load plugin '{}': {}", config.name, e);
+                // Update status to error
+                let _ = state
+                    .plugin_config_service
+                    .update_plugin_status(
+                        &config.name,
+                        oxide_core::plugin_config::PluginStatus::Error,
+                    )
+                    .await;
+                failed_count += 1;
+                false
             }
         };
 

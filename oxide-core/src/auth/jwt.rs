@@ -3,8 +3,8 @@
 //! This module handles JWT token creation, validation, and claims management
 //! for the authentication system.
 
+use super::types::{AuthServiceConfig, UserRole};
 use crate::AppError;
-use super::types::{UserRole, AuthServiceConfig};
 use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -53,7 +53,13 @@ pub struct RefreshClaims {
 
 impl Claims {
     /// Create new JWT claims for access token
-    pub fn new(user_id: String, email: String, role: String, auth_collection: String, expiry_hours: i64) -> Self {
+    pub fn new(
+        user_id: String,
+        email: String,
+        role: String,
+        auth_collection: String,
+        expiry_hours: i64,
+    ) -> Self {
         let now = chrono::Utc::now().timestamp();
         let exp = now + (expiry_hours * 3600);
 
@@ -87,7 +93,13 @@ impl Claims {
 
 impl RefreshClaims {
     /// Create new JWT claims for refresh token
-    pub fn new(user_id: String, email: String, role: String, auth_collection: String, expiry_days: i64) -> Self {
+    pub fn new(
+        user_id: String,
+        email: String,
+        role: String,
+        auth_collection: String,
+        expiry_days: i64,
+    ) -> Self {
         let now = chrono::Utc::now().timestamp();
         let exp = now + (expiry_days * 24 * 3600);
 
@@ -139,7 +151,13 @@ impl<'a> JwtService<'a> {
     }
 
     /// Generate a JWT access token for a user
-    pub fn generate_token(&self, user_id: String, email: String, role: UserRole, auth_collection: String) -> Result<String, AppError> {
+    pub fn generate_token(
+        &self,
+        user_id: String,
+        email: String,
+        role: UserRole,
+        auth_collection: String,
+    ) -> Result<String, AppError> {
         let claims = Claims::new(
             user_id,
             email,
@@ -161,7 +179,13 @@ impl<'a> JwtService<'a> {
     }
 
     /// Generate a refresh token for a user
-    pub fn generate_refresh_token(&self, user_id: String, email: String, role: UserRole, auth_collection: String) -> Result<String, AppError> {
+    pub fn generate_refresh_token(
+        &self,
+        user_id: String,
+        email: String,
+        role: UserRole,
+        auth_collection: String,
+    ) -> Result<String, AppError> {
         let claims = RefreshClaims::new(
             user_id,
             email,
@@ -178,8 +202,19 @@ impl<'a> JwtService<'a> {
     }
 
     /// Generate both access and refresh tokens
-    pub fn generate_token_pair(&self, user_id: String, email: String, role: UserRole, auth_collection: String) -> Result<TokenPair, AppError> {
-        let access_token = self.generate_token(user_id.clone(), email.clone(), role.clone(), auth_collection.clone())?;
+    pub fn generate_token_pair(
+        &self,
+        user_id: String,
+        email: String,
+        role: UserRole,
+        auth_collection: String,
+    ) -> Result<TokenPair, AppError> {
+        let access_token = self.generate_token(
+            user_id.clone(),
+            email.clone(),
+            role.clone(),
+            auth_collection.clone(),
+        )?;
         let refresh_token = self.generate_refresh_token(user_id, email, role, auth_collection)?;
 
         Ok(TokenPair {
@@ -200,7 +235,9 @@ impl<'a> JwtService<'a> {
 
         // Verify this is an access token
         if !decoded.claims.is_access_token() {
-            return Err(AppError::auth("Invalid token type - expected access token".to_string()));
+            return Err(AppError::auth(
+                "Invalid token type - expected access token".to_string(),
+            ));
         }
 
         Ok(decoded.claims)
@@ -216,7 +253,9 @@ impl<'a> JwtService<'a> {
 
         // Verify this is a refresh token
         if !decoded.claims.is_refresh_token() {
-            return Err(AppError::auth("Invalid token type - expected refresh token".to_string()));
+            return Err(AppError::auth(
+                "Invalid token type - expected refresh token".to_string(),
+            ));
         }
 
         Ok(decoded.claims)
@@ -225,9 +264,10 @@ impl<'a> JwtService<'a> {
     /// Generate a new access token from a refresh token
     pub fn refresh_access_token(&self, refresh_token: &str) -> Result<String, AppError> {
         let refresh_claims = self.verify_refresh_token(refresh_token)?;
-        
+
         // Generate new access token with same user information
-        let role = refresh_claims.user_role()
+        let role = refresh_claims
+            .user_role()
             .map_err(|e| AppError::auth(format!("Invalid role in refresh token: {}", e)))?;
 
         self.generate_token(
@@ -241,9 +281,10 @@ impl<'a> JwtService<'a> {
     /// Generate a new token pair from a refresh token
     pub fn refresh_token_pair(&self, refresh_token: &str) -> Result<TokenPair, AppError> {
         let refresh_claims = self.verify_refresh_token(refresh_token)?;
-        
+
         // Generate new token pair with same user information
-        let role = refresh_claims.user_role()
+        let role = refresh_claims
+            .user_role()
             .map_err(|e| AppError::auth(format!("Invalid role in refresh token: {}", e)))?;
 
         self.generate_token_pair(
@@ -268,12 +309,14 @@ mod tests {
         let config = create_test_config();
         let jwt_service = JwtService::new(&config);
 
-        let token = jwt_service.generate_token(
-            "user123".to_string(),
-            "test@example.com".to_string(),
-            UserRole::User,
-            "users".to_string(),
-        ).unwrap();
+        let token = jwt_service
+            .generate_token(
+                "user123".to_string(),
+                "test@example.com".to_string(),
+                UserRole::User,
+                "users".to_string(),
+            )
+            .unwrap();
 
         let claims = jwt_service.verify_token(&token).unwrap();
         assert_eq!(claims.sub, "user123");
@@ -288,12 +331,14 @@ mod tests {
         let config = create_test_config();
         let jwt_service = JwtService::new(&config);
 
-        let token = jwt_service.generate_refresh_token(
-            "user123".to_string(),
-            "test@example.com".to_string(),
-            UserRole::User,
-            "users".to_string(),
-        ).unwrap();
+        let token = jwt_service
+            .generate_refresh_token(
+                "user123".to_string(),
+                "test@example.com".to_string(),
+                UserRole::User,
+                "users".to_string(),
+            )
+            .unwrap();
 
         let claims = jwt_service.verify_refresh_token(&token).unwrap();
         assert_eq!(claims.sub, "user123");
@@ -309,19 +354,23 @@ mod tests {
         let config = create_test_config();
         let jwt_service = JwtService::new(&config);
 
-        let token_pair = jwt_service.generate_token_pair(
-            "user123".to_string(),
-            "test@example.com".to_string(),
-            UserRole::User,
-            "users".to_string(),
-        ).unwrap();
+        let token_pair = jwt_service
+            .generate_token_pair(
+                "user123".to_string(),
+                "test@example.com".to_string(),
+                UserRole::User,
+                "users".to_string(),
+            )
+            .unwrap();
 
         // Verify access token
         let access_claims = jwt_service.verify_token(&token_pair.access_token).unwrap();
         assert!(access_claims.is_access_token());
 
         // Verify refresh token
-        let refresh_claims = jwt_service.verify_refresh_token(&token_pair.refresh_token).unwrap();
+        let refresh_claims = jwt_service
+            .verify_refresh_token(&token_pair.refresh_token)
+            .unwrap();
         assert!(refresh_claims.is_refresh_token());
 
         // Both should have same user info
@@ -335,15 +384,19 @@ mod tests {
         let config = create_test_config();
         let jwt_service = JwtService::new(&config);
 
-        let original_pair = jwt_service.generate_token_pair(
-            "user123".to_string(),
-            "test@example.com".to_string(),
-            UserRole::User,
-            "users".to_string(),
-        ).unwrap();
+        let original_pair = jwt_service
+            .generate_token_pair(
+                "user123".to_string(),
+                "test@example.com".to_string(),
+                UserRole::User,
+                "users".to_string(),
+            )
+            .unwrap();
 
         // Use refresh token to get new access token
-        let new_access_token = jwt_service.refresh_access_token(&original_pair.refresh_token).unwrap();
+        let new_access_token = jwt_service
+            .refresh_access_token(&original_pair.refresh_token)
+            .unwrap();
         let new_claims = jwt_service.verify_token(&new_access_token).unwrap();
 
         assert_eq!(new_claims.sub, "user123");
@@ -356,19 +409,23 @@ mod tests {
         let config = create_test_config();
         let jwt_service = JwtService::new(&config);
 
-        let access_token = jwt_service.generate_token(
-            "user123".to_string(),
-            "test@example.com".to_string(),
-            UserRole::User,
-            "users".to_string(),
-        ).unwrap();
+        let access_token = jwt_service
+            .generate_token(
+                "user123".to_string(),
+                "test@example.com".to_string(),
+                UserRole::User,
+                "users".to_string(),
+            )
+            .unwrap();
 
-        let refresh_token = jwt_service.generate_refresh_token(
-            "user123".to_string(),
-            "test@example.com".to_string(),
-            UserRole::User,
-            "users".to_string(),
-        ).unwrap();
+        let refresh_token = jwt_service
+            .generate_refresh_token(
+                "user123".to_string(),
+                "test@example.com".to_string(),
+                UserRole::User,
+                "users".to_string(),
+            )
+            .unwrap();
 
         // Access token should not verify as refresh token
         assert!(jwt_service.verify_refresh_token(&access_token).is_err());
@@ -376,4 +433,4 @@ mod tests {
         // Refresh token should not verify as access token
         assert!(jwt_service.verify_token(&refresh_token).is_err());
     }
-} 
+}

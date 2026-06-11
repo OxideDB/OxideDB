@@ -107,7 +107,6 @@ const ActionDropdown: React.FC<ActionDropdownProps> = ({
   // "mobile" mode - responsive behavior
   const shouldShowDropdown = buttonActions.length > 1; // Always dropdown on mobile for 2+ actions
   const visibleButtonActions = shouldShowDropdown ? buttonActions.slice(0, Math.min(maxVisibleActions, 1)) : buttonActions;
-  const dropdownActions = shouldShowDropdown ? buttonActions : [];
 
   return (
     <div className={`flex items-center gap-1.5 sm:gap-2 ${className}`}>

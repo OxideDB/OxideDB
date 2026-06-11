@@ -4,25 +4,19 @@
 //! storing, retrieving, updating, and deleting user-specific settings.
 
 use axum::{
-    extract::{State, Path, Query},
+    extract::{Path, Query, State},
     Json,
 };
-use oxide_core::{
-    user_preferences::{
-        UpdateUserPreferenceRequest, UserPreferenceResponse,
-        UserPreferencesListResponse,
-    },
+use oxide_core::user_preferences::{
+    UpdateUserPreferenceRequest, UserPreferenceResponse, UserPreferencesListResponse,
 };
 use oxide_db::Db;
+use serde::Deserialize;
 use std::sync::Arc;
 use tracing::{debug, info, warn};
-use serde::Deserialize;
 
 use crate::{
-    errors::ApiError,
-    responses::ApiResponse,
-    server::AppState,
-    extractors::AuthenticatedUser,
+    errors::ApiError, extractors::AuthenticatedUser, responses::ApiResponse, server::AppState,
 };
 
 /// Query parameters for listing user preferences
@@ -42,21 +36,32 @@ impl UserPreferencesHandlers {
         user_id: String,
         request: UpdateUserPreferenceRequest,
     ) -> Result<UserPreferenceResponse, ApiError> {
-        debug!("Storing preference '{}' for user: {}", request.preference_key, user_id);
+        debug!(
+            "Storing preference '{}' for user: {}",
+            request.preference_key, user_id
+        );
 
         // Validate preference key (optional - add custom validation if needed)
         if request.preference_key.is_empty() {
-            return Err(ApiError::bad_request("Preference key cannot be empty".to_string()));
+            return Err(ApiError::bad_request(
+                "Preference key cannot be empty".to_string(),
+            ));
         }
 
         db.store_user_preference(&user_id, &request.preference_key, &request.preference_value)
             .await
             .map_err(|e| {
-                warn!("Failed to store preference '{}' for user {}: {}", request.preference_key, user_id, e);
+                warn!(
+                    "Failed to store preference '{}' for user {}: {}",
+                    request.preference_key, user_id, e
+                );
                 ApiError::internal(format!("Failed to store preference: {}", e))
             })?;
 
-        info!("✅ Stored preference '{}' for user: {}", request.preference_key, user_id);
+        info!(
+            "✅ Stored preference '{}' for user: {}",
+            request.preference_key, user_id
+        );
 
         Ok(UserPreferenceResponse {
             success: true,
@@ -71,18 +76,28 @@ impl UserPreferencesHandlers {
         user_id: String,
         preference_key: String,
     ) -> Result<UserPreferenceResponse, ApiError> {
-        debug!("Getting preference '{}' for user: {}", preference_key, user_id);
+        debug!(
+            "Getting preference '{}' for user: {}",
+            preference_key, user_id
+        );
 
-        let preference_value = db.get_user_preference(&user_id, &preference_key)
+        let preference_value = db
+            .get_user_preference(&user_id, &preference_key)
             .await
             .map_err(|e| {
-                warn!("Failed to get preference '{}' for user {}: {}", preference_key, user_id, e);
+                warn!(
+                    "Failed to get preference '{}' for user {}: {}",
+                    preference_key, user_id, e
+                );
                 ApiError::internal(format!("Failed to retrieve preference: {}", e))
             })?;
 
         match preference_value {
             Some(value) => {
-                debug!("✅ Found preference '{}' for user: {}", preference_key, user_id);
+                debug!(
+                    "✅ Found preference '{}' for user: {}",
+                    preference_key, user_id
+                );
                 Ok(UserPreferenceResponse {
                     success: true,
                     message: None,
@@ -96,7 +111,10 @@ impl UserPreferencesHandlers {
                 })
             }
             None => {
-                debug!("No preference '{}' found for user: {}", preference_key, user_id);
+                debug!(
+                    "No preference '{}' found for user: {}",
+                    preference_key, user_id
+                );
                 Ok(UserPreferenceResponse {
                     success: true,
                     message: Some("Preference not found".to_string()),
@@ -114,12 +132,10 @@ impl UserPreferencesHandlers {
     ) -> Result<UserPreferencesListResponse, ApiError> {
         debug!("Getting all preferences for user: {}", user_id);
 
-        let mut preferences = db.get_user_preferences(&user_id)
-            .await
-            .map_err(|e| {
-                warn!("Failed to get preferences for user {}: {}", user_id, e);
-                ApiError::internal(format!("Failed to retrieve preferences: {}", e))
-            })?;
+        let mut preferences = db.get_user_preferences(&user_id).await.map_err(|e| {
+            warn!("Failed to get preferences for user {}: {}", user_id, e);
+            ApiError::internal(format!("Failed to retrieve preferences: {}", e))
+        })?;
 
         // Filter by key if specified
         if let Some(query) = query {
@@ -128,7 +144,11 @@ impl UserPreferencesHandlers {
             }
         }
 
-        info!("✅ Retrieved {} preferences for user: {}", preferences.len(), user_id);
+        info!(
+            "✅ Retrieved {} preferences for user: {}",
+            preferences.len(),
+            user_id
+        );
 
         Ok(UserPreferencesListResponse {
             total: preferences.len(),
@@ -142,24 +162,37 @@ impl UserPreferencesHandlers {
         user_id: String,
         preference_key: String,
     ) -> Result<UserPreferenceResponse, ApiError> {
-        debug!("Deleting preference '{}' for user: {}", preference_key, user_id);
+        debug!(
+            "Deleting preference '{}' for user: {}",
+            preference_key, user_id
+        );
 
-        let deleted = db.delete_user_preference(&user_id, &preference_key)
+        let deleted = db
+            .delete_user_preference(&user_id, &preference_key)
             .await
             .map_err(|e| {
-                warn!("Failed to delete preference '{}' for user {}: {}", preference_key, user_id, e);
+                warn!(
+                    "Failed to delete preference '{}' for user {}: {}",
+                    preference_key, user_id, e
+                );
                 ApiError::internal(format!("Failed to delete preference: {}", e))
             })?;
 
         if deleted {
-            info!("✅ Deleted preference '{}' for user: {}", preference_key, user_id);
+            info!(
+                "✅ Deleted preference '{}' for user: {}",
+                preference_key, user_id
+            );
             Ok(UserPreferenceResponse {
                 success: true,
                 message: Some("Preference deleted successfully".to_string()),
                 preference: None,
             })
         } else {
-            debug!("No preference '{}' found to delete for user: {}", preference_key, user_id);
+            debug!(
+                "No preference '{}' found to delete for user: {}",
+                preference_key, user_id
+            );
             Ok(UserPreferenceResponse {
                 success: true,
                 message: Some("Preference not found".to_string()),
@@ -175,14 +208,21 @@ impl UserPreferencesHandlers {
     ) -> Result<UserPreferenceResponse, ApiError> {
         debug!("Deleting all preferences for user: {}", user_id);
 
-        let deleted_count = db.delete_all_user_preferences(&user_id)
+        let deleted_count = db
+            .delete_all_user_preferences(&user_id)
             .await
             .map_err(|e| {
-                warn!("Failed to delete all preferences for user {}: {}", user_id, e);
+                warn!(
+                    "Failed to delete all preferences for user {}: {}",
+                    user_id, e
+                );
                 ApiError::internal(format!("Failed to delete preferences: {}", e))
             })?;
 
-        info!("✅ Deleted {} preferences for user: {}", deleted_count, user_id);
+        info!(
+            "✅ Deleted {} preferences for user: {}",
+            deleted_count, user_id
+        );
 
         Ok(UserPreferenceResponse {
             success: true,
@@ -212,7 +252,8 @@ pub async fn store_user_preference(
         state.db,
         authenticated_user.user_id().to_string(),
         request,
-    ).await?;
+    )
+    .await?;
 
     Ok(Json(ApiResponse::success(response)))
 }
@@ -229,7 +270,8 @@ pub async fn get_user_preference(
         state.db,
         authenticated_user.user_id().to_string(),
         preference_key,
-    ).await?;
+    )
+    .await?;
 
     Ok(Json(ApiResponse::success(response)))
 }
@@ -246,7 +288,8 @@ pub async fn list_user_preferences(
         state.db,
         authenticated_user.user_id().to_string(),
         Some(query),
-    ).await?;
+    )
+    .await?;
 
     Ok(Json(ApiResponse::success(response)))
 }
@@ -263,7 +306,8 @@ pub async fn delete_user_preference(
         state.db,
         authenticated_user.user_id().to_string(),
         preference_key,
-    ).await?;
+    )
+    .await?;
 
     Ok(Json(ApiResponse::success(response)))
 }
@@ -278,7 +322,8 @@ pub async fn delete_all_user_preferences(
     let response = UserPreferencesHandlers::delete_all_preferences(
         state.db,
         authenticated_user.user_id().to_string(),
-    ).await?;
+    )
+    .await?;
 
     Ok(Json(ApiResponse::success(response)))
-} 
+}

@@ -5,7 +5,7 @@
 
 use axum::{extract::State, response::Json};
 use oxide_db::Db;
-use serde::Serialize;
+use serde::{ser::SerializeStruct, Serialize, Serializer};
 use std::sync::Arc;
 use tracing::{debug, warn};
 use ts_rs::TS;
@@ -13,7 +13,7 @@ use ts_rs::TS;
 use crate::{errors::ApiError, responses::ApiResponse, server::AppState};
 
 /// Health status response with comprehensive version information
-#[derive(Debug, Serialize, TS)]
+#[derive(Debug, TS)]
 #[ts(export)]
 pub struct HealthStatus {
     /// Overall system status
@@ -21,14 +21,43 @@ pub struct HealthStatus {
     /// Database connection status
     pub database: String,
     /// API version
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
     /// System uptime in seconds
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub uptime: Option<u64>,
     /// Component version information
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub versions: Option<ComponentVersions>,
+}
+
+impl Serialize for HealthStatus {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut fields = 2;
+        if self.version.is_some() {
+            fields += 1;
+        }
+        if self.uptime.is_some() {
+            fields += 1;
+        }
+        if self.versions.is_some() {
+            fields += 1;
+        }
+
+        let mut state = serializer.serialize_struct("HealthStatus", fields)?;
+        state.serialize_field("status", &self.status)?;
+        state.serialize_field("database", &self.database)?;
+        if let Some(version) = &self.version {
+            state.serialize_field("version", version)?;
+        }
+        if let Some(uptime) = self.uptime {
+            state.serialize_field("uptime", &uptime)?;
+        }
+        if let Some(versions) = &self.versions {
+            state.serialize_field("versions", versions)?;
+        }
+        state.end()
+    }
 }
 
 /// Version information for all system components

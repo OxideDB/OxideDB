@@ -10,29 +10,21 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::time::timeout;
-use tracing::{warn, debug};
+use tracing::{debug, warn};
 
-use super::context::{BeforeEventContext, AfterEventContext};
-use super::handlers::{BeforeEventHandler, AfterEventHandler};
+use super::context::{AfterEventContext, BeforeEventContext};
+use super::handlers::{AfterEventHandler, BeforeEventHandler};
 
 /// Middleware for wrapping Before event handlers with additional functionality
 pub trait BeforeHandlerMiddleware: Send + Sync {
     /// Wrap a Before event handler with middleware functionality
-    fn wrap(
-        &self,
-        handler: BeforeEventHandler,
-        handler_id: String,
-    ) -> BeforeEventHandler;
+    fn wrap(&self, handler: BeforeEventHandler, handler_id: String) -> BeforeEventHandler;
 }
 
 /// Middleware for wrapping After event handlers with additional functionality
 pub trait AfterHandlerMiddleware: Send + Sync {
     /// Wrap an After event handler with middleware functionality
-    fn wrap(
-        &self,
-        handler: AfterEventHandler,
-        handler_id: String,
-    ) -> AfterEventHandler;
+    fn wrap(&self, handler: AfterEventHandler, handler_id: String) -> AfterEventHandler;
 }
 
 /// Timeout middleware that enforces maximum execution time for handlers
@@ -45,12 +37,12 @@ impl TimeoutMiddleware {
     pub fn new(default_timeout: Duration) -> Self {
         Self { default_timeout }
     }
+}
 
-    /// Create timeout middleware with 5 second default
-    pub fn default() -> Self {
+impl Default for TimeoutMiddleware {
+    fn default() -> Self {
         Self::new(Duration::from_secs(5))
     }
-
 }
 
 impl BeforeHandlerMiddleware for TimeoutMiddleware {
@@ -68,7 +60,10 @@ impl BeforeHandlerMiddleware for TimeoutMiddleware {
                 match timeout(timeout_duration, future).await {
                     Ok(result) => result,
                     Err(_) => {
-                        warn!("Handler {} timed out after {:?}", handler_id, timeout_duration);
+                        warn!(
+                            "Handler {} timed out after {:?}",
+                            handler_id, timeout_duration
+                        );
                         Err(AppError::internal(format!(
                             "Handler {} timed out after {:?}",
                             handler_id, timeout_duration
@@ -95,7 +90,10 @@ impl AfterHandlerMiddleware for TimeoutMiddleware {
                 match timeout(timeout_duration, future).await {
                     Ok(result) => result,
                     Err(_) => {
-                        warn!("Handler {} timed out after {:?}", handler_id, timeout_duration);
+                        warn!(
+                            "Handler {} timed out after {:?}",
+                            handler_id, timeout_duration
+                        );
                         Err(AppError::internal(format!(
                             "Handler {} timed out after {:?}",
                             handler_id, timeout_duration
@@ -117,7 +115,12 @@ pub struct RetryMiddleware {
 
 impl RetryMiddleware {
     /// Create new retry middleware
-    pub fn new(max_retries: u32, initial_delay: Duration, max_delay: Duration, backoff_multiplier: f64) -> Self {
+    pub fn new(
+        max_retries: u32,
+        initial_delay: Duration,
+        max_delay: Duration,
+        backoff_multiplier: f64,
+    ) -> Self {
         Self {
             max_retries,
             initial_delay,
@@ -141,18 +144,21 @@ impl RetryMiddleware {
         Self::new(max_retries, delay, delay, 1.0)
     }
 
-    fn calculate_delay_static(attempt: u32, initial_delay: Duration, max_delay: Duration, backoff_multiplier: f64) -> Duration {
+    fn calculate_delay_static(
+        attempt: u32,
+        initial_delay: Duration,
+        max_delay: Duration,
+        backoff_multiplier: f64,
+    ) -> Duration {
         if attempt == 0 {
             return initial_delay;
         }
 
-        let delay_ms = initial_delay.as_millis() as f64
-            * backoff_multiplier.powi(attempt as i32);
-        
+        let delay_ms = initial_delay.as_millis() as f64 * backoff_multiplier.powi(attempt as i32);
+
         let delay = Duration::from_millis(delay_ms as u64);
         std::cmp::min(delay, max_delay)
     }
-
 }
 
 impl BeforeHandlerMiddleware for RetryMiddleware {
@@ -168,7 +174,7 @@ impl BeforeHandlerMiddleware for RetryMiddleware {
 
             Box::pin(async move {
                 let mut last_error = None;
-                
+
                 for attempt in 0..=max_retries {
                     match handler(context).await {
                         Ok(result) => return Ok(result),
@@ -176,15 +182,20 @@ impl BeforeHandlerMiddleware for RetryMiddleware {
                             last_error = Some(err);
                             if attempt < max_retries {
                                 let delay = RetryMiddleware::calculate_delay_static(
-                                    attempt, initial_delay, max_delay, backoff_multiplier
+                                    attempt,
+                                    initial_delay,
+                                    max_delay,
+                                    backoff_multiplier,
                                 );
                                 tokio::time::sleep(delay).await;
                             }
                         }
                     }
                 }
-                
-                Err(last_error.unwrap_or_else(|| AppError::internal("Retry failed without error".to_string())))
+
+                Err(last_error.unwrap_or_else(|| {
+                    AppError::internal("Retry failed without error".to_string())
+                }))
             })
         })
     }
@@ -203,7 +214,7 @@ impl AfterHandlerMiddleware for RetryMiddleware {
 
             Box::pin(async move {
                 let mut last_error = None;
-                
+
                 for attempt in 0..=max_retries {
                     match handler(context).await {
                         Ok(result) => return Ok(result),
@@ -211,15 +222,20 @@ impl AfterHandlerMiddleware for RetryMiddleware {
                             last_error = Some(err);
                             if attempt < max_retries {
                                 let delay = RetryMiddleware::calculate_delay_static(
-                                    attempt, initial_delay, max_delay, backoff_multiplier
+                                    attempt,
+                                    initial_delay,
+                                    max_delay,
+                                    backoff_multiplier,
                                 );
                                 tokio::time::sleep(delay).await;
                             }
                         }
                     }
                 }
-                
-                Err(last_error.unwrap_or_else(|| AppError::internal("Retry failed without error".to_string())))
+
+                Err(last_error.unwrap_or_else(|| {
+                    AppError::internal("Retry failed without error".to_string())
+                }))
             })
         })
     }
@@ -250,7 +266,11 @@ enum CircuitState {
 
 impl CircuitBreakerMiddleware {
     /// Create new circuit breaker middleware
-    pub fn new(failure_threshold: u32, recovery_timeout: Duration, half_open_max_calls: u32) -> Self {
+    pub fn new(
+        failure_threshold: u32,
+        recovery_timeout: Duration,
+        half_open_max_calls: u32,
+    ) -> Self {
         Self {
             failure_threshold,
             recovery_timeout,
@@ -263,12 +283,15 @@ impl CircuitBreakerMiddleware {
             }),
         }
     }
+}
 
-    /// Create circuit breaker with default settings
-    pub fn default() -> Self {
+impl Default for CircuitBreakerMiddleware {
+    fn default() -> Self {
         Self::new(5, Duration::from_secs(60), 3)
     }
+}
 
+impl CircuitBreakerMiddleware {
     async fn execute_with_circuit_breaker<F, Fut, R>(
         &self,
         operation: F,
@@ -282,7 +305,7 @@ impl CircuitBreakerMiddleware {
         let current_state = {
             let mut state = self.state.state.lock().unwrap();
             let now = Instant::now();
-            
+
             match *state {
                 CircuitState::Open => {
                     if let Some(last_failure) = *self.state.last_failure_time.lock().unwrap() {
@@ -294,7 +317,9 @@ impl CircuitBreakerMiddleware {
                     }
                 }
                 CircuitState::HalfOpen => {
-                    if self.state.half_open_calls.load(Ordering::SeqCst) >= self.half_open_max_calls as u64 {
+                    if self.state.half_open_calls.load(Ordering::SeqCst)
+                        >= self.half_open_max_calls as u64
+                    {
                         return Err(AppError::internal(format!(
                             "Circuit breaker for {} is HALF_OPEN and max calls exceeded",
                             handler_id
@@ -303,7 +328,7 @@ impl CircuitBreakerMiddleware {
                 }
                 CircuitState::Closed => {}
             }
-            
+
             state.clone()
         };
 
@@ -325,27 +350,30 @@ impl CircuitBreakerMiddleware {
             Ok(result) => {
                 // Success - reset failure count and close circuit if needed
                 self.state.failure_count.store(0, Ordering::SeqCst);
-                
+
                 if current_state == CircuitState::HalfOpen {
                     let mut state = self.state.state.lock().unwrap();
                     *state = CircuitState::Closed;
                     debug!("Circuit breaker for {} moved to CLOSED", handler_id);
                 }
-                
+
                 Ok(result)
             }
             Err(err) => {
                 // Failure - increment count and potentially open circuit
                 let failure_count = self.state.failure_count.fetch_add(1, Ordering::SeqCst) + 1;
-                
+
                 *self.state.last_failure_time.lock().unwrap() = Some(Instant::now());
-                
+
                 if failure_count >= self.failure_threshold as u64 {
                     let mut state = self.state.state.lock().unwrap();
                     *state = CircuitState::Open;
-                    warn!("Circuit breaker for {} moved to OPEN after {} failures", handler_id, failure_count);
+                    warn!(
+                        "Circuit breaker for {} moved to OPEN after {} failures",
+                        handler_id, failure_count
+                    );
                 }
-                
+
                 Err(err)
             }
         }
@@ -366,10 +394,9 @@ impl BeforeHandlerMiddleware for CircuitBreakerMiddleware {
             let circuit_breaker = circuit_breaker.clone();
 
             Box::pin(async move {
-                circuit_breaker.execute_with_circuit_breaker(
-                    || handler(context),
-                    &handler_id,
-                ).await
+                circuit_breaker
+                    .execute_with_circuit_breaker(|| handler(context), &handler_id)
+                    .await
             })
         })
     }
@@ -389,10 +416,9 @@ impl AfterHandlerMiddleware for CircuitBreakerMiddleware {
             let circuit_breaker = circuit_breaker.clone();
 
             Box::pin(async move {
-                circuit_breaker.execute_with_circuit_breaker(
-                    || handler(context),
-                    &handler_id,
-                ).await
+                circuit_breaker
+                    .execute_with_circuit_breaker(|| handler(context), &handler_id)
+                    .await
             })
         })
     }
@@ -412,7 +438,7 @@ impl CompositeBeforeMiddleware {
     }
 
     /// Add middleware to the chain
-    pub fn add(mut self, middleware: Box<dyn BeforeHandlerMiddleware>) -> Self {
+    pub fn with_middleware(mut self, middleware: Box<dyn BeforeHandlerMiddleware>) -> Self {
         self.middleware.push(middleware);
         self
     }
@@ -420,15 +446,14 @@ impl CompositeBeforeMiddleware {
     /// Create a production-ready middleware chain
     pub fn production() -> Self {
         Self::new()
-            .add(Box::new(TimeoutMiddleware::new(Duration::from_secs(10))))
-            .add(Box::new(RetryMiddleware::exponential_backoff(3)))
-            .add(Box::new(CircuitBreakerMiddleware::default()))
+            .with_middleware(Box::new(TimeoutMiddleware::new(Duration::from_secs(10))))
+            .with_middleware(Box::new(RetryMiddleware::exponential_backoff(3)))
+            .with_middleware(Box::new(CircuitBreakerMiddleware::default()))
     }
 
     /// Create a development middleware chain
     pub fn development() -> Self {
-        Self::new()
-            .add(Box::new(TimeoutMiddleware::new(Duration::from_secs(30))))
+        Self::new().with_middleware(Box::new(TimeoutMiddleware::new(Duration::from_secs(30))))
     }
 }
 
@@ -462,7 +487,7 @@ impl CompositeAfterMiddleware {
     }
 
     /// Add middleware to the chain
-    pub fn add(mut self, middleware: Box<dyn AfterHandlerMiddleware>) -> Self {
+    pub fn with_middleware(mut self, middleware: Box<dyn AfterHandlerMiddleware>) -> Self {
         self.middleware.push(middleware);
         self
     }
@@ -470,15 +495,14 @@ impl CompositeAfterMiddleware {
     /// Create a production-ready middleware chain
     pub fn production() -> Self {
         Self::new()
-            .add(Box::new(TimeoutMiddleware::new(Duration::from_secs(10))))
-            .add(Box::new(RetryMiddleware::exponential_backoff(3)))
-            .add(Box::new(CircuitBreakerMiddleware::default()))
+            .with_middleware(Box::new(TimeoutMiddleware::new(Duration::from_secs(10))))
+            .with_middleware(Box::new(RetryMiddleware::exponential_backoff(3)))
+            .with_middleware(Box::new(CircuitBreakerMiddleware::default()))
     }
 
     /// Create a development middleware chain
     pub fn development() -> Self {
-        Self::new()
-            .add(Box::new(TimeoutMiddleware::new(Duration::from_secs(30))))
+        Self::new().with_middleware(Box::new(TimeoutMiddleware::new(Duration::from_secs(30))))
     }
 }
 
@@ -501,10 +525,10 @@ impl AfterHandlerMiddleware for CompositeAfterMiddleware {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::future::Future;
+    use std::pin::Pin;
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::Arc;
-    use std::pin::Pin;
-    use std::future::Future;
 
     #[tokio::test]
     async fn test_timeout_middleware() {
@@ -521,7 +545,8 @@ mod tests {
             }) as Pin<Box<dyn Future<Output = Result<(), AppError>> + Send + '_>>
         });
 
-        let wrapped = BeforeHandlerMiddleware::wrap(&middleware, handler, "test-handler".to_string());
+        let wrapped =
+            BeforeHandlerMiddleware::wrap(&middleware, handler, "test-handler".to_string());
         let mut context = BeforeEventContext::new_create("test".to_string(), serde_json::json!({}));
 
         let result = wrapped(&mut context).await;
@@ -531,7 +556,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_retry_middleware() {
-        let middleware = RetryMiddleware::new(2, Duration::from_millis(10), Duration::from_millis(10), 1.0);
+        let middleware =
+            RetryMiddleware::new(2, Duration::from_millis(10), Duration::from_millis(10), 1.0);
         let call_count = Arc::new(AtomicU32::new(0));
         let call_count_clone = call_count.clone();
 
@@ -547,7 +573,8 @@ mod tests {
             }) as Pin<Box<dyn Future<Output = Result<(), AppError>> + Send + '_>>
         });
 
-        let wrapped = BeforeHandlerMiddleware::wrap(&middleware, handler, "test-handler".to_string());
+        let wrapped =
+            BeforeHandlerMiddleware::wrap(&middleware, handler, "test-handler".to_string());
         let mut context = BeforeEventContext::new_create("test".to_string(), serde_json::json!({}));
 
         let result = wrapped(&mut context).await;
@@ -559,16 +586,17 @@ mod tests {
     async fn test_circuit_breaker_middleware() {
         let middleware = CircuitBreakerMiddleware::new(2, Duration::from_millis(50), 1);
         let handler: BeforeEventHandler = Arc::new(|_context: &mut BeforeEventContext| {
-            Box::pin(async move {
-                Err(AppError::internal("Always fails"))
-            }) as Pin<Box<dyn Future<Output = Result<(), AppError>> + Send + '_>>
+            Box::pin(async move { Err(AppError::internal("Always fails")) })
+                as Pin<Box<dyn Future<Output = Result<(), AppError>> + Send + '_>>
         });
 
-        let wrapped = BeforeHandlerMiddleware::wrap(&middleware, handler, "test-handler".to_string());
+        let wrapped =
+            BeforeHandlerMiddleware::wrap(&middleware, handler, "test-handler".to_string());
 
         // First two calls should execute and fail
         for _ in 0..2 {
-            let mut context = BeforeEventContext::new_create("test".to_string(), serde_json::json!({}));
+            let mut context =
+                BeforeEventContext::new_create("test".to_string(), serde_json::json!({}));
             let result = wrapped(&mut context).await;
             assert!(result.is_err());
         }
@@ -583,8 +611,11 @@ mod tests {
     #[tokio::test]
     async fn test_composite_middleware() {
         let middleware = CompositeBeforeMiddleware::new()
-            .add(Box::new(TimeoutMiddleware::new(Duration::from_millis(500))))
-            .add(Box::new(RetryMiddleware::linear_backoff(1, Duration::from_millis(10))));
+            .with_middleware(Box::new(TimeoutMiddleware::new(Duration::from_millis(500))))
+            .with_middleware(Box::new(RetryMiddleware::linear_backoff(
+                1,
+                Duration::from_millis(10),
+            )));
 
         let call_count = Arc::new(AtomicU32::new(0));
         let call_count_clone = call_count.clone();
@@ -601,11 +632,12 @@ mod tests {
             })
         });
 
-        let wrapped = BeforeHandlerMiddleware::wrap(&middleware, handler, "test-handler".to_string());
+        let wrapped =
+            BeforeHandlerMiddleware::wrap(&middleware, handler, "test-handler".to_string());
         let mut context = BeforeEventContext::new_create("test".to_string(), serde_json::json!({}));
 
         let result = wrapped(&mut context).await;
         assert!(result.is_ok());
         assert_eq!(call_count.load(Ordering::SeqCst), 2); // Original + 1 retry
     }
-} 
+}

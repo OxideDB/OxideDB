@@ -127,7 +127,7 @@ impl Default for VfsNamespaceConfig {
             namespace: String::new(),
             quota_bytes: Some(1024 * 1024 * 1024), // 1GB default
             enable_compression: true,
-            allowed_mime_types: None, // Allow all by default
+            allowed_mime_types: None,               // Allow all by default
             max_file_size: Some(100 * 1024 * 1024), // 100MB default
             enable_deduplication: true,
             backup_config: None,
@@ -284,7 +284,8 @@ pub trait VirtualFileSystem: Send + Sync {
     async fn restore_backup(&self, namespace: &VfsNamespace, backup_id: &str) -> VfsResult<()>;
 
     /// Get namespace configuration
-    async fn get_namespace_config(&self, namespace: &VfsNamespace) -> VfsResult<VfsNamespaceConfig>;
+    async fn get_namespace_config(&self, namespace: &VfsNamespace)
+        -> VfsResult<VfsNamespaceConfig>;
 
     /// Update namespace configuration
     async fn update_namespace_config(&self, config: VfsNamespaceConfig) -> VfsResult<()>;
@@ -372,7 +373,10 @@ impl VirtualFileSystem for NoOpVfs {
         })
     }
 
-    async fn get_namespace_config(&self, _namespace: &VfsNamespace) -> VfsResult<VfsNamespaceConfig> {
+    async fn get_namespace_config(
+        &self,
+        _namespace: &VfsNamespace,
+    ) -> VfsResult<VfsNamespaceConfig> {
         Err(VfsError::IoError {
             message: "VFS not enabled".to_string(),
         })
@@ -383,4 +387,4 @@ impl VirtualFileSystem for NoOpVfs {
             message: "VFS not enabled".to_string(),
         })
     }
-} 
+}

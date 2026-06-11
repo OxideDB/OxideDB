@@ -177,7 +177,6 @@ pub enum CrudOperationType {
 /// These are implemented by the host and made available to the plugin runtime
 pub mod host_functions {
 
-
     /// Function signature for getting the current event payload
     /// Returns JSON-serialized EventPayload
     pub const GET_EVENT_PAYLOAD: &str = "get_event_payload";
@@ -304,7 +303,7 @@ pub mod plugin_exports {
 }
 
 /// Trait that defines the plugin runtime interface
-/// 
+///
 /// This abstraction allows for different plugin runtime implementations
 /// (e.g., Wasmtime, WASI, or other WebAssembly runtimes) to be used
 /// interchangeably within the OxideDB ecosystem.
@@ -337,7 +336,7 @@ pub trait PluginRuntime: Send + Sync {
 }
 
 /// Factory trait for creating plugin runtime instances
-/// 
+///
 /// This allows for runtime-agnostic plugin runtime creation,
 /// enabling different implementations to be selected at runtime
 /// based on configuration or other criteria.

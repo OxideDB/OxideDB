@@ -3,16 +3,17 @@
 //! This module provides comprehensive backup and restore functionality for VFS namespaces
 //! with support for full/incremental backups, compression, and verification.
 
-use oxide_core::{VfsResult, VfsError, VfsNamespace};
-use std::path::{Path, PathBuf};
-use tokio::fs;
-use tar::{Builder, Archive};
-use flate2::{write::GzEncoder, read::GzDecoder, Compression};
-use std::io::{Write, Read};
 use chrono::{DateTime, Utc};
-use serde::{Serialize, Deserialize};
+use flate2::{read::GzDecoder, write::GzEncoder, Compression};
+use oxide_core::{VfsError, VfsNamespace, VfsResult};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use tracing::{instrument, error, info, debug};
+use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
+use tar::{Archive, Builder};
+use tokio::fs;
+use tracing::{debug, error, info, instrument};
 
 /// Backup metadata
 #[derive(Debug, Serialize, Deserialize)]
@@ -82,13 +83,17 @@ impl BackupService {
         let backup_path = self.backup_directory.join(&backup_id);
 
         // Create backup directory
-        fs::create_dir_all(&backup_path).await.map_err(|e| VfsError::IoError {
-            message: format!("Failed to create backup directory: {}", e),
-        })?;
+        fs::create_dir_all(&backup_path)
+            .await
+            .map_err(|e| VfsError::IoError {
+                message: format!("Failed to create backup directory: {}", e),
+            })?;
 
         // Create compressed tar archive
         let archive_path = backup_path.join("data.tar.gz");
-        let metadata = self.create_compressed_archive(namespace_path, &archive_path).await?;
+        let metadata = self
+            .create_compressed_archive(namespace_path, &archive_path)
+            .await?;
 
         // Create backup metadata
         let backup_metadata = BackupMetadata {
@@ -105,9 +110,13 @@ impl BackupService {
         };
 
         // Save metadata
-        self.save_backup_metadata(&backup_path, &backup_metadata).await?;
+        self.save_backup_metadata(&backup_path, &backup_metadata)
+            .await?;
 
-        info!("Created full backup: {} for namespace: {}", backup_id, namespace);
+        info!(
+            "Created full backup: {} for namespace: {}",
+            backup_id, namespace
+        );
         Ok(backup_id)
     }
 
@@ -127,17 +136,17 @@ impl BackupService {
         let since_timestamp = parent_metadata.created_at;
 
         // Create backup directory
-        fs::create_dir_all(&backup_path).await.map_err(|e| VfsError::IoError {
-            message: format!("Failed to create backup directory: {}", e),
-        })?;
+        fs::create_dir_all(&backup_path)
+            .await
+            .map_err(|e| VfsError::IoError {
+                message: format!("Failed to create backup directory: {}", e),
+            })?;
 
         // Create incremental archive (files modified since parent backup)
         let archive_path = backup_path.join("data.tar.gz");
-        let metadata = self.create_incremental_archive(
-            namespace_path, 
-            &archive_path, 
-            since_timestamp
-        ).await?;
+        let metadata = self
+            .create_incremental_archive(namespace_path, &archive_path, since_timestamp)
+            .await?;
 
         // Create backup metadata
         let backup_metadata = BackupMetadata {
@@ -154,19 +163,19 @@ impl BackupService {
         };
 
         // Save metadata
-        self.save_backup_metadata(&backup_path, &backup_metadata).await?;
+        self.save_backup_metadata(&backup_path, &backup_metadata)
+            .await?;
 
-        info!("Created incremental backup: {} for namespace: {}", backup_id, namespace);
+        info!(
+            "Created incremental backup: {} for namespace: {}",
+            backup_id, namespace
+        );
         Ok(backup_id)
     }
 
     /// Restore a backup to a namespace
     #[instrument(skip(self))]
-    pub async fn restore_backup(
-        &self,
-        backup_id: &str,
-        restore_path: &Path,
-    ) -> VfsResult<()> {
+    pub async fn restore_backup(&self, backup_id: &str, restore_path: &Path) -> VfsResult<()> {
         let backup_metadata = self.load_backup_metadata(backup_id).await?;
 
         match backup_metadata.backup_type {
@@ -175,7 +184,8 @@ impl BackupService {
             }
             BackupType::Incremental => {
                 // Implement incremental restore with proper chain handling
-                self.restore_incremental_chain(backup_id, restore_path).await?;
+                self.restore_incremental_chain(backup_id, restore_path)
+                    .await?;
             }
         }
 
@@ -202,8 +212,10 @@ impl BackupService {
         if checksum_valid {
             debug!("Backup {} verification successful", backup_id);
         } else {
-            error!("Backup {} checksum mismatch: expected {}, got {}", 
-                   backup_id, backup_metadata.checksum, actual_checksum);
+            error!(
+                "Backup {} checksum mismatch: expected {}, got {}",
+                backup_id, backup_metadata.checksum, actual_checksum
+            );
         }
 
         Ok(checksum_valid)
@@ -212,12 +224,20 @@ impl BackupService {
     /// List all backups for a namespace
     pub async fn list_backups(&self, namespace: &VfsNamespace) -> VfsResult<Vec<BackupMetadata>> {
         let mut backups = Vec::new();
-        let mut entries = fs::read_dir(&self.backup_directory).await.map_err(|e| VfsError::IoError {
-            message: format!("Failed to read backup directory: {}", e),
-        })?;
+        let mut entries =
+            fs::read_dir(&self.backup_directory)
+                .await
+                .map_err(|e| VfsError::IoError {
+                    message: format!("Failed to read backup directory: {}", e),
+                })?;
 
         while let Ok(Some(entry)) = entries.next_entry().await {
-            if entry.file_type().await.map(|ft| ft.is_dir()).unwrap_or(false) {
+            if entry
+                .file_type()
+                .await
+                .map(|ft| ft.is_dir())
+                .unwrap_or(false)
+            {
                 let backup_name = entry.file_name().to_string_lossy().to_string();
                 if backup_name.starts_with(namespace) {
                     if let Ok(metadata) = self.load_backup_metadata(&backup_name).await {
@@ -228,7 +248,7 @@ impl BackupService {
         }
 
         // Sort by creation time, newest first
-        backups.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        backups.sort_by_key(|backup| std::cmp::Reverse(backup.created_at));
         Ok(backups)
     }
 
@@ -236,11 +256,13 @@ impl BackupService {
     #[instrument(skip(self))]
     pub async fn delete_backup(&self, backup_id: &str) -> VfsResult<()> {
         let backup_path = self.backup_directory.join(backup_id);
-        
+
         if backup_path.exists() {
-            fs::remove_dir_all(&backup_path).await.map_err(|e| VfsError::IoError {
-                message: format!("Failed to delete backup: {}", e),
-            })?;
+            fs::remove_dir_all(&backup_path)
+                .await
+                .map_err(|e| VfsError::IoError {
+                    message: format!("Failed to delete backup: {}", e),
+                })?;
         }
 
         info!("Deleted backup: {}", backup_id);
@@ -258,36 +280,44 @@ impl BackupService {
 
         // Create uncompressed tar first
         {
-            let tar_file = std::fs::File::create(&temp_tar_path).map_err(|e| VfsError::IoError {
-                message: format!("Failed to create tar file: {}", e),
-            })?;
-            
+            let tar_file =
+                std::fs::File::create(&temp_tar_path).map_err(|e| VfsError::IoError {
+                    message: format!("Failed to create tar file: {}", e),
+                })?;
+
             let mut tar_builder = Builder::new(tar_file);
-            self.add_directory_to_archive(&mut tar_builder, source_path, "", &mut file_count).await?;
+            self.add_directory_to_archive(&mut tar_builder, source_path, "", &mut file_count)
+                .await?;
             tar_builder.finish().map_err(|e| VfsError::IoError {
                 message: format!("Failed to finalize tar: {}", e),
             })?;
         }
 
         // Compress the tar file
-        let tar_data = fs::read(&temp_tar_path).await.map_err(|e| VfsError::IoError {
-            message: format!("Failed to read tar file: {}", e),
-        })?;
+        let tar_data = fs::read(&temp_tar_path)
+            .await
+            .map_err(|e| VfsError::IoError {
+                message: format!("Failed to read tar file: {}", e),
+            })?;
 
         let compressed_data = {
             let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
-            encoder.write_all(&tar_data).map_err(|e| VfsError::CompressionError {
-                message: format!("Failed to compress: {}", e),
-            })?;
+            encoder
+                .write_all(&tar_data)
+                .map_err(|e| VfsError::CompressionError {
+                    message: format!("Failed to compress: {}", e),
+                })?;
             encoder.finish().map_err(|e| VfsError::CompressionError {
                 message: format!("Failed to finish compression: {}", e),
             })?
         };
 
         // Write compressed data
-        fs::write(archive_path, &compressed_data).await.map_err(|e| VfsError::IoError {
-            message: format!("Failed to write compressed archive: {}", e),
-        })?;
+        fs::write(archive_path, &compressed_data)
+            .await
+            .map_err(|e| VfsError::IoError {
+                message: format!("Failed to write compressed archive: {}", e),
+            })?;
 
         // Clean up temporary file
         let _ = fs::remove_file(&temp_tar_path).await;
@@ -310,35 +340,49 @@ impl BackupService {
 
         // Create uncompressed tar with modified files only
         {
-            let tar_file = std::fs::File::create(&temp_tar_path).map_err(|e| VfsError::IoError {
-                message: format!("Failed to create tar file: {}", e),
-            })?;
-            
+            let tar_file =
+                std::fs::File::create(&temp_tar_path).map_err(|e| VfsError::IoError {
+                    message: format!("Failed to create tar file: {}", e),
+                })?;
+
             let mut tar_builder = Builder::new(tar_file);
-            self.add_modified_files_to_archive(&mut tar_builder, source_path, "", since, &mut file_count).await?;
+            self.add_modified_files_to_archive(
+                &mut tar_builder,
+                source_path,
+                "",
+                since,
+                &mut file_count,
+            )
+            .await?;
             tar_builder.finish().map_err(|e| VfsError::IoError {
                 message: format!("Failed to finalize tar: {}", e),
             })?;
         }
 
         // Compress and finalize same as full backup
-        let tar_data = fs::read(&temp_tar_path).await.map_err(|e| VfsError::IoError {
-            message: format!("Failed to read tar file: {}", e),
-        })?;
+        let tar_data = fs::read(&temp_tar_path)
+            .await
+            .map_err(|e| VfsError::IoError {
+                message: format!("Failed to read tar file: {}", e),
+            })?;
 
         let compressed_data = {
             let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
-            encoder.write_all(&tar_data).map_err(|e| VfsError::CompressionError {
-                message: format!("Failed to compress: {}", e),
-            })?;
+            encoder
+                .write_all(&tar_data)
+                .map_err(|e| VfsError::CompressionError {
+                    message: format!("Failed to compress: {}", e),
+                })?;
             encoder.finish().map_err(|e| VfsError::CompressionError {
                 message: format!("Failed to finish compression: {}", e),
             })?
         };
 
-        fs::write(archive_path, &compressed_data).await.map_err(|e| VfsError::IoError {
-            message: format!("Failed to write compressed archive: {}", e),
-        })?;
+        fs::write(archive_path, &compressed_data)
+            .await
+            .map_err(|e| VfsError::IoError {
+                message: format!("Failed to write compressed archive: {}", e),
+            })?;
 
         let _ = fs::remove_file(&temp_tar_path).await;
         let checksum = self.calculate_file_checksum(archive_path).await?;
@@ -356,11 +400,13 @@ impl BackupService {
     ) -> VfsResult<()> {
         // Use a queue to avoid async recursion
         let mut queue = vec![(path.to_path_buf(), prefix.to_string())];
-        
+
         while let Some((current_path, current_prefix)) = queue.pop() {
-            let mut entries = fs::read_dir(&current_path).await.map_err(|e| VfsError::IoError {
-                message: format!("Failed to read directory: {}", e),
-            })?;
+            let mut entries = fs::read_dir(&current_path)
+                .await
+                .map_err(|e| VfsError::IoError {
+                    message: format!("Failed to read directory: {}", e),
+                })?;
 
             while let Ok(Some(entry)) = entries.next_entry().await {
                 let entry_path = entry.path();
@@ -374,9 +420,11 @@ impl BackupService {
                 if entry_path.is_dir() {
                     queue.push((entry_path, archive_path));
                 } else {
-                    builder.append_path_with_name(&entry_path, &archive_path).map_err(|e| VfsError::IoError {
-                        message: format!("Failed to add file to archive: {}", e),
-                    })?;
+                    builder
+                        .append_path_with_name(&entry_path, &archive_path)
+                        .map_err(|e| VfsError::IoError {
+                            message: format!("Failed to add file to archive: {}", e),
+                        })?;
                     *file_count += 1;
                 }
             }
@@ -396,11 +444,13 @@ impl BackupService {
     ) -> VfsResult<()> {
         // Use a queue to avoid async recursion
         let mut queue = vec![(path.to_path_buf(), prefix.to_string())];
-        
+
         while let Some((current_path, current_prefix)) = queue.pop() {
-            let mut entries = fs::read_dir(&current_path).await.map_err(|e| VfsError::IoError {
-                message: format!("Failed to read directory: {}", e),
-            })?;
+            let mut entries = fs::read_dir(&current_path)
+                .await
+                .map_err(|e| VfsError::IoError {
+                    message: format!("Failed to read directory: {}", e),
+                })?;
 
             while let Ok(Some(entry)) = entries.next_entry().await {
                 let entry_path = entry.path();
@@ -419,9 +469,11 @@ impl BackupService {
                         if let Ok(modified) = metadata.modified() {
                             let modified_dt = DateTime::<Utc>::from(modified);
                             if modified_dt > since {
-                                builder.append_path_with_name(&entry_path, &archive_path).map_err(|e| VfsError::IoError {
-                                    message: format!("Failed to add file to archive: {}", e),
-                                })?;
+                                builder
+                                    .append_path_with_name(&entry_path, &archive_path)
+                                    .map_err(|e| VfsError::IoError {
+                                        message: format!("Failed to add file to archive: {}", e),
+                                    })?;
                                 *file_count += 1;
                             }
                         }
@@ -442,7 +494,11 @@ impl BackupService {
     }
 
     /// Restore incremental backup
-    async fn restore_incremental_backup(&self, backup_id: &str, restore_path: &Path) -> VfsResult<()> {
+    async fn restore_incremental_backup(
+        &self,
+        backup_id: &str,
+        restore_path: &Path,
+    ) -> VfsResult<()> {
         let backup_path = self.backup_directory.join(backup_id);
         let archive_path = backup_path.join("data.tar.gz");
 
@@ -450,27 +506,36 @@ impl BackupService {
     }
 
     /// Restore incremental backup chain with proper dependency resolution
-    async fn restore_incremental_chain(&self, backup_id: &str, restore_path: &Path) -> VfsResult<()> {
+    async fn restore_incremental_chain(
+        &self,
+        backup_id: &str,
+        restore_path: &Path,
+    ) -> VfsResult<()> {
         // Build the chain of backups from root to target
         let backup_chain = self.build_backup_chain(backup_id).await?;
-        
+
         // Restore backups in order from oldest to newest
         for chain_backup_id in backup_chain {
             let backup_metadata = self.load_backup_metadata(&chain_backup_id).await?;
-            
+
             match backup_metadata.backup_type {
                 BackupType::Full => {
                     info!("Restoring full backup: {}", chain_backup_id);
-                    self.restore_full_backup(&chain_backup_id, restore_path).await?;
+                    self.restore_full_backup(&chain_backup_id, restore_path)
+                        .await?;
                 }
                 BackupType::Incremental => {
                     info!("Restoring incremental backup: {}", chain_backup_id);
-                    self.restore_incremental_backup(&chain_backup_id, restore_path).await?;
+                    self.restore_incremental_backup(&chain_backup_id, restore_path)
+                        .await?;
                 }
             }
         }
-        
-        info!("Successfully restored incremental backup chain ending with: {}", backup_id);
+
+        info!(
+            "Successfully restored incremental backup chain ending with: {}",
+            backup_id
+        );
         Ok(())
     }
 
@@ -478,12 +543,12 @@ impl BackupService {
     async fn build_backup_chain(&self, target_backup_id: &str) -> VfsResult<Vec<String>> {
         let mut chain = Vec::new();
         let mut current_backup_id = target_backup_id.to_string();
-        
+
         // Walk backwards from target to root to build the chain
         loop {
             let metadata = self.load_backup_metadata(&current_backup_id).await?;
             chain.push(current_backup_id.clone());
-            
+
             match metadata.backup_type {
                 BackupType::Full => {
                     // Reached the root full backup
@@ -494,12 +559,15 @@ impl BackupService {
                         current_backup_id = parent_id;
                     } else {
                         return Err(VfsError::IoError {
-                            message: format!("Incremental backup {} has no parent backup", current_backup_id),
+                            message: format!(
+                                "Incremental backup {} has no parent backup",
+                                current_backup_id
+                            ),
                         });
                     }
                 }
             }
-            
+
             // Safety check to prevent infinite loops
             if chain.len() > 100 {
                 return Err(VfsError::IoError {
@@ -507,27 +575,35 @@ impl BackupService {
                 });
             }
         }
-        
+
         // Reverse the chain so we restore from oldest to newest
         chain.reverse();
-        
-        debug!("Built backup chain with {} backups: {:?}", chain.len(), chain);
+
+        debug!(
+            "Built backup chain with {} backups: {:?}",
+            chain.len(),
+            chain
+        );
         Ok(chain)
     }
 
     /// Extract compressed archive to destination
     async fn extract_archive(&self, archive_path: &Path, destination: &Path) -> VfsResult<()> {
         // Read compressed data
-        let compressed_data = fs::read(archive_path).await.map_err(|e| VfsError::IoError {
-            message: format!("Failed to read archive: {}", e),
-        })?;
+        let compressed_data = fs::read(archive_path)
+            .await
+            .map_err(|e| VfsError::IoError {
+                message: format!("Failed to read archive: {}", e),
+            })?;
 
         // Decompress
         let mut decoder = GzDecoder::new(&compressed_data[..]);
         let mut tar_data = Vec::new();
-        decoder.read_to_end(&mut tar_data).map_err(|e| VfsError::CompressionError {
-            message: format!("Failed to decompress: {}", e),
-        })?;
+        decoder
+            .read_to_end(&mut tar_data)
+            .map_err(|e| VfsError::CompressionError {
+                message: format!("Failed to decompress: {}", e),
+            })?;
 
         // Extract tar
         let mut archive = Archive::new(&tar_data[..]);
@@ -539,15 +615,22 @@ impl BackupService {
     }
 
     /// Save backup metadata
-    async fn save_backup_metadata(&self, backup_path: &Path, metadata: &BackupMetadata) -> VfsResult<()> {
+    async fn save_backup_metadata(
+        &self,
+        backup_path: &Path,
+        metadata: &BackupMetadata,
+    ) -> VfsResult<()> {
         let metadata_path = backup_path.join("metadata.json");
-        let metadata_json = serde_json::to_vec_pretty(metadata).map_err(|e| VfsError::EncodingError {
-            message: format!("Failed to serialize metadata: {}", e),
-        })?;
+        let metadata_json =
+            serde_json::to_vec_pretty(metadata).map_err(|e| VfsError::EncodingError {
+                message: format!("Failed to serialize metadata: {}", e),
+            })?;
 
-        fs::write(&metadata_path, &metadata_json).await.map_err(|e| VfsError::IoError {
-            message: format!("Failed to write metadata: {}", e),
-        })
+        fs::write(&metadata_path, &metadata_json)
+            .await
+            .map_err(|e| VfsError::IoError {
+                message: format!("Failed to write metadata: {}", e),
+            })
     }
 
     /// Load backup metadata
@@ -555,9 +638,11 @@ impl BackupService {
         let backup_path = self.backup_directory.join(backup_id);
         let metadata_path = backup_path.join("metadata.json");
 
-        let metadata_data = fs::read(&metadata_path).await.map_err(|e| VfsError::IoError {
-            message: format!("Failed to read metadata: {}", e),
-        })?;
+        let metadata_data = fs::read(&metadata_path)
+            .await
+            .map_err(|e| VfsError::IoError {
+                message: format!("Failed to read metadata: {}", e),
+            })?;
 
         serde_json::from_slice(&metadata_data).map_err(|e| VfsError::EncodingError {
             message: format!("Failed to deserialize metadata: {}", e),
@@ -575,47 +660,44 @@ impl BackupService {
 }
 
 // Global backup service instance
-static mut BACKUP_SERVICE: Option<BackupService> = None;
-static BACKUP_SERVICE_INIT: std::sync::Once = std::sync::Once::new();
+static BACKUP_SERVICE: OnceLock<BackupService> = OnceLock::new();
 
 /// Initialize the global backup service
 pub fn initialize_backup_service(backup_directory: PathBuf) {
-    BACKUP_SERVICE_INIT.call_once(|| {
-        unsafe {
-            BACKUP_SERVICE = Some(BackupService::new(backup_directory));
-        }
-    });
+    let _ = BACKUP_SERVICE.set(BackupService::new(backup_directory));
 }
 
 /// Get the global backup service
 fn get_backup_service() -> &'static BackupService {
-    unsafe {
-        BACKUP_SERVICE.as_ref().expect("Backup service not initialized")
-    }
+    BACKUP_SERVICE
+        .get()
+        .expect("Backup service not initialized")
 }
 
 /// Create a backup of a VFS namespace
 pub async fn create_backup(namespace: &VfsNamespace) -> VfsResult<String> {
     let service = get_backup_service();
-    
+
     // Determine the namespace path based on VFS storage structure
-    let namespace_path = service.backup_directory.parent()
+    let namespace_path = service
+        .backup_directory
+        .parent()
         .ok_or_else(|| VfsError::IoError {
             message: "Invalid backup directory structure".to_string(),
         })?
         .join("vfs")
         .join("namespaces")
         .join(namespace);
-    
+
     if !namespace_path.exists() {
         return Err(VfsError::AccessDenied {
             path: format!("Namespace '{}' does not exist", namespace),
         });
     }
-    
+
     // Check if there are existing backups to determine if this should be incremental
     let existing_backups = service.list_backups(namespace).await?;
-    
+
     if existing_backups.is_empty() {
         // Create full backup for first backup
         info!("Creating first full backup for namespace: {}", namespace);
@@ -623,14 +705,16 @@ pub async fn create_backup(namespace: &VfsNamespace) -> VfsResult<String> {
     } else {
         // Find the most recent backup
         let latest_backup = existing_backups.first().unwrap(); // Already sorted by creation time
-        
+
         // Check if we should create incremental or full backup
         // Create incremental if the latest backup is less than 7 days old
         let backup_age = Utc::now().signed_duration_since(latest_backup.created_at);
-        
+
         if backup_age.num_days() < 7 && latest_backup.backup_type == BackupType::Full {
             info!("Creating incremental backup for namespace: {}", namespace);
-            service.create_incremental_backup(namespace, &namespace_path, &latest_backup.backup_id).await
+            service
+                .create_incremental_backup(namespace, &namespace_path, &latest_backup.backup_id)
+                .await
         } else {
             info!("Creating new full backup for namespace: {}", namespace);
             service.create_full_backup(namespace, &namespace_path).await
@@ -641,41 +725,53 @@ pub async fn create_backup(namespace: &VfsNamespace) -> VfsResult<String> {
 /// Restore a VFS namespace from backup
 pub async fn restore_backup(namespace: &VfsNamespace, backup_id: &str) -> VfsResult<()> {
     let service = get_backup_service();
-    
+
     // Determine the restore path based on VFS storage structure
-    let restore_path = service.backup_directory.parent()
+    let restore_path = service
+        .backup_directory
+        .parent()
         .ok_or_else(|| VfsError::IoError {
             message: "Invalid backup directory structure".to_string(),
         })?
         .join("vfs")
         .join("namespaces")
         .join(namespace);
-    
+
     // Verify backup exists
     let backup_metadata = service.load_backup_metadata(backup_id).await?;
     if backup_metadata.namespace != *namespace {
         return Err(VfsError::AccessDenied {
-            path: format!("Backup {} does not belong to namespace {}", backup_id, namespace),
+            path: format!(
+                "Backup {} does not belong to namespace {}",
+                backup_id, namespace
+            ),
         });
     }
-    
+
     // Create parent directories if they don't exist
     if let Some(parent) = restore_path.parent() {
-        tokio::fs::create_dir_all(parent).await.map_err(|e| VfsError::IoError {
-            message: format!("Failed to create restore directory: {}", e),
-        })?;
+        tokio::fs::create_dir_all(parent)
+            .await
+            .map_err(|e| VfsError::IoError {
+                message: format!("Failed to create restore directory: {}", e),
+            })?;
     }
-    
+
     // Clear existing namespace data before restore
     if restore_path.exists() {
-        tokio::fs::remove_dir_all(&restore_path).await.map_err(|e| VfsError::IoError {
-            message: format!("Failed to clear existing data: {}", e),
-        })?;
+        tokio::fs::remove_dir_all(&restore_path)
+            .await
+            .map_err(|e| VfsError::IoError {
+                message: format!("Failed to clear existing data: {}", e),
+            })?;
     }
-    
+
     // Perform the restore
     service.restore_backup(backup_id, &restore_path).await?;
-    
-    info!("Successfully restored backup {} for namespace {}", backup_id, namespace);
+
+    info!(
+        "Successfully restored backup {} for namespace {}",
+        backup_id, namespace
+    );
     Ok(())
-} 
+}

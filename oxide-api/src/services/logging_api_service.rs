@@ -3,8 +3,8 @@
 //! This service provides a bridge between the oxide-api HTTP layer
 //! and the oxide-logging API service.
 
-use oxide_logging::api::LogApiService;
 use crate::handlers::logs::LoggingHealthResponse;
+use oxide_logging::api::LogApiService;
 use oxide_logging::error::LoggingResult;
 
 /// Wrapper service for logging API functionality
@@ -59,4 +59,4 @@ impl std::ops::Deref for LoggingApiService {
     fn deref(&self) -> &Self::Target {
         &self.inner
     }
-} 
+}

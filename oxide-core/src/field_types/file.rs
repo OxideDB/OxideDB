@@ -51,7 +51,7 @@ pub struct FileReference {
 }
 
 /// File field type implementation
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct FileFieldType {
     config: FileFieldConfig,
 }
@@ -60,13 +60,6 @@ impl FileFieldType {
     /// Create a new file field type with configuration
     pub fn new(config: FileFieldConfig) -> Self {
         Self { config }
-    }
-
-    /// Create a file field type with default configuration
-    pub fn default() -> Self {
-        Self {
-            config: FileFieldConfig::default(),
-        }
     }
 
     /// Get the field configuration
@@ -78,9 +71,10 @@ impl FileFieldType {
     fn validate_file_reference(&self, file_ref: &FileReference) -> Result<(), String> {
         // Validate MIME type if restrictions are set
         if let Some(allowed_types) = &self.config.allowed_mime_types {
-            if !allowed_types.iter().any(|allowed| {
-                file_ref.mime_type.starts_with(allowed) || allowed == "*"
-            }) {
+            if !allowed_types
+                .iter()
+                .any(|allowed| file_ref.mime_type.starts_with(allowed) || allowed == "*")
+            {
                 return Err(format!(
                     "MIME type '{}' is not allowed. Allowed types: {:?}",
                     file_ref.mime_type, allowed_types
@@ -134,8 +128,8 @@ impl FieldTypeDefinition for FileFieldType {
                     ));
                 }
 
-                let file_ref: FileReference = serde_json::from_value(value.clone())
-                    .map_err(|e| {
+                let file_ref: FileReference =
+                    serde_json::from_value(value.clone()).map_err(|e| {
                         format!(
                             "Field '{}' contains invalid file reference: {}",
                             field_name, e
@@ -216,8 +210,10 @@ mod tests {
 
     #[test]
     fn test_multiple_files_validation() {
-        let mut config = FileFieldConfig::default();
-        config.multiple = true;
+        let config = FileFieldConfig {
+            multiple: true,
+            ..Default::default()
+        };
         let field_type = FileFieldType::new(config);
 
         let file_ref = create_test_file_ref();
@@ -228,8 +224,10 @@ mod tests {
 
     #[test]
     fn test_mime_type_validation() {
-        let mut config = FileFieldConfig::default();
-        config.allowed_mime_types = Some(vec!["image/".to_string()]);
+        let config = FileFieldConfig {
+            allowed_mime_types: Some(vec!["image/".to_string()]),
+            ..Default::default()
+        };
         let field_type = FileFieldType::new(config);
 
         let file_ref = create_test_file_ref();
@@ -247,8 +245,10 @@ mod tests {
 
     #[test]
     fn test_file_size_validation() {
-        let mut config = FileFieldConfig::default();
-        config.max_file_size = Some(512); // Very small limit
+        let config = FileFieldConfig {
+            max_file_size: Some(512), // Very small limit
+            ..Default::default()
+        };
         let field_type = FileFieldType::new(config);
 
         let file_ref = create_test_file_ref(); // Size is 1024, exceeds limit
@@ -259,16 +259,21 @@ mod tests {
 
     #[test]
     fn test_required_field_validation() {
-        let mut config = FileFieldConfig::default();
-        config.required = true;
+        let config = FileFieldConfig {
+            required: true,
+            ..Default::default()
+        };
         let field_type = FileFieldType::new(config);
 
         // Test null value with required field
         assert!(field_type.validate("test_field", &JsonValue::Null).is_err());
 
         // Test empty array with required multiple files
-        let mut config = FileFieldConfig::default();
-        config.multiple = true;
+        let config = FileFieldConfig {
+            multiple: true,
+            required: true,
+            ..Default::default()
+        };
         let field_type = FileFieldType::new(config);
 
         assert!(field_type.validate("test_field", &json!([])).is_err());
@@ -279,7 +284,9 @@ mod tests {
         let field_type = FileFieldType::default();
 
         // Test invalid JSON structure
-        assert!(field_type.validate("test_field", &json!("invalid")).is_err());
+        assert!(field_type
+            .validate("test_field", &json!("invalid"))
+            .is_err());
         assert!(field_type.validate("test_field", &json!(123)).is_err());
     }
-} 
+}

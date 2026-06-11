@@ -27,24 +27,24 @@
 //!                          -> Metrics Collection
 //! ```
 
+pub mod api;
+pub mod audit;
+pub mod bridge;
 pub mod error;
 pub mod models;
+pub mod retention;
 pub mod service;
 pub mod storage;
-pub mod audit;
-pub mod retention;
-pub mod api;
-pub mod bridge;
 
 // Re-export main types for public API
+pub use audit::{AuditTrail, IntegrityCheck, SecurityAuditService};
+pub use bridge::LogServiceBridge;
 pub use error::{LoggingError, LoggingResult};
 pub use models::{
-    LogEntry, LogLevel, LogContext, SecurityAuditEvent, AuditEventType,
-    LogQuery, LogFilter, LogMetrics, CorrelationId
+    AuditEventType, CorrelationId, LogContext, LogEntry, LogFilter, LogLevel, LogMetrics, LogQuery,
+    SecurityAuditEvent,
 };
-pub use service::{LogService, LogServiceConfig, LogServiceBuilder};
-pub use audit::{SecurityAuditService, AuditTrail, IntegrityCheck};
-pub use bridge::LogServiceBridge;
+pub use service::{LogService, LogServiceBuilder, LogServiceConfig};
 
 /// Version of the logging system for compatibility checks
 pub const LOGGING_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -56,4 +56,4 @@ pub const MAX_BATCH_SIZE: usize = 1000;
 pub const DEFAULT_CHANNEL_BUFFER: usize = 10000;
 
 /// Default retention period in days
-pub const DEFAULT_RETENTION_DAYS: u32 = 90; 
+pub const DEFAULT_RETENTION_DAYS: u32 = 90;

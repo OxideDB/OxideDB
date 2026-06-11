@@ -1,5 +1,5 @@
 //! Simple Plugin Example using OxideDB Plugin SDK
-//! 
+//!
 //! This example demonstrates how to create a simple plugin using the high-level SDK.
 //! Compare this to the raw WASM plugin implementation to see the difference in complexity.
 
@@ -23,14 +23,22 @@ impl PluginEventHandler for SimplePlugin {
 
         // Security check: block admin collections
         if event.collection.contains("admin") || event.collection.contains("system") {
-            log_warn!("Attempted access to restricted collection: {}", event.collection);
-            return Ok(PluginResponse::deny("Access denied to restricted collection"));
+            log_warn!(
+                "Attempted access to restricted collection: {}",
+                event.collection
+            );
+            return Ok(PluginResponse::deny(
+                "Access denied to restricted collection",
+            ));
         }
 
         // Validation: ensure required fields exist
         if let Some(obj) = data.as_object_mut() {
             // Add plugin metadata
-            obj.insert("plugin_processed_at".to_string(), json!("2024-01-01T00:00:00Z"));
+            obj.insert(
+                "plugin_processed_at".to_string(),
+                json!("2024-01-01T00:00:00Z"),
+            );
             obj.insert("plugin_name".to_string(), json!("simple-plugin"));
             obj.insert("plugin_version".to_string(), json!("1.0.0"));
 
@@ -39,7 +47,7 @@ impl PluginEventHandler for SimplePlugin {
                 if name.trim().is_empty() {
                     return Ok(PluginResponse::deny("Name cannot be empty"));
                 }
-                
+
                 // Capitalize the name
                 obj.insert("name".to_string(), json!(capitalize_name(name)));
             }
@@ -50,7 +58,10 @@ impl PluginEventHandler for SimplePlugin {
     }
 
     fn on_after_create(&mut self, event: &EventPayload) -> PluginResult<PluginResponse> {
-        log_info!("Record created successfully in collection: {}", event.collection);
+        log_info!(
+            "Record created successfully in collection: {}",
+            event.collection
+        );
 
         // Log the creation for audit purposes
         let audit_entry = json!({
@@ -77,14 +88,17 @@ impl PluginEventHandler for SimplePlugin {
 
         if let Some(obj) = data.as_object_mut() {
             // Update the last modified timestamp
-            obj.insert("plugin_updated_at".to_string(), json!("2024-01-01T00:00:00Z"));
+            obj.insert(
+                "plugin_updated_at".to_string(),
+                json!("2024-01-01T00:00:00Z"),
+            );
 
             // Validate name field if being updated
             if let Some(name) = obj.get("name").and_then(|v| v.as_str()) {
                 if name.trim().is_empty() {
                     return Ok(PluginResponse::deny("Name cannot be empty"));
                 }
-                
+
                 obj.insert("name".to_string(), json!(capitalize_name(name)));
             }
         }
@@ -97,7 +111,7 @@ impl PluginEventHandler for SimplePlugin {
 
         // Parse the data to check if it's a protected record
         let data: JsonValue = serde_json::from_str(&event.data)?;
-        
+
         if let Some(protected) = data.get("protected").and_then(|v| v.as_bool()) {
             if protected {
                 log_warn!("Attempted to delete protected record");
@@ -121,7 +135,9 @@ fn capitalize_name(name: &str) -> String {
             let mut chars = word.chars();
             match chars.next() {
                 None => String::new(),
-                Some(first) => first.to_uppercase().collect::<String>() + &chars.as_str().to_lowercase(),
+                Some(first) => {
+                    first.to_uppercase().collect::<String>() + &chars.as_str().to_lowercase()
+                }
             }
         })
         .collect::<Vec<_>>()
@@ -150,7 +166,7 @@ mod tests {
     #[test]
     fn test_validation_logic() {
         let mut plugin = SimplePlugin::default();
-        
+
         let event = EventPayload {
             event_type: "BeforeRecordCreate".to_string(),
             collection: "users".to_string(),
@@ -160,12 +176,11 @@ mod tests {
 
         let response = plugin.on_before_create(&event).unwrap();
         assert!(response.allow);
-        
+
         // Check that the response contains enhanced data
-        let enhanced_data: JsonValue = serde_json::from_str(
-            response.modified_data.as_ref().unwrap()
-        ).unwrap();
-        
+        let enhanced_data: JsonValue =
+            serde_json::from_str(response.modified_data.as_ref().unwrap()).unwrap();
+
         assert_eq!(enhanced_data["name"], "John Doe");
         assert_eq!(enhanced_data["plugin_name"], "simple-plugin");
     }
@@ -173,7 +188,7 @@ mod tests {
     #[test]
     fn test_empty_name_validation() {
         let mut plugin = SimplePlugin::default();
-        
+
         let event = EventPayload {
             event_type: "BeforeRecordCreate".to_string(),
             collection: "users".to_string(),
@@ -183,13 +198,16 @@ mod tests {
 
         let response = plugin.on_before_create(&event).unwrap();
         assert!(!response.allow);
-        assert!(response.error_message.unwrap().contains("Name cannot be empty"));
+        assert!(response
+            .error_message
+            .unwrap()
+            .contains("Name cannot be empty"));
     }
 
     #[test]
     fn test_admin_collection_blocked() {
         let mut plugin = SimplePlugin::default();
-        
+
         let event = EventPayload {
             event_type: "BeforeRecordCreate".to_string(),
             collection: "admin_users".to_string(),
@@ -205,7 +223,7 @@ mod tests {
     #[test]
     fn test_protected_record_deletion() {
         let mut plugin = SimplePlugin::default();
-        
+
         let event = EventPayload {
             event_type: "BeforeRecordDelete".to_string(),
             collection: "users".to_string(),
@@ -215,6 +233,9 @@ mod tests {
 
         let response = plugin.on_before_delete(&event).unwrap();
         assert!(!response.allow);
-        assert!(response.error_message.unwrap().contains("Cannot delete protected"));
+        assert!(response
+            .error_message
+            .unwrap()
+            .contains("Cannot delete protected"));
     }
-} 
+}

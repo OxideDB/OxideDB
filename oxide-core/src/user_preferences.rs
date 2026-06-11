@@ -4,9 +4,9 @@
 //! in a database-agnostic way.
 
 use crate::AppError;
+use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use async_trait::async_trait;
 
 /// User preference data structure
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -94,4 +94,4 @@ pub mod preference_keys {
     pub const DASHBOARD_LAYOUT: &str = "dashboard_layout";
     /// Collection view preferences
     pub const COLLECTION_VIEW: &str = "collection_view";
-} 
+}

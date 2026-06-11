@@ -9,10 +9,10 @@
 //! 1. Schema-aware mode: Automatically detects password fields from collection schemas
 //! 2. Configuration mode: Uses explicit field names from configuration
 
-use crate::{BeforeEventContext, AppError, AuthService, CollectionSchema};
+use crate::{AppError, AuthService, BeforeEventContext, CollectionSchema};
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
-use tracing::{info, warn, debug};
+use tracing::{debug, info, warn};
 
 /// Configuration for password hashing behavior
 #[derive(Debug, Clone)]
@@ -68,26 +68,43 @@ impl PasswordHashingHook {
     }
 
     /// Register a schema for a collection
-    pub fn register_schema(&self, collection: String, schema: CollectionSchema) -> Result<(), AppError> {
-        let mut schemas = self.schemas.write().map_err(|_| {
-            AppError::internal("Failed to acquire write lock for schemas")
-        })?;
-        
+    pub fn register_schema(
+        &self,
+        collection: String,
+        schema: CollectionSchema,
+    ) -> Result<(), AppError> {
+        let mut schemas = self
+            .schemas
+            .write()
+            .map_err(|_| AppError::internal("Failed to acquire write lock for schemas"))?;
+
         schemas.insert(collection.clone(), schema);
         debug!("Registered schema for collection: {}", collection);
         Ok(())
     }
 
     /// Hook that processes BeforeRecordCreate events to hash passwords
-    pub fn handle_before_record_create(&self, context: &mut BeforeEventContext) -> Result<(), AppError> {
-        debug!("Processing password hashing for create in collection: {}", context.collection);
+    pub fn handle_before_record_create(
+        &self,
+        context: &mut BeforeEventContext,
+    ) -> Result<(), AppError> {
+        debug!(
+            "Processing password hashing for create in collection: {}",
+            context.collection
+        );
         self.hash_passwords_in_data(context)?;
         Ok(())
     }
 
     /// Hook that processes BeforeRecordUpdate events to hash passwords
-    pub fn handle_before_record_update(&self, context: &mut BeforeEventContext) -> Result<(), AppError> {
-        debug!("Processing password hashing for update in collection: {}", context.collection);
+    pub fn handle_before_record_update(
+        &self,
+        context: &mut BeforeEventContext,
+    ) -> Result<(), AppError> {
+        debug!(
+            "Processing password hashing for update in collection: {}",
+            context.collection
+        );
         self.hash_passwords_in_data(context)?;
         Ok(())
     }
@@ -102,20 +119,28 @@ impl PasswordHashingHook {
     }
 
     /// Hash passwords using schema information (automatically detect password fields)
-    fn hash_passwords_schema_aware(&self, context: &mut BeforeEventContext) -> Result<(), AppError> {
-        let schemas = self.schemas.read().map_err(|_| {
-            AppError::internal("Failed to acquire read lock for schemas")
-        })?;
+    fn hash_passwords_schema_aware(
+        &self,
+        context: &mut BeforeEventContext,
+    ) -> Result<(), AppError> {
+        let schemas = self
+            .schemas
+            .read()
+            .map_err(|_| AppError::internal("Failed to acquire read lock for schemas"))?;
 
         if let Some(schema) = schemas.get(&context.collection) {
             // Find all password fields in the schema
-            let password_fields: Vec<_> = schema.fields
+            let password_fields: Vec<_> = schema
+                .fields
                 .iter()
                 .filter(|(_, field_def)| field_def.field_type.requires_hashing())
                 .collect();
 
             if password_fields.is_empty() {
-                debug!("No password fields found in schema for collection: {}", context.collection);
+                debug!(
+                    "No password fields found in schema for collection: {}",
+                    context.collection
+                );
                 return Ok(());
             }
 
@@ -142,26 +167,41 @@ impl PasswordHashingHook {
         if let Some(password_value) = context.data.get(&self.config.password_field) {
             if let Some(password_str) = password_value.as_str() {
                 if password_str.is_empty() {
-                    warn!("Empty password provided for {} collection", context.collection);
+                    warn!(
+                        "Empty password provided for {} collection",
+                        context.collection
+                    );
                     return Err(AppError::validation("password", "Password cannot be empty"));
                 }
 
-                info!("🔒 Hashing password field '{}' for {} collection", self.config.password_field, context.collection);
-                
+                info!(
+                    "🔒 Hashing password field '{}' for {} collection",
+                    self.config.password_field, context.collection
+                );
+
                 // Hash the password using the auth service
                 let password_hash = self.auth_service.hash_password(password_str)?;
-                
+
                 // Modify the data directly in the context
                 if let Some(data_obj) = context.data.as_object_mut() {
                     // Add the hashed password directly to the original field
-                    data_obj.insert(self.config.password_field.to_string(), serde_json::Value::String(password_hash));
-                    
+                    data_obj.insert(
+                        self.config.password_field.to_string(),
+                        serde_json::Value::String(password_hash),
+                    );
+
                     self.add_hashing_metadata(context, &self.config.password_field)?;
-                    
-                    info!("✅ Password hashed and replaced in {} collection", context.collection);
+
+                    info!(
+                        "✅ Password hashed and replaced in {} collection",
+                        context.collection
+                    );
                 } else {
                     warn!("⚠️ Data is not an object, cannot hash password");
-                    return Err(AppError::validation("data", "Expected object with password field"));
+                    return Err(AppError::validation(
+                        "data",
+                        "Expected object with password field",
+                    ));
                 }
             }
         }
@@ -171,34 +211,49 @@ impl PasswordHashingHook {
 
     /// Hash a single password field from schema
     fn hash_single_password_field(
-        &self, 
-        context: &mut BeforeEventContext, 
-        field_name: &str, 
-        _field_def: &crate::FieldDefinition
+        &self,
+        context: &mut BeforeEventContext,
+        field_name: &str,
+        _field_def: &crate::FieldDefinition,
     ) -> Result<(), AppError> {
         if let Some(password_value) = context.data.get(field_name) {
             if let Some(password_str) = password_value.as_str() {
                 if password_str.is_empty() {
-                    warn!("Empty password provided for field '{}' in {} collection", field_name, context.collection);
+                    warn!(
+                        "Empty password provided for field '{}' in {} collection",
+                        field_name, context.collection
+                    );
                     return Err(AppError::validation(field_name, "Password cannot be empty"));
                 }
 
-                info!("🔒 Hashing password field '{}' for {} collection", field_name, context.collection);
-                
+                info!(
+                    "🔒 Hashing password field '{}' for {} collection",
+                    field_name, context.collection
+                );
+
                 // Hash the password using the auth service
                 let password_hash = self.auth_service.hash_password(password_str)?;
-                
+
                 // Modify the data directly in the context
                 if let Some(data_obj) = context.data.as_object_mut() {
                     // Add the hashed password directly to the original field
-                    data_obj.insert(field_name.to_string(), serde_json::Value::String(password_hash));
-                    
+                    data_obj.insert(
+                        field_name.to_string(),
+                        serde_json::Value::String(password_hash),
+                    );
+
                     self.add_hashing_metadata(context, field_name)?;
-                    
-                    info!("✅ Password field '{}' hashed and replaced in {} collection", field_name, context.collection);
+
+                    info!(
+                        "✅ Password field '{}' hashed and replaced in {} collection",
+                        field_name, context.collection
+                    );
                 } else {
                     warn!("⚠️ Data is not an object, cannot hash password");
-                    return Err(AppError::validation("data", "Expected object with password field"));
+                    return Err(AppError::validation(
+                        "data",
+                        "Expected object with password field",
+                    ));
                 }
             }
         }
@@ -207,15 +262,26 @@ impl PasswordHashingHook {
     }
 
     /// Add metadata about the hashing operation
-    fn add_hashing_metadata(&self, context: &mut BeforeEventContext, field_name: &str) -> Result<(), AppError> {
+    fn add_hashing_metadata(
+        &self,
+        context: &mut BeforeEventContext,
+        field_name: &str,
+    ) -> Result<(), AppError> {
         if self.config.add_metadata {
             if let Some(metadata_obj) = context.metadata.as_object_mut() {
                 metadata_obj.insert("password_hashed".to_string(), serde_json::Value::Bool(true));
-                metadata_obj.insert("hash_algorithm".to_string(), serde_json::Value::String("argon2".to_string()));
-                metadata_obj.insert("hashed_at".to_string(), serde_json::Value::String(
-                    chrono::Utc::now().to_rfc3339()
-                ));
-                metadata_obj.insert("hashed_field".to_string(), serde_json::Value::String(field_name.to_string()));
+                metadata_obj.insert(
+                    "hash_algorithm".to_string(),
+                    serde_json::Value::String("argon2".to_string()),
+                );
+                metadata_obj.insert(
+                    "hashed_at".to_string(),
+                    serde_json::Value::String(chrono::Utc::now().to_rfc3339()),
+                );
+                metadata_obj.insert(
+                    "hashed_field".to_string(),
+                    serde_json::Value::String(field_name.to_string()),
+                );
             }
         }
         Ok(())
@@ -237,12 +303,14 @@ mod tests {
     fn test_password_hashing_hook() {
         let auth_config = crate::auth::AuthServiceConfig::new("test_secret".to_string());
         let auth_service = Arc::new(AuthService::new(auth_config));
-        let mut config = PasswordHashConfig::default();
-        config.schema_aware = false; // Use config mode for this test
+        let config = PasswordHashConfig {
+            schema_aware: false, // Use config mode for this test
+            ..Default::default()
+        };
         let hook = PasswordHashingHook::with_config(auth_service, config);
 
         let mut context = BeforeEventContext::new_create(
-            "users".to_string(),
+            "_users".to_string(),
             json!({
                 "email": "test@example.com",
                 "password": "plain_password_123"
@@ -251,16 +319,19 @@ mod tests {
 
         // Test password hashing
         assert!(hook.handle_before_record_create(&mut context).is_ok());
-        
+
         // Verify password was hashed and stored in the same field
         assert!(context.data.get("password").is_some());
         let password_value = context.data.get("password").unwrap().as_str().unwrap();
         assert_ne!(password_value, "plain_password_123"); // Should be hashed
         assert!(password_value.starts_with("$argon2")); // Should be argon2 hash
-        
+
         // Verify metadata was added
         assert_eq!(context.metadata.get("password_hashed"), Some(&json!(true)));
-        assert_eq!(context.metadata.get("hash_algorithm"), Some(&json!("argon2")));
+        assert_eq!(
+            context.metadata.get("hash_algorithm"),
+            Some(&json!("argon2"))
+        );
     }
 
     #[test]
@@ -285,7 +356,7 @@ mod tests {
         );
 
         assert!(hook.handle_before_record_create(&mut context).is_ok());
-        
+
         // Verify password was hashed and stored in the same field
         assert!(context.data.get("pwd").is_some());
         let password_value = context.data.get("pwd").unwrap().as_str().unwrap();
@@ -301,31 +372,41 @@ mod tests {
         let hook = PasswordHashingHook::new(auth_service); // Uses schema_aware: true by default
 
         // Create a schema with password fields
-        let mut schema = crate::CollectionSchema::new("users".to_string(), crate::CollectionType::Base);
-        schema.add_field("email".to_string(), crate::FieldDefinition {
-            field_type: crate::FieldType::Email,
-            required: true,
-            unique: true,
-            default: None,  
-            validation: None,
-            index: false,
-        });
-        schema.add_field("password".to_string(), crate::FieldDefinition {
-            field_type: crate::FieldType::Password,
-            required: true,
-            unique: false,
-            default: None,
-            validation: None,
-            index: false,
-        });
-        schema.add_field("backup_password".to_string(), crate::FieldDefinition {
-            field_type: crate::FieldType::Password,
-            required: false,
-            unique: false,
-            default: None,
-            validation: None,
-            index: false,
-        });
+        let mut schema =
+            crate::CollectionSchema::new("users".to_string(), crate::CollectionType::Base);
+        schema.add_field(
+            "email".to_string(),
+            crate::FieldDefinition {
+                field_type: crate::FieldType::Email,
+                required: true,
+                unique: true,
+                default: None,
+                validation: None,
+                index: false,
+            },
+        );
+        schema.add_field(
+            "password".to_string(),
+            crate::FieldDefinition {
+                field_type: crate::FieldType::Password,
+                required: true,
+                unique: false,
+                default: None,
+                validation: None,
+                index: false,
+            },
+        );
+        schema.add_field(
+            "backup_password".to_string(),
+            crate::FieldDefinition {
+                field_type: crate::FieldType::Password,
+                required: false,
+                unique: false,
+                default: None,
+                validation: None,
+                index: false,
+            },
+        );
 
         // Register the schema
         assert!(hook.register_schema("users".to_string(), schema).is_ok());
@@ -341,24 +422,32 @@ mod tests {
 
         // Test schema-aware password hashing
         assert!(hook.handle_before_record_create(&mut context).is_ok());
-        
+
         // Verify both password fields were hashed and stored in the same fields
         assert!(context.data.get("password").is_some());
         assert!(context.data.get("backup_password").is_some());
-        
+
         let main_password = context.data.get("password").unwrap().as_str().unwrap();
-        let backup_password = context.data.get("backup_password").unwrap().as_str().unwrap();
-        
+        let backup_password = context
+            .data
+            .get("backup_password")
+            .unwrap()
+            .as_str()
+            .unwrap();
+
         assert_ne!(main_password, "main_password_123"); // Should be hashed
         assert_ne!(backup_password, "backup_password_456"); // Should be hashed
         assert!(main_password.starts_with("$argon2")); // Should be argon2 hash
         assert!(backup_password.starts_with("$argon2")); // Should be argon2 hash
-        
+
         // Verify email field was not affected
         assert_eq!(context.data.get("email").unwrap(), "test@example.com");
-        
+
         // Verify metadata was added
         assert_eq!(context.metadata.get("password_hashed"), Some(&json!(true)));
-        assert_eq!(context.metadata.get("hash_algorithm"), Some(&json!("argon2")));
+        assert_eq!(
+            context.metadata.get("hash_algorithm"),
+            Some(&json!("argon2"))
+        );
     }
-} 
+}

@@ -4,11 +4,16 @@
 //! for communication and data exchange.
 
 use oxide_core::{
+    auth::CrudOperation,
     plugin_api::{HttpRequestContext, RouteRegistration},
+    plugin_security::PluginCapability,
     VfsServiceBridge,
 };
 use oxide_logging::LogServiceBridge;
-use std::sync::{Arc, Mutex};
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+};
 
 /// Type alias for shared host state reference
 pub type HostStateRef = Arc<Mutex<HostState>>;
@@ -75,6 +80,9 @@ pub struct HostState {
     /// Host functions called during the current plugin execution
     pub current_execution_host_calls: u64,
 
+    /// Granted capabilities for loaded plugins, mirrored from the runtime
+    /// security manager for host function authorization.
+    pub plugin_capabilities: HashMap<String, Vec<PluginCapability>>,
     // NOTE: Removed plugin_metadata field - using TOML-only metadata approach
     // Plugin metadata is now sourced exclusively from plugin.toml during installation
 }
@@ -98,6 +106,7 @@ impl Default for HostState {
             function_results: std::collections::HashMap::new(),
             function_errors: std::collections::HashMap::new(),
             current_execution_host_calls: 0,
+            plugin_capabilities: HashMap::new(),
         }
     }
 }
@@ -137,12 +146,14 @@ impl HostState {
 
     /// Store a result from a host function call
     pub fn store_result(&mut self, function_name: &str, result: String) {
-        self.function_results.insert(function_name.to_string(), result);
+        self.function_results
+            .insert(function_name.to_string(), result);
     }
 
     /// Store an error from a host function call
     pub fn store_error(&mut self, function_name: &str, error: &str) {
-        self.function_errors.insert(function_name.to_string(), error.to_string());
+        self.function_errors
+            .insert(function_name.to_string(), error.to_string());
     }
 
     /// Get a result from a host function call
@@ -164,6 +175,64 @@ impl HostState {
     /// Increment host function calls for the active plugin execution.
     pub fn record_host_call(&mut self) {
         self.current_execution_host_calls = self.current_execution_host_calls.saturating_add(1);
+    }
+
+    /// Mirror a plugin's current capabilities into host state.
+    pub fn set_plugin_capabilities(
+        &mut self,
+        plugin_name: impl Into<String>,
+        capabilities: Vec<PluginCapability>,
+    ) {
+        self.plugin_capabilities
+            .insert(plugin_name.into(), capabilities);
+    }
+
+    /// Remove mirrored capabilities for an unloaded plugin.
+    pub fn remove_plugin_capabilities(&mut self, plugin_name: &str) {
+        self.plugin_capabilities.remove(plugin_name);
+    }
+
+    /// Check whether the current plugin has a capability grant.
+    pub fn current_plugin_has_capability(&self, requested: &PluginCapability) -> bool {
+        self.current_plugin
+            .as_ref()
+            .and_then(|plugin_name| self.plugin_capabilities.get(plugin_name))
+            .map(|capabilities| {
+                capabilities
+                    .iter()
+                    .any(|capability| capability.grants(requested))
+            })
+            .unwrap_or(false)
+    }
+
+    /// Check whether the current plugin can register an HTTP route.
+    pub fn current_plugin_can_register_http_route(&self, method: &str, path: &str) -> bool {
+        self.current_plugin
+            .as_ref()
+            .and_then(|plugin_name| self.plugin_capabilities.get(plugin_name))
+            .map(|capabilities| {
+                capabilities
+                    .iter()
+                    .any(|capability| capability.allows_http_route(method, path))
+            })
+            .unwrap_or(false)
+    }
+
+    /// Check whether the current plugin can perform a database operation.
+    pub fn current_plugin_can_access_collection(
+        &self,
+        operation: &CrudOperation,
+        collection: &str,
+    ) -> bool {
+        self.current_plugin
+            .as_ref()
+            .and_then(|plugin_name| self.plugin_capabilities.get(plugin_name))
+            .map(|capabilities| {
+                capabilities
+                    .iter()
+                    .any(|capability| capability.allows_record_operation(operation, collection))
+            })
+            .unwrap_or(false)
     }
 
     // NOTE: Plugin metadata methods removed - using TOML-only metadata approach

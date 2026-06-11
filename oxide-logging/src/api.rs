@@ -9,9 +9,9 @@
 
 use crate::{
     error::{LoggingError, LoggingResult},
-    models::{LogQuery, LogFilter, LogLevel, AuditEventType, CorrelationId, LogMetrics},
-    service::LogService,
+    models::{AuditEventType, LogFilter, LogMetrics, LogQuery},
     retention::{RetentionService, RetentionStats},
+    service::LogService,
 };
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -223,7 +223,10 @@ impl LogApiService {
     }
 
     /// Create API service with retention service
-    pub fn with_retention(log_service: Arc<LogService>, retention_service: Arc<RetentionService>) -> Self {
+    pub fn with_retention(
+        log_service: Arc<LogService>,
+        retention_service: Arc<RetentionService>,
+    ) -> Self {
         Self {
             log_service,
             retention_service: Some(retention_service),
@@ -236,27 +239,30 @@ impl LogApiService {
     }
 
     /// Query logs with parameters
-    pub async fn query_logs(&self, params: LogQueryParams) -> LoggingResult<LogResponse<crate::models::LogEntry>> {
+    pub async fn query_logs(
+        &self,
+        params: LogQueryParams,
+    ) -> LoggingResult<LogResponse<crate::models::LogEntry>> {
         let start_time = std::time::Instant::now();
-        
+
         // Parse and validate parameters
         let query = self.parse_log_query_params(params)?;
-        
+
         // Execute query
         let logs = self.log_service.query(query.clone()).await?;
-        
+
         // Calculate metadata
         let execution_time_ms = start_time.elapsed().as_millis() as u64;
         let filters_applied = self.get_applied_filters(&query.filter);
-        
+
         // Calculate pagination info
         let limit = query.limit.unwrap_or(100);
         let offset = query.offset.unwrap_or(0);
         let returned_count = logs.len();
-        
+
         // has_more is true if we got exactly the limit we requested, indicating there might be more
         let has_more = returned_count == limit;
-        
+
         let response = LogResponse {
             data: logs,
             pagination: PaginationInfo {
@@ -276,26 +282,29 @@ impl LogApiService {
     }
 
     /// Query audit events
-    pub async fn query_audit_events(&self, params: AuditQueryParams) -> LoggingResult<LogResponse<crate::models::SecurityAuditEvent>> {
+    pub async fn query_audit_events(
+        &self,
+        params: AuditQueryParams,
+    ) -> LoggingResult<LogResponse<crate::models::SecurityAuditEvent>> {
         let start_time = std::time::Instant::now();
-        
+
         // Parse parameters into LogQuery (reusing the same structure)
         let query = self.parse_audit_query_params(params)?;
-        
+
         // Execute query
         let events = self.log_service.query_audit_events(query.clone()).await?;
-        
+
         let execution_time_ms = start_time.elapsed().as_millis() as u64;
         let filters_applied = self.get_applied_filters(&query.filter);
-        
+
         // Calculate pagination info
         let limit = query.limit.unwrap_or(100);
         let offset = query.offset.unwrap_or(0);
         let returned_count = events.len();
-        
+
         // has_more is true if we got exactly the limit we requested, indicating there might be more
         let has_more = returned_count == limit;
-        
+
         let response = LogResponse {
             data: events,
             pagination: PaginationInfo {
@@ -317,7 +326,7 @@ impl LogApiService {
     /// Get logging metrics for dashboard
     pub async fn get_dashboard_metrics(&self) -> LoggingResult<DashboardMetrics> {
         let log_metrics = self.log_service.get_metrics().await?;
-        
+
         // For now, return basic metrics
         // In a full implementation, you would calculate trends and detailed statistics
         Ok(DashboardMetrics {
@@ -356,29 +365,35 @@ impl LogApiService {
 
         // Parse log level
         if let Some(level_str) = params.level {
-            filter.min_level = LogLevel::from_str(&level_str);
-            if filter.min_level.is_none() {
-                return Err(LoggingError::invalid_input(format!("Invalid log level: {}", level_str)));
-            }
+            filter.min_level = Some(level_str.parse().map_err(|_| {
+                LoggingError::invalid_input(format!("Invalid log level: {}", level_str))
+            })?);
         }
 
         // Parse timestamps
         if let Some(start_str) = params.start_time {
-            filter.start_time = Some(DateTime::parse_from_rfc3339(&start_str)
-                .map_err(|_| LoggingError::invalid_input("Invalid start_time format"))?
-                .with_timezone(&Utc));
+            filter.start_time = Some(
+                DateTime::parse_from_rfc3339(&start_str)
+                    .map_err(|_| LoggingError::invalid_input("Invalid start_time format"))?
+                    .with_timezone(&Utc),
+            );
         }
 
         if let Some(end_str) = params.end_time {
-            filter.end_time = Some(DateTime::parse_from_rfc3339(&end_str)
-                .map_err(|_| LoggingError::invalid_input("Invalid end_time format"))?
-                .with_timezone(&Utc));
+            filter.end_time = Some(
+                DateTime::parse_from_rfc3339(&end_str)
+                    .map_err(|_| LoggingError::invalid_input("Invalid end_time format"))?
+                    .with_timezone(&Utc),
+            );
         }
 
         // Parse correlation ID
         if let Some(corr_str) = params.correlation_id {
-            filter.correlation_id = Some(CorrelationId::from_str(&corr_str)
-                .map_err(|_| LoggingError::invalid_input("Invalid correlation_id format"))?);
+            filter.correlation_id = Some(
+                corr_str
+                    .parse()
+                    .map_err(|_| LoggingError::invalid_input("Invalid correlation_id format"))?,
+            );
         }
 
         // Set other filters
@@ -408,23 +423,26 @@ impl LogApiService {
 
         // Parse severity level
         if let Some(severity_str) = params.severity {
-            filter.min_level = LogLevel::from_str(&severity_str);
-            if filter.min_level.is_none() {
-                return Err(LoggingError::invalid_input(format!("Invalid severity level: {}", severity_str)));
-            }
+            filter.min_level = Some(severity_str.parse().map_err(|_| {
+                LoggingError::invalid_input(format!("Invalid severity level: {}", severity_str))
+            })?);
         }
 
         // Parse timestamps
         if let Some(start_str) = params.start_time {
-            filter.start_time = Some(DateTime::parse_from_rfc3339(&start_str)
-                .map_err(|_| LoggingError::invalid_input("Invalid start_time format"))?
-                .with_timezone(&Utc));
+            filter.start_time = Some(
+                DateTime::parse_from_rfc3339(&start_str)
+                    .map_err(|_| LoggingError::invalid_input("Invalid start_time format"))?
+                    .with_timezone(&Utc),
+            );
         }
 
         if let Some(end_str) = params.end_time {
-            filter.end_time = Some(DateTime::parse_from_rfc3339(&end_str)
-                .map_err(|_| LoggingError::invalid_input("Invalid end_time format"))?
-                .with_timezone(&Utc));
+            filter.end_time = Some(
+                DateTime::parse_from_rfc3339(&end_str)
+                    .map_err(|_| LoggingError::invalid_input("Invalid end_time format"))?
+                    .with_timezone(&Utc),
+            );
         }
 
         // Parse event type
@@ -438,14 +456,22 @@ impl LogApiService {
                 "security_violation" => Some(AuditEventType::SecurityViolation),
                 "plugin_event" => Some(AuditEventType::PluginEvent),
                 "system_event" => Some(AuditEventType::SystemEvent),
-                _ => return Err(LoggingError::invalid_input(format!("Invalid event type: {}", event_type_str))),
+                _ => {
+                    return Err(LoggingError::invalid_input(format!(
+                        "Invalid event type: {}",
+                        event_type_str
+                    )))
+                }
             };
         }
 
         // Parse correlation ID
         if let Some(corr_str) = params.correlation_id {
-            filter.correlation_id = Some(CorrelationId::from_str(&corr_str)
-                .map_err(|_| LoggingError::invalid_input("Invalid correlation_id format"))?);
+            filter.correlation_id = Some(
+                corr_str
+                    .parse()
+                    .map_err(|_| LoggingError::invalid_input("Invalid correlation_id format"))?,
+            );
         }
 
         // Set pagination
@@ -508,7 +534,9 @@ pub enum WebSocketMessage {
     /// New log entry
     LogEntry { entry: crate::models::LogEntry },
     /// New audit event
-    AuditEvent { event: crate::models::SecurityAuditEvent },
+    AuditEvent {
+        event: crate::models::SecurityAuditEvent,
+    },
     /// Error message
     Error { message: String },
     /// Heartbeat/ping

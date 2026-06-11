@@ -107,7 +107,7 @@ export const PermissionRuleEditor: React.FC<PermissionRuleEditorProps> = ({
                     value={typeof rule?.permission === 'object' ? 'rule' : rule?.permission || 'none'}
                     onValueChange={(value: string) => {
                       if (value === 'rule') {
-                        updateCrudOperation(operation, { rule: '@request.auth.id != null' });
+                        updateCrudOperation(operation, { rule: "@req.user.id != ''" });
                       } else {
                         updateCrudOperation(operation, value as PermissionLevel);
                       }
@@ -172,7 +172,7 @@ export const PermissionRuleEditor: React.FC<PermissionRuleEditorProps> = ({
                       value={typeof rule?.permission === 'object' ? 'rule' : rule?.permission || 'none'}
                       onValueChange={(value: string) => {
                         if (value === 'rule') {
-                          updateAuthOperation(operation, { rule: '@request.auth.id != null' });
+                          updateAuthOperation(operation, { rule: "@req.user.id != ''" });
                         } else {
                           updateAuthOperation(operation, value as PermissionLevel);
                         }

@@ -5,12 +5,15 @@ import type {
   LogQueryParams, AuditQueryParams, LogResponse, LogEntry, SecurityAuditEvent,
   DashboardMetrics, RetentionStats, CreateLogRequest, CreateAuditRequest,
   CreateLogResponse, LoggingHealthResponse,
-   FileMetadata, FileListRequest, 
+  DashboardStats, SystemStats, FileMetadata, FileListRequest,
   FileListResponse, VfsUsageStats,
-  SiteSettings, SiteSettingsResponse, UpdateSiteSettingsRequest, SettingsHealthStatus
+  SiteSettings, SiteSettingsResponse, UpdateSiteSettingsRequest, SettingsHealthStatus,
+  ApiKeyRulesResponse, UpsertApiKeyRuleRequest, UpsertApiKeyRuleResponse,
+  RevokeApiKeyRuleRequest, BackupExportResponse, BackupManifestResponse,
+  BackupQueryOptions, BackupRestoreRequest, BackupRestoreResponse,
+  PluginCapability
 } from '../types/api';
 import { capabilityNameToObject } from '../types/api';
-import type { PluginCapability } from '../types/api';
 
 // Plugin-related interfaces
 interface PluginInfo {
@@ -352,7 +355,10 @@ class ApiService {
 
   async logout(): Promise<void> {
     try {
-      await this.post<void>('/auth/logout');
+      await this.post<void>(
+        '/auth/logout',
+        this.refreshToken ? { refresh_token: this.refreshToken } : undefined
+      );
     } finally {
       // Always clear tokens, even if logout request fails
       this.clearTokens();
@@ -415,6 +421,16 @@ class ApiService {
   // Health check
   async getHealth(): Promise<ApiHealthStatus> {
     const response = await this.request<ApiResponse<ApiHealthStatus>>('/health');
+    return response.data;
+  }
+
+  async getDashboardStats(): Promise<DashboardStats> {
+    const response = await this.get<ApiResponse<DashboardStats>>('/dashboard/stats');
+    return response.data;
+  }
+
+  async getSystemStats(): Promise<SystemStats> {
+    const response = await this.get<ApiResponse<SystemStats>>('/dashboard/system');
     return response.data;
   }
 
@@ -534,6 +550,60 @@ class ApiService {
 
   async applyPermissionPreset(collection: string, preset: PermissionPresetType): Promise<void> {
     return this.post<void>(`/collections/${encodeURIComponent(collection)}/permissions/preset`, preset);
+  }
+
+  // API key rule methods
+  async getApiKeyRules(): Promise<ApiKeyRulesResponse> {
+    const response = await this.get<ApiResponse<ApiKeyRulesResponse>>('/admin/api-keys');
+    return response.data;
+  }
+
+  async upsertApiKeyRule(request: UpsertApiKeyRuleRequest): Promise<UpsertApiKeyRuleResponse> {
+    const response = await this.post<ApiResponse<UpsertApiKeyRuleResponse>>('/admin/api-keys', request);
+    return response.data;
+  }
+
+  async revokeApiKeyRule(request: RevokeApiKeyRuleRequest): Promise<ApiKeyRulesResponse> {
+    const response = await this.post<ApiResponse<ApiKeyRulesResponse>>('/admin/api-keys/revoke', request);
+    return response.data;
+  }
+
+  // Backup and export methods
+  private buildBackupQuery(options?: BackupQueryOptions): string {
+    const searchParams = new URLSearchParams();
+
+    if (options?.include_system !== undefined) {
+      searchParams.set('include_system', options.include_system.toString());
+    }
+
+    if (options?.collections?.length) {
+      searchParams.set('collections', options.collections.join(','));
+    }
+
+    const query = searchParams.toString();
+    return query ? `?${query}` : '';
+  }
+
+  async getBackupManifest(options?: BackupQueryOptions): Promise<BackupManifestResponse> {
+    const response = await this.get<ApiResponse<BackupManifestResponse>>(
+      `/admin/backups/manifest${this.buildBackupQuery(options)}`
+    );
+    return response.data;
+  }
+
+  async exportBackup(options?: BackupQueryOptions): Promise<BackupExportResponse> {
+    const response = await this.get<ApiResponse<BackupExportResponse>>(
+      `/admin/backups/export${this.buildBackupQuery(options)}`
+    );
+    return response.data;
+  }
+
+  async restoreBackup(request: BackupRestoreRequest): Promise<BackupRestoreResponse> {
+    const response = await this.post<ApiResponse<BackupRestoreResponse>>(
+      '/admin/backups/restore',
+      request
+    );
+    return response.data;
   }
 
   // Logging API methods

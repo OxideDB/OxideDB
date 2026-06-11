@@ -5,9 +5,9 @@
 //! application-level preferences that are shared across all users.
 
 use crate::AppError;
+use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use async_trait::async_trait;
 
 /// Site settings data structure containing all system-wide configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -262,11 +262,7 @@ pub trait SiteSettingsService {
     async fn get_settings_section(&self, section: &str) -> Result<Value, AppError>;
 
     /// Update a specific settings section
-    async fn update_settings_section(
-        &self,
-        section: &str,
-        data: &Value,
-    ) -> Result<(), AppError>;
+    async fn update_settings_section(&self, section: &str, data: &Value) -> Result<(), AppError>;
 
     /// Validate email configuration by sending a test email
     async fn test_email_configuration(&self) -> Result<bool, AppError>;
@@ -356,7 +352,7 @@ impl Default for EmailTemplateSettings {
 impl Default for SystemInfoSettings {
     fn default() -> Self {
         use uuid::Uuid;
-        
+
         Self {
             oxidedb_version: env!("CARGO_PKG_VERSION").to_string(),
             oxidedb_edition: OxideDbEdition::Community,
@@ -416,7 +412,7 @@ impl Default for BackupSettings {
         Self {
             enabled: false,
             frequency_hours: 24, // Daily
-            retention_count: 7, // Keep 7 backups
+            retention_count: 7,  // Keep 7 backups
             storage_location: None,
             enable_compression: true,
             include_user_data: true,
@@ -436,4 +432,4 @@ pub mod settings_sections {
     pub const GENERAL: &str = "general";
     /// Security settings
     pub const SECURITY: &str = "security";
-} 
+}

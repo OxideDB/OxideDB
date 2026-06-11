@@ -14,15 +14,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::{debug, error, info, warn};
 
 use crate::{
-    errors::ApiError,
-    extractors::AuthenticatedUser,
-    responses::ApiResponse,
-    server::AppState,
+    errors::ApiError, extractors::AuthenticatedUser, responses::ApiResponse, server::AppState,
 };
 
 use oxide_core::{
-    VfsError, VfsNamespaceConfig, FileWriteRequest,
-    FileReadRequest, FileListRequest, FileIdentifier, VfsUsageStats
+    FileIdentifier, FileListRequest, FileReadRequest, FileWriteRequest, VfsError,
+    VfsNamespaceConfig, VfsUsageStats,
 };
 
 /// Result type for API handlers
@@ -85,7 +82,7 @@ async fn ensure_namespace_exists(
         Err(VfsError::AccessDenied { .. }) => {
             // Namespace doesn't exist, create it with default configuration
             info!("Creating VFS namespace for collection: {}", collection);
-            
+
             let config = VfsNamespaceConfig {
                 namespace: collection.to_string(),
                 quota_bytes: Some(1024 * 1024 * 1024), // 1GB default
@@ -95,7 +92,7 @@ async fn ensure_namespace_exists(
                 enable_deduplication: true,
                 backup_config: None,
             };
-            
+
             vfs_service.create_namespace(config).await?;
             info!("✅ Created VFS namespace for collection: {}", collection);
             Ok(())
@@ -131,10 +128,15 @@ async fn usage_stats_for_namespace(
 ) -> AppResult<VfsUsageStats> {
     let namespace = namespace.to_string();
     vfs_service.get_usage_stats(&namespace).await.map_err(|e| {
-        error!("Failed to get VFS usage stats for namespace '{}': {:?}", namespace, e);
+        error!(
+            "Failed to get VFS usage stats for namespace '{}': {:?}",
+            namespace, e
+        );
         match e {
             VfsError::InvalidPath { .. } => ApiError::bad_request("Invalid namespace".to_string()),
-            VfsError::AccessDenied { .. } => ApiError::not_found(format!("VFS namespace '{}'", namespace)),
+            VfsError::AccessDenied { .. } => {
+                ApiError::not_found(format!("VFS namespace '{}'", namespace))
+            }
             VfsError::IoError { .. } => ApiError::internal("Storage error".to_string()),
             _ => ApiError::internal("Failed to retrieve usage statistics".to_string()),
         }
@@ -165,9 +167,17 @@ fn summarize_usage(namespace: String, namespaces: Vec<VfsUsageStats>) -> VfsUsag
         namespace,
         file_count,
         storage_used,
-        storage_quota: if has_unlimited_quota { None } else { Some(quota_sum) },
+        storage_quota: if has_unlimited_quota {
+            None
+        } else {
+            Some(quota_sum)
+        },
         directory_count,
-        last_updated: if last_updated == 0 { now_unix_seconds() } else { last_updated },
+        last_updated: if last_updated == 0 {
+            now_unix_seconds()
+        } else {
+            last_updated
+        },
         namespaces,
     }
 }
@@ -182,19 +192,29 @@ pub async fn upload_file(
     debug!("📁 Upload file request for collection: {}", collection);
 
     // Get VFS service from app state
-    let vfs_service = state.vfs_service
+    let vfs_service = state
+        .vfs_service
         .as_ref()
         .ok_or_else(|| ApiError::internal("VFS service not available".to_string()))?;
 
     // Ensure namespace exists for this collection
-    ensure_namespace_exists(vfs_service.as_ref(), &collection).await.map_err(|e| {
-        error!("Failed to ensure VFS namespace exists for collection '{}': {:?}", collection, e);
-        match e {
-            VfsError::InvalidPath { .. } => ApiError::bad_request("Invalid collection name".to_string()),
-            VfsError::FileAlreadyExists { .. } => ApiError::internal("Namespace creation conflict".to_string()),
-            _ => ApiError::internal("Failed to initialize collection file storage".to_string()),
-        }
-    })?;
+    ensure_namespace_exists(vfs_service.as_ref(), &collection)
+        .await
+        .map_err(|e| {
+            error!(
+                "Failed to ensure VFS namespace exists for collection '{}': {:?}",
+                collection, e
+            );
+            match e {
+                VfsError::InvalidPath { .. } => {
+                    ApiError::bad_request("Invalid collection name".to_string())
+                }
+                VfsError::FileAlreadyExists { .. } => {
+                    ApiError::internal("Namespace creation conflict".to_string())
+                }
+                _ => ApiError::internal("Failed to initialize collection file storage".to_string()),
+            }
+        })?;
 
     let mut file_data: Option<Vec<u8>> = None;
     let mut file_name: Option<String> = None;
@@ -202,19 +222,27 @@ pub async fn upload_file(
     let mut custom_path: Option<String> = None;
 
     // Process multipart form data
-    while let Some(field) = multipart.next_field().await.map_err(|e| {
-        ApiError::bad_request(format!("Failed to read multipart data: {}", e))
-    })? {
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|e| ApiError::bad_request(format!("Failed to read multipart data: {}", e)))?
+    {
         let field_name = field.name().unwrap_or("");
-        
+
         match field_name {
             "file" => {
                 file_name = field.file_name().map(|s| s.to_string());
                 mime_type = field.content_type().map(|s| s.to_string());
-                
-                file_data = Some(field.bytes().await.map_err(|e| {
-                    ApiError::bad_request(format!("Failed to read file data: {}", e))
-                })?.to_vec());
+
+                file_data = Some(
+                    field
+                        .bytes()
+                        .await
+                        .map_err(|e| {
+                            ApiError::bad_request(format!("Failed to read file data: {}", e))
+                        })?
+                        .to_vec(),
+                );
             }
             "path" => {
                 custom_path = Some(field.text().await.map_err(|e| {
@@ -227,7 +255,10 @@ pub async fn upload_file(
                     ApiError::bad_request(format!("Failed to read collection field: {}", e))
                 })?;
                 if form_collection != collection {
-                    warn!("Collection mismatch: path={}, form={}", collection, form_collection);
+                    warn!(
+                        "Collection mismatch: path={}, form={}",
+                        collection, form_collection
+                    );
                 }
             }
             _ => {
@@ -237,13 +268,11 @@ pub async fn upload_file(
     }
 
     // Validate required fields
-    let file_data = file_data.ok_or_else(|| {
-        ApiError::bad_request("No file data provided".to_string())
-    })?;
+    let file_data =
+        file_data.ok_or_else(|| ApiError::bad_request("No file data provided".to_string()))?;
 
-    let file_name = file_name.ok_or_else(|| {
-        ApiError::bad_request("No filename provided".to_string())
-    })?;
+    let file_name =
+        file_name.ok_or_else(|| ApiError::bad_request("No filename provided".to_string()))?;
 
     let mime_type = mime_type.unwrap_or_else(|| {
         // Try to guess MIME type from file extension
@@ -256,9 +285,7 @@ pub async fn upload_file(
     let namespace = collection.clone();
 
     // Generate file path
-    let file_path = custom_path.unwrap_or_else(|| {
-        format!("uploads/{}", file_name)
-    });
+    let file_path = custom_path.unwrap_or_else(|| format!("uploads/{}", file_name));
 
     // Prepare file write request
     let write_request = FileWriteRequest {
@@ -271,17 +298,27 @@ pub async fn upload_file(
     };
 
     // Write file to VFS
-    let file_metadata = vfs_service.write_file(&namespace, write_request).await.map_err(|e| {
-        error!("Failed to write file to VFS: {:?}", e);
-        match e {
-            VfsError::InvalidPath { .. } => ApiError::bad_request("Invalid file path".to_string()),
-            VfsError::AccessDenied { .. } => ApiError::forbidden("Permission denied".to_string()),
-            VfsError::IoError { .. } => ApiError::internal("Storage error".to_string()),
-            _ => ApiError::internal("File upload failed".to_string()),
-        }
-    })?;
+    let file_metadata = vfs_service
+        .write_file(&namespace, write_request)
+        .await
+        .map_err(|e| {
+            error!("Failed to write file to VFS: {:?}", e);
+            match e {
+                VfsError::InvalidPath { .. } => {
+                    ApiError::bad_request("Invalid file path".to_string())
+                }
+                VfsError::AccessDenied { .. } => {
+                    ApiError::forbidden("Permission denied".to_string())
+                }
+                VfsError::IoError { .. } => ApiError::internal("Storage error".to_string()),
+                _ => ApiError::internal("File upload failed".to_string()),
+            }
+        })?;
 
-    info!("📁 File uploaded successfully: {} ({})", file_name, file_metadata.id);
+    info!(
+        "📁 File uploaded successfully: {} ({})",
+        file_name, file_metadata.id
+    );
 
     let response = FileUploadResponse {
         file_id: file_metadata.id,
@@ -301,18 +338,27 @@ pub async fn download_file(
     _auth: AuthenticatedUser,
     Path((collection, file_id)): Path<(String, String)>,
 ) -> AppResult<impl IntoResponse> {
-    debug!("📁 Download file request: {} from collection: {}", file_id, collection);
+    debug!(
+        "📁 Download file request: {} from collection: {}",
+        file_id, collection
+    );
 
     // Get VFS service from app state
-    let vfs_service = state.vfs_service
+    let vfs_service = state
+        .vfs_service
         .as_ref()
         .ok_or_else(|| ApiError::internal("VFS service not available".to_string()))?;
 
     // Ensure namespace exists for this collection
-    ensure_namespace_exists(vfs_service.as_ref(), &collection).await.map_err(|e| {
-        error!("Failed to ensure VFS namespace exists for collection '{}': {:?}", collection, e);
-        ApiError::internal("Failed to access collection file storage".to_string())
-    })?;
+    ensure_namespace_exists(vfs_service.as_ref(), &collection)
+        .await
+        .map_err(|e| {
+            error!(
+                "Failed to ensure VFS namespace exists for collection '{}': {:?}",
+                collection, e
+            );
+            ApiError::internal("Failed to access collection file storage".to_string())
+        })?;
 
     // Create namespace for the collection
     let namespace = collection;
@@ -323,27 +369,40 @@ pub async fn download_file(
         include_content: true,
     };
 
-    let file_response = vfs_service.read_file(&namespace, read_request).await.map_err(|e| {
-        error!("Failed to read file from VFS: {:?}", e);
-        match e {
-            VfsError::FileNotFound { .. } => ApiError::not_found("File not found".to_string()),
-            VfsError::AccessDenied { .. } => ApiError::forbidden("Permission denied".to_string()),
-            VfsError::IoError { .. } => ApiError::internal("Storage error".to_string()),
-            _ => ApiError::internal("File download failed".to_string()),
-        }
-    })?;
+    let file_response = vfs_service
+        .read_file(&namespace, read_request)
+        .await
+        .map_err(|e| {
+            error!("Failed to read file from VFS: {:?}", e);
+            match e {
+                VfsError::FileNotFound { .. } => ApiError::not_found("File not found".to_string()),
+                VfsError::AccessDenied { .. } => {
+                    ApiError::forbidden("Permission denied".to_string())
+                }
+                VfsError::IoError { .. } => ApiError::internal("Storage error".to_string()),
+                _ => ApiError::internal("File download failed".to_string()),
+            }
+        })?;
 
     // Build response with appropriate headers
     let response = Response::builder()
         .status(StatusCode::OK)
-        .header(header::CONTENT_TYPE, file_response.metadata.mime_type.clone())
-        .header(header::CONTENT_DISPOSITION, 
-                format!("attachment; filename=\"{}\"", file_response.metadata.name))
-        .header(header::CONTENT_LENGTH, file_response.content.as_ref().map(|c| c.len()).unwrap_or(0));
+        .header(
+            header::CONTENT_TYPE,
+            file_response.metadata.mime_type.clone(),
+        )
+        .header(
+            header::CONTENT_DISPOSITION,
+            format!("attachment; filename=\"{}\"", file_response.metadata.name),
+        )
+        .header(
+            header::CONTENT_LENGTH,
+            file_response.content.as_ref().map(|c| c.len()).unwrap_or(0),
+        );
 
     // Add file content to response
     let body = file_response.content.unwrap_or_default();
-    
+
     response
         .body(axum::body::Body::from(body))
         .map_err(|e| ApiError::internal(format!("Failed to create response: {}", e)))
@@ -359,15 +418,21 @@ pub async fn list_files(
     debug!("📁 List files request for collection: {}", collection);
 
     // Get VFS service from app state
-    let vfs_service = state.vfs_service
+    let vfs_service = state
+        .vfs_service
         .as_ref()
         .ok_or_else(|| ApiError::internal("VFS service not available".to_string()))?;
 
     // Ensure namespace exists for this collection
-    ensure_namespace_exists(vfs_service.as_ref(), &collection).await.map_err(|e| {
-        error!("Failed to ensure VFS namespace exists for collection '{}': {:?}", collection, e);
-        ApiError::internal("Failed to access collection file storage".to_string())
-    })?;
+    ensure_namespace_exists(vfs_service.as_ref(), &collection)
+        .await
+        .map_err(|e| {
+            error!(
+                "Failed to ensure VFS namespace exists for collection '{}': {:?}",
+                collection, e
+            );
+            ApiError::internal("Failed to access collection file storage".to_string())
+        })?;
 
     // Create namespace for the collection
     let namespace = collection;
@@ -383,14 +448,19 @@ pub async fn list_files(
     };
 
     // List files in VFS
-    let file_list = vfs_service.list_files(&namespace, list_request).await.map_err(|e| {
-        error!("Failed to list files from VFS: {:?}", e);
-        match e {
-            VfsError::AccessDenied { .. } => ApiError::forbidden("Permission denied".to_string()),
-            VfsError::IoError { .. } => ApiError::internal("Storage error".to_string()),
-            _ => ApiError::internal("File listing failed".to_string()),
-        }
-    })?;
+    let file_list = vfs_service
+        .list_files(&namespace, list_request)
+        .await
+        .map_err(|e| {
+            error!("Failed to list files from VFS: {:?}", e);
+            match e {
+                VfsError::AccessDenied { .. } => {
+                    ApiError::forbidden("Permission denied".to_string())
+                }
+                VfsError::IoError { .. } => ApiError::internal("Storage error".to_string()),
+                _ => ApiError::internal("File listing failed".to_string()),
+            }
+        })?;
 
     Ok(ApiResponse::success(file_list))
 }
@@ -401,35 +471,51 @@ pub async fn delete_file(
     _auth: AuthenticatedUser,
     Path((collection, file_id)): Path<(String, String)>,
 ) -> AppResult<impl IntoResponse> {
-    debug!("📁 Delete file request: {} from collection: {}", file_id, collection);
+    debug!(
+        "📁 Delete file request: {} from collection: {}",
+        file_id, collection
+    );
 
     // Get VFS service from app state
-    let vfs_service = state.vfs_service
+    let vfs_service = state
+        .vfs_service
         .as_ref()
         .ok_or_else(|| ApiError::internal("VFS service not available".to_string()))?;
 
     // Ensure namespace exists for this collection
-    ensure_namespace_exists(vfs_service.as_ref(), &collection).await.map_err(|e| {
-        error!("Failed to ensure VFS namespace exists for collection '{}': {:?}", collection, e);
-        ApiError::internal("Failed to access collection file storage".to_string())
-    })?;
+    ensure_namespace_exists(vfs_service.as_ref(), &collection)
+        .await
+        .map_err(|e| {
+            error!(
+                "Failed to ensure VFS namespace exists for collection '{}': {:?}",
+                collection, e
+            );
+            ApiError::internal("Failed to access collection file storage".to_string())
+        })?;
 
     // Create namespace for the collection
     let namespace = collection;
 
     // Delete file from VFS
-    vfs_service.delete_file(&namespace, FileIdentifier::Id(file_id.clone())).await.map_err(|e| {
-        error!("Failed to delete file from VFS: {:?}", e);
-        match e {
-            VfsError::FileNotFound { .. } => ApiError::not_found("File not found".to_string()),
-            VfsError::AccessDenied { .. } => ApiError::forbidden("Permission denied".to_string()),
-            VfsError::IoError { .. } => ApiError::internal("Storage error".to_string()),
-            _ => ApiError::internal("File deletion failed".to_string()),
-        }
-    })?;
+    vfs_service
+        .delete_file(&namespace, FileIdentifier::Id(file_id.clone()))
+        .await
+        .map_err(|e| {
+            error!("Failed to delete file from VFS: {:?}", e);
+            match e {
+                VfsError::FileNotFound { .. } => ApiError::not_found("File not found".to_string()),
+                VfsError::AccessDenied { .. } => {
+                    ApiError::forbidden("Permission denied".to_string())
+                }
+                VfsError::IoError { .. } => ApiError::internal("Storage error".to_string()),
+                _ => ApiError::internal("File deletion failed".to_string()),
+            }
+        })?;
 
     info!("📁 File deleted successfully: {}", file_id);
-    Ok(ApiResponse::success(crate::responses::EmptyResponse::deleted()))
+    Ok(ApiResponse::success(
+        crate::responses::EmptyResponse::deleted(),
+    ))
 }
 
 /// Get VFS usage statistics
@@ -441,17 +527,23 @@ pub async fn get_usage_stats(
     debug!("📁 Get VFS usage statistics request");
 
     // Get VFS service from app state
-    let vfs_service = state.vfs_service
+    let vfs_service = state
+        .vfs_service
         .as_ref()
         .ok_or_else(|| ApiError::internal("VFS service not available".to_string()))?;
 
     if let Some(namespace) = query.namespace {
         if namespace.trim().is_empty() {
-            return Err(ApiError::bad_request("Namespace cannot be empty".to_string()));
+            return Err(ApiError::bad_request(
+                "Namespace cannot be empty".to_string(),
+            ));
         }
 
         let stats = usage_stats_for_namespace(vfs_service.as_ref(), &namespace).await?;
-        return Ok(ApiResponse::success(summarize_usage(namespace, vec![stats])));
+        return Ok(ApiResponse::success(summarize_usage(
+            namespace,
+            vec![stats],
+        )));
     }
 
     let include_default = query.include_default.unwrap_or(true);
@@ -468,15 +560,25 @@ pub async fn get_usage_stats(
     for namespace in namespaces {
         match vfs_service.get_usage_stats(&namespace).await {
             Ok(stats) => usage_by_namespace.push(stats),
-            Err(VfsError::AccessDenied { .. }) => usage_by_namespace.push(empty_usage_stats(namespace)),
+            Err(VfsError::AccessDenied { .. }) => {
+                usage_by_namespace.push(empty_usage_stats(namespace))
+            }
             Err(e) => {
-                error!("Failed to get VFS usage stats for namespace '{}': {:?}", namespace, e);
-                return Err(ApiError::internal("Failed to retrieve usage statistics".to_string()));
+                error!(
+                    "Failed to get VFS usage stats for namespace '{}': {:?}",
+                    namespace, e
+                );
+                return Err(ApiError::internal(
+                    "Failed to retrieve usage statistics".to_string(),
+                ));
             }
         }
     }
 
-    Ok(ApiResponse::success(summarize_usage("all".to_string(), usage_by_namespace)))
+    Ok(ApiResponse::success(summarize_usage(
+        "all".to_string(),
+        usage_by_namespace,
+    )))
 }
 
 /// Get VFS usage statistics for a collection namespace
@@ -485,19 +587,30 @@ pub async fn get_collection_usage_stats(
     _auth: AuthenticatedUser,
     Path(collection): Path<String>,
 ) -> AppResult<impl IntoResponse> {
-    debug!("📁 Get VFS usage statistics request for collection: {}", collection);
+    debug!(
+        "📁 Get VFS usage statistics request for collection: {}",
+        collection
+    );
 
-    let vfs_service = state.vfs_service
+    let vfs_service = state
+        .vfs_service
         .as_ref()
         .ok_or_else(|| ApiError::internal("VFS service not available".to_string()))?;
 
-    ensure_namespace_exists(vfs_service.as_ref(), &collection).await.map_err(|e| {
-        error!("Failed to ensure VFS namespace exists for collection '{}': {:?}", collection, e);
-        match e {
-            VfsError::InvalidPath { .. } => ApiError::bad_request("Invalid collection name".to_string()),
-            _ => ApiError::internal("Failed to access collection file storage".to_string()),
-        }
-    })?;
+    ensure_namespace_exists(vfs_service.as_ref(), &collection)
+        .await
+        .map_err(|e| {
+            error!(
+                "Failed to ensure VFS namespace exists for collection '{}': {:?}",
+                collection, e
+            );
+            match e {
+                VfsError::InvalidPath { .. } => {
+                    ApiError::bad_request("Invalid collection name".to_string())
+                }
+                _ => ApiError::internal("Failed to access collection file storage".to_string()),
+            }
+        })?;
 
     let usage_stats = usage_stats_for_namespace(vfs_service.as_ref(), &collection).await?;
     Ok(ApiResponse::success(usage_stats))

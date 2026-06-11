@@ -261,7 +261,7 @@ pub trait DashboardStatsService: Send + Sync {
     /// # Returns
     /// Complete dashboard statistics or an error if collection fails
     async fn get_dashboard_stats(&self) -> Result<DashboardStats, crate::error::AppError>;
-    
+
     /// Get basic system statistics only
     ///
     /// This is a lighter-weight version that returns only core metrics
@@ -270,7 +270,7 @@ pub trait DashboardStatsService: Send + Sync {
     /// # Returns
     /// Basic system statistics or an error if collection fails
     async fn get_system_stats(&self) -> Result<SystemStats, crate::error::AppError>;
-    
+
     /// Record an activity for the activity feed
     ///
     /// This method records user and system activities for display
@@ -282,7 +282,7 @@ pub trait DashboardStatsService: Send + Sync {
     /// # Returns
     /// Success or an error if recording fails
     async fn record_activity(&self, activity: ActivityEntry) -> Result<(), crate::error::AppError>;
-    
+
     /// Get recent activities for the dashboard
     ///
     /// # Arguments
@@ -290,5 +290,8 @@ pub trait DashboardStatsService: Send + Sync {
     ///
     /// # Returns
     /// Vector of recent activities or an error if retrieval fails
-    async fn get_recent_activities(&self, limit: usize) -> Result<Vec<ActivityEntry>, crate::error::AppError>;
+    async fn get_recent_activities(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<ActivityEntry>, crate::error::AppError>;
 }

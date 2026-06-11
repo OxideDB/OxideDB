@@ -4,14 +4,16 @@
 //! It implements content-addressed storage with deduplication, compression, and atomic operations.
 //! Now featuring ultra-fast metadata lookups using LMDB with LRU cache.
 
-use oxide_core::{VfsResult, VfsError, FileMetadata, VfsNamespace, VfsNamespaceConfig, FileIdentifier};
-use crate::utils::{calculate_content_hash, compress_content, decompress_content};
 use crate::metadata_store::MetadataStore;
-use std::path::{Path, PathBuf};
+use crate::utils::{calculate_content_hash, compress_content, decompress_content};
+use oxide_core::{
+    FileIdentifier, FileMetadata, VfsError, VfsNamespace, VfsNamespaceConfig, VfsResult,
+};
 use std::collections::HashMap;
-use tokio::fs;
-use tracing::{instrument, error, debug, info};
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
+use tokio::fs;
+use tracing::{debug, error, info, instrument};
 
 /// High-performance file system storage implementation with LMDB metadata backend
 pub struct FileSystemStorage {
@@ -29,8 +31,8 @@ impl FileSystemStorage {
     pub fn new(base_path: PathBuf) -> VfsResult<Self> {
         // Create metadata store with optimized cache size (50,000 entries)
         let metadata_store = MetadataStore::new(base_path.clone(), Some(50_000))?;
-        
-        Ok(Self { 
+
+        Ok(Self {
             base_path,
             metadata_store,
             namespace_configs: tokio::sync::RwLock::new(HashMap::new()),
@@ -62,7 +64,10 @@ impl FileSystemStorage {
         // Load existing namespace configurations
         self.load_namespace_configs().await?;
 
-        info!("VFS storage initialized at {:?} with high-performance metadata backend", self.base_path);
+        info!(
+            "VFS storage initialized at {:?} with high-performance metadata backend",
+            self.base_path
+        );
         Ok(())
     }
 
@@ -76,7 +81,7 @@ impl FileSystemStorage {
     ) -> VfsResult<FileMetadata> {
         // Validate namespace exists and get config
         let config = self.get_namespace_config(namespace).await?;
-        
+
         // Validate file size against namespace limits
         if let Some(max_size) = config.max_file_size {
             if content.len() as u64 > max_size {
@@ -88,7 +93,10 @@ impl FileSystemStorage {
 
         // Validate MIME type if restrictions exist
         if let Some(allowed_types) = &config.allowed_mime_types {
-            if !allowed_types.iter().any(|t| metadata.mime_type.starts_with(t)) {
+            if !allowed_types
+                .iter()
+                .any(|t| metadata.mime_type.starts_with(t))
+            {
                 return Err(VfsError::AccessDenied {
                     path: format!("MIME type {} not allowed", metadata.mime_type),
                 });
@@ -110,7 +118,11 @@ impl FileSystemStorage {
         let (final_content, compressed) = if config.enable_compression && content.len() > 1024 {
             match compress_content(content) {
                 Ok(compressed) if compressed.len() < content.len() => {
-                    debug!("Compressed file from {} to {} bytes", content.len(), compressed.len());
+                    debug!(
+                        "Compressed file from {} to {} bytes",
+                        content.len(),
+                        compressed.len()
+                    );
                     (compressed, true)
                 }
                 _ => (content.to_vec(), false),
@@ -122,7 +134,7 @@ impl FileSystemStorage {
         // Store content in content-addressed storage
         let content_path = self.get_content_path(&content_hash);
         self.ensure_parent_dir(&content_path).await?;
-        
+
         // Atomic write using temporary file
         let temp_path = content_path.with_extension("tmp");
         if let Err(e) = fs::write(&temp_path, &final_content).await {
@@ -144,19 +156,29 @@ impl FileSystemStorage {
         metadata.content_hash = content_hash.clone();
         metadata.size = content.len() as u64;
         metadata.compressed = compressed;
-        metadata.compression_type = if compressed { Some("gzip".to_string()) } else { None };
+        metadata.compression_type = if compressed {
+            Some("gzip".to_string())
+        } else {
+            None
+        };
         metadata.modified_at = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
 
         // Store metadata in high-performance LMDB backend
-        self.metadata_store.store_metadata(namespace, &metadata).await?;
+        self.metadata_store
+            .store_metadata(namespace, &metadata)
+            .await?;
 
         // Update content cache for deduplication
-        self.cache_content_mapping(&content_hash, &metadata.id).await;
+        self.cache_content_mapping(&content_hash, &metadata.id)
+            .await;
 
-        debug!("Successfully stored file: {} with LMDB metadata backend", metadata.id);
+        debug!(
+            "Successfully stored file: {} with LMDB metadata backend",
+            metadata.id
+        );
         Ok(metadata)
     }
 
@@ -168,8 +190,11 @@ impl FileSystemStorage {
         identifier: &FileIdentifier,
     ) -> VfsResult<(FileMetadata, Vec<u8>)> {
         // Get file metadata from high-performance store
-        let metadata = self.metadata_store.get_metadata(namespace, identifier).await?;
-        
+        let metadata = self
+            .metadata_store
+            .get_metadata(namespace, identifier)
+            .await?;
+
         // Read content from content-addressed storage
         let content_path = self.get_content_path(&metadata.content_hash);
         let raw_content = match fs::read(&content_path).await {
@@ -201,14 +226,19 @@ impl FileSystemStorage {
         let expected_hash = &metadata.content_hash;
         let actual_hash = calculate_content_hash(&content);
         if actual_hash != *expected_hash {
-            error!("Content hash mismatch for file {}: expected {}, got {}", 
-                   metadata.id, expected_hash, actual_hash);
+            error!(
+                "Content hash mismatch for file {}: expected {}, got {}",
+                metadata.id, expected_hash, actual_hash
+            );
             return Err(VfsError::IoError {
                 message: "Content integrity check failed".to_string(),
             });
         }
 
-        debug!("Successfully retrieved file: {} with LMDB metadata lookup", metadata.id);
+        debug!(
+            "Successfully retrieved file: {} with LMDB metadata lookup",
+            metadata.id
+        );
         Ok((metadata, content))
     }
 
@@ -221,19 +251,24 @@ impl FileSystemStorage {
     ) -> VfsResult<FileMetadata> {
         // Direct lookup in high-performance metadata store
         // This should be sub-microsecond for cache hits, single-digit microseconds for LMDB hits
-        self.metadata_store.get_metadata(namespace, identifier).await
+        self.metadata_store
+            .get_metadata(namespace, identifier)
+            .await
     }
 
     /// Delete file from storage
     #[instrument(skip(self))]
     pub async fn delete_file(
-        &self, 
-        namespace: &VfsNamespace, 
-        identifier: &FileIdentifier
+        &self,
+        namespace: &VfsNamespace,
+        identifier: &FileIdentifier,
     ) -> VfsResult<()> {
         // Get metadata first to check if file exists and get content hash
-        let metadata = self.metadata_store.get_metadata(namespace, identifier).await?;
-        
+        let metadata = self
+            .metadata_store
+            .get_metadata(namespace, identifier)
+            .await?;
+
         // Check if content is still referenced by other files before deleting
         let config = self.get_namespace_config(namespace).await?;
         if config.enable_deduplication {
@@ -252,16 +287,22 @@ impl FileSystemStorage {
         }
 
         // Delete metadata from high-performance store
-        self.metadata_store.delete_metadata(namespace, identifier).await?;
+        self.metadata_store
+            .delete_metadata(namespace, identifier)
+            .await?;
 
         // Remove from content cache
         self.remove_from_content_cache(&metadata.content_hash).await;
 
-        debug!("Successfully deleted file: {} from LMDB metadata store", metadata.id);
+        debug!(
+            "Successfully deleted file: {} from LMDB metadata store",
+            metadata.id
+        );
         Ok(())
     }
 
     /// List files in a namespace with optional filtering (now powered by LMDB)
+    #[allow(clippy::too_many_arguments)]
     #[instrument(skip(self))]
     pub async fn list_files(
         &self,
@@ -274,13 +315,17 @@ impl FileSystemStorage {
         limit: Option<usize>,
     ) -> VfsResult<(Vec<FileMetadata>, usize)> {
         // Get all files from high-performance metadata store
-        let all_files = self.metadata_store.list_metadata(namespace, None, None).await?;
+        let all_files = self
+            .metadata_store
+            .list_metadata(namespace, None, None)
+            .await?;
 
         // Apply directory filtering if specified
         let mut filtered_files: Vec<FileMetadata> = if directory.is_empty() {
             all_files
         } else {
-            all_files.into_iter()
+            all_files
+                .into_iter()
                 .filter(|meta| {
                     if recursive {
                         meta.path.starts_with(directory)
@@ -300,12 +345,10 @@ impl FileSystemStorage {
         if let Some(mime_prefix) = mime_filter {
             filtered_files.retain(|meta| meta.mime_type.starts_with(mime_prefix));
         }
-        
+
         // Apply tag filter
         if let Some(required_tags) = tag_filter {
-            filtered_files.retain(|meta| {
-                required_tags.iter().all(|tag| meta.tags.contains(tag))
-            });
+            filtered_files.retain(|meta| required_tags.iter().all(|tag| meta.tags.contains(tag)));
         }
 
         let total_count = filtered_files.len();
@@ -323,17 +366,27 @@ impl FileSystemStorage {
             filtered_files.truncate(limit);
         }
 
-        debug!("Listed {} filtered files from {} total in namespace {} using LMDB", 
-               filtered_files.len(), total_count, namespace);
+        debug!(
+            "Listed {} filtered files from {} total in namespace {} using LMDB",
+            filtered_files.len(),
+            total_count,
+            namespace
+        );
         Ok((filtered_files, total_count))
     }
 
     /// Get namespace configuration
-    async fn get_namespace_config(&self, namespace: &VfsNamespace) -> VfsResult<VfsNamespaceConfig> {
+    async fn get_namespace_config(
+        &self,
+        namespace: &VfsNamespace,
+    ) -> VfsResult<VfsNamespaceConfig> {
         let configs = self.namespace_configs.read().await;
-        configs.get(namespace).cloned().ok_or_else(|| VfsError::AccessDenied {
-            path: namespace.clone(),
-        })
+        configs
+            .get(namespace)
+            .cloned()
+            .ok_or_else(|| VfsError::AccessDenied {
+                path: namespace.clone(),
+            })
     }
 
     /// Load namespace configurations from disk
@@ -349,12 +402,17 @@ impl FileSystemStorage {
         };
 
         let mut configs = self.namespace_configs.write().await;
-        
+
         while let Ok(Some(entry)) = entries.next_entry().await {
-            if entry.file_type().await.map(|ft| ft.is_dir()).unwrap_or(false) {
+            if entry
+                .file_type()
+                .await
+                .map(|ft| ft.is_dir())
+                .unwrap_or(false)
+            {
                 let namespace = entry.file_name().to_string_lossy().to_string();
                 let config_path = entry.path().join("config.json");
-                
+
                 if let Ok(config_data) = fs::read(&config_path).await {
                     if let Ok(config) = serde_json::from_slice::<VfsNamespaceConfig>(&config_data) {
                         configs.insert(namespace, config);
@@ -409,16 +467,19 @@ impl FileSystemStorage {
     pub async fn store_namespace_config(&self, config: &VfsNamespaceConfig) -> VfsResult<()> {
         let namespace_dir = self.base_path.join("namespaces").join(&config.namespace);
         let config_path = namespace_dir.join("config.json");
-        
+
         self.ensure_parent_dir(&config_path).await?;
-        
-        let config_json = serde_json::to_vec_pretty(config).map_err(|e| VfsError::EncodingError {
-            message: format!("Failed to serialize config: {}", e),
-        })?;
-        
-        fs::write(&config_path, &config_json).await.map_err(|e| VfsError::IoError {
-            message: format!("Failed to write config: {}", e),
-        })?;
+
+        let config_json =
+            serde_json::to_vec_pretty(config).map_err(|e| VfsError::EncodingError {
+                message: format!("Failed to serialize config: {}", e),
+            })?;
+
+        fs::write(&config_path, &config_json)
+            .await
+            .map_err(|e| VfsError::IoError {
+                message: format!("Failed to write config: {}", e),
+            })?;
 
         // Update in-memory cache
         let mut configs = self.namespace_configs.write().await;
@@ -430,11 +491,13 @@ impl FileSystemStorage {
     /// Remove namespace and all its files
     pub async fn remove_namespace(&self, namespace: &VfsNamespace) -> VfsResult<()> {
         let namespace_dir = self.base_path.join("namespaces").join(namespace);
-        
+
         if namespace_dir.exists() {
-            fs::remove_dir_all(&namespace_dir).await.map_err(|e| VfsError::IoError {
-                message: format!("Failed to remove namespace directory: {}", e),
-            })?;
+            fs::remove_dir_all(&namespace_dir)
+                .await
+                .map_err(|e| VfsError::IoError {
+                    message: format!("Failed to remove namespace directory: {}", e),
+                })?;
         }
 
         // Clear metadata cache for this namespace
@@ -448,10 +511,16 @@ impl FileSystemStorage {
     }
 
     /// Get usage statistics for a namespace
-    pub async fn get_usage_stats(&self, namespace: &VfsNamespace) -> VfsResult<(usize, u64, usize)> {
+    pub async fn get_usage_stats(
+        &self,
+        namespace: &VfsNamespace,
+    ) -> VfsResult<(usize, u64, usize)> {
         // Use LMDB to get file count and calculate storage
-        let files = self.metadata_store.list_metadata(namespace, None, None).await?;
-        
+        let files = self
+            .metadata_store
+            .list_metadata(namespace, None, None)
+            .await?;
+
         let file_count = files.len();
         let storage_used: u64 = files.iter().map(|f| f.size).sum();
         let directory_count = 1; // Simplified - we could calculate this more accurately if needed
@@ -468,4 +537,4 @@ impl FileSystemStorage {
     pub async fn sync_metadata(&self) -> VfsResult<()> {
         self.metadata_store.sync()
     }
-} 
+}

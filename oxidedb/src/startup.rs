@@ -3,15 +3,18 @@
 //! This module provides centralized initialization logic for all OxideDB services
 //! including the event bus, database, authentication, plugins, and HTTP server.
 
-use crate::{OxideDbConfig, Result, sample_data};
-use oxide_plugin_runtime::PluginManager;
-use oxide_api::{server::ApiServer, services::{DatabasePermissionService, LoggingApiService}};
-use oxide_core::{AppError, AuthService, EventBus, InMemoryEventBus, register_system_hooks};
+use crate::{sample_data, OxideDbConfig, Result};
+use oxide_api::{
+    server::ApiServer,
+    services::{DatabasePermissionService, LoggingApiService},
+};
+use oxide_core::{register_system_hooks, AppError, AuthService, EventBus, InMemoryEventBus};
 use oxide_db::{Db, SqliteDb};
-use oxide_logging::{LogService, LogServiceBuilder, LogServiceBridge};
+use oxide_logging::{LogService, LogServiceBridge, LogServiceBuilder};
+use oxide_plugin_runtime::PluginManager;
 use oxide_vfs;
 use std::sync::Arc;
-use tracing::{info, warn, debug};
+use tracing::{debug, info, warn};
 
 /// Application services container
 #[derive(Clone)]
@@ -40,11 +43,11 @@ impl ApplicationBootstrap {
     /// Initialize all application services in the correct order
     pub async fn initialize(&self) -> Result<ApplicationServices> {
         info!("🚀 Starting OxideDB application initialization");
-        
+
         // Force initialization of the global process start time for accurate uptime tracking
         let _ = &*oxide_db::dashboard_stats_service::PROCESS_START;
         debug!("✅ Process start time initialized for uptime tracking");
-        
+
         self.log_configuration();
 
         // 1. Initialize event bus - the heart of our hook-first architecture
@@ -57,16 +60,16 @@ impl ApplicationBootstrap {
         let auth_service = self.initialize_auth_service()?;
 
         // 4. Initialize database with dependencies
-        let database = self.initialize_database(
-            Arc::clone(&event_bus),
-            Arc::clone(&auth_service),
-        ).await?;
+        let database = self
+            .initialize_database(Arc::clone(&event_bus), Arc::clone(&auth_service))
+            .await?;
 
         // 5. Ensure auth system collections exist
         self.ensure_auth_collections_exist(&database).await?;
 
         // 6. Update auth service with discovered collections
-        self.update_auth_collections(&database, &auth_service).await?;
+        self.update_auth_collections(&database, &auth_service)
+            .await?;
 
         // 7. Initialize permission service
         let permission_service = self.initialize_permission_service(Arc::clone(&database))?;
@@ -76,26 +79,36 @@ impl ApplicationBootstrap {
             &event_bus,
             Arc::clone(&auth_service),
             Arc::clone(&permission_service),
-        ).await?;
+        )
+        .await?;
 
         // 9. Initialize VFS service (optional)
         let vfs_service = self.initialize_vfs_system(Arc::clone(&event_bus)).await?;
 
         // 10. Register dashboard activity listener
-        self.register_dashboard_activity_listener(&event_bus, &database, &logging_service, &vfs_service).await?;
+        self.register_dashboard_activity_listener(
+            &event_bus,
+            &database,
+            &logging_service,
+            &vfs_service,
+        )
+        .await?;
 
         // 11. Initialize plugin system (optional)
-        let plugin_manager = self.initialize_plugin_system(
-            Arc::clone(&event_bus), 
-            Arc::clone(&database) as Arc<dyn oxide_db::Db>
-        ).await?;
+        let plugin_manager = self
+            .initialize_plugin_system(
+                Arc::clone(&event_bus),
+                Arc::clone(&database) as Arc<dyn oxide_db::Db>,
+            )
+            .await?;
 
         // 12. Create logging API service if logging is enabled
         let logging_api_service = self.create_logging_api_service(&logging_service);
 
         // 13. Populate sample data if requested
         if self.config.database.auto_populate {
-            self.populate_sample_data(&database, &auth_service, &logging_service).await?;
+            self.populate_sample_data(&database, &auth_service, &logging_service)
+                .await?;
         }
 
         info!("✅ Application initialization completed successfully");
@@ -147,19 +160,39 @@ impl ApplicationBootstrap {
         match (services.plugin_manager, services.vfs_service) {
             (Some(plugin_manager), Some(vfs_service)) => {
                 // Both plugin manager and VFS service available - need to modify the server method to handle this
-                api_server.start_with_config_plugin_manager_and_optional_vfs(route_config, Some(plugin_manager), Some(vfs_service)).await?;
+                api_server
+                    .start_with_config_plugin_manager_and_optional_vfs(
+                        route_config,
+                        Some(plugin_manager),
+                        Some(vfs_service),
+                    )
+                    .await?;
             }
             (Some(plugin_manager), None) => {
                 // Only plugin manager available
-                api_server.start_with_config_plugin_manager_and_optional_vfs(route_config, Some(plugin_manager), None).await?;
+                api_server
+                    .start_with_config_plugin_manager_and_optional_vfs(
+                        route_config,
+                        Some(plugin_manager),
+                        None,
+                    )
+                    .await?;
             }
             (None, Some(vfs_service)) => {
                 // Only VFS service available - need to create a new method for this
-                api_server.start_with_config_plugin_manager_and_optional_vfs(route_config, None, Some(vfs_service)).await?;
+                api_server
+                    .start_with_config_plugin_manager_and_optional_vfs(
+                        route_config,
+                        None,
+                        Some(vfs_service),
+                    )
+                    .await?;
             }
             (None, None) => {
                 // Neither available
-                api_server.start_with_config_plugin_manager_and_optional_vfs(route_config, None, None).await?;
+                api_server
+                    .start_with_config_plugin_manager_and_optional_vfs(route_config, None, None)
+                    .await?;
             }
         }
 
@@ -182,25 +215,32 @@ impl ApplicationBootstrap {
 
         // Create logging service configuration
         let logging_config = LogServiceBuilder::new()
-            .db_path(self.config.logging.logging_db_path.join("oxidedb.log.sqlite"))
+            .db_path(
+                self.config
+                    .logging
+                    .logging_db_path
+                    .join("oxidedb.log.sqlite"),
+            )
             .retention_days(90)
             .enable_metrics(true)
             .build();
 
         // Create the logging service
-        let log_service = Arc::new(LogService::with_config(logging_config).await
-            .map_err(|e| AppError::internal(format!("Failed to initialize logging service: {}", e)))?);
-        
+        let log_service = Arc::new(LogService::with_config(logging_config).await.map_err(|e| {
+            AppError::internal(format!("Failed to initialize logging service: {}", e))
+        })?);
+
         // Create bridge to oxide-core traits
         let bridge = Arc::new(LogServiceBridge::new(log_service));
-        
+
         info!("✅ Logging system initialized with SQLite backend");
         Ok(Some(bridge))
     }
 
     /// Initialize the authentication service
     fn initialize_auth_service(&self) -> Result<Arc<AuthService>> {
-        let auth_config = oxide_core::auth::AuthServiceConfig::new(self.config.security.jwt_secret.clone());
+        let auth_config =
+            oxide_core::auth::AuthServiceConfig::new(self.config.security.jwt_secret.clone());
         let auth_service = Arc::new(AuthService::new(auth_config));
         info!("✅ Authentication service initialized");
         Ok(auth_service)
@@ -213,13 +253,9 @@ impl ApplicationBootstrap {
         auth_service: Arc<AuthService>,
     ) -> Result<Arc<SqliteDb>> {
         let database_path = self.config.database.resolved_path()?;
-        
-        let database = Arc::new(SqliteDb::new(
-            &database_path,
-            event_bus,
-            auth_service,
-        )?);
-        
+
+        let database = Arc::new(SqliteDb::new(&database_path, event_bus, auth_service)?);
+
         database.initialize().await?;
         info!("✅ SQLite database initialized with event integration and authentication");
         Ok(database)
@@ -240,12 +276,14 @@ impl ApplicationBootstrap {
         if !existing_names.contains("_users") {
             info!("📋 Creating _users auth collection...");
             let mut users_schema = oxide_core::CollectionSchema::new(
-                "_users".to_string(), 
-                oxide_core::CollectionType::Auth
+                "_users".to_string(),
+                oxide_core::CollectionType::Auth,
             );
             users_schema.add_field(
                 "email".to_string(),
-                oxide_core::FieldDefinition::new(oxide_core::FieldType::Email).required().unique(),
+                oxide_core::FieldDefinition::new(oxide_core::FieldType::Email)
+                    .required()
+                    .unique(),
             );
             users_schema.add_field(
                 "password".to_string(),
@@ -271,19 +309,24 @@ impl ApplicationBootstrap {
         if !existing_names.contains("_superusers") {
             info!("📋 Creating _superusers auth collection...");
             let mut superusers_schema = oxide_core::CollectionSchema::new(
-                "_superusers".to_string(), 
-                oxide_core::CollectionType::Auth
+                "_superusers".to_string(),
+                oxide_core::CollectionType::Auth,
             );
             superusers_schema.add_field(
                 "email".to_string(),
-                oxide_core::FieldDefinition::new(oxide_core::FieldType::Email).required().unique(),
+                oxide_core::FieldDefinition::new(oxide_core::FieldType::Email)
+                    .required()
+                    .unique(),
             );
             superusers_schema.add_field(
                 "password".to_string(),
                 oxide_core::FieldDefinition::new(oxide_core::FieldType::Password).required(),
             );
 
-            match database.create_collection_with_schema(superusers_schema).await {
+            match database
+                .create_collection_with_schema(superusers_schema)
+                .await
+            {
                 Ok(_) => {
                     info!("✅ _superusers auth collection created successfully");
                 }
@@ -310,7 +353,10 @@ impl ApplicationBootstrap {
     ) -> Result<()> {
         let auth_collections = database.list_auth_collections().await?;
         auth_service.update_auth_collections(&auth_collections);
-        info!("✅ Auth service updated with {} auth collections", auth_collections.len());
+        info!(
+            "✅ Auth service updated with {} auth collections",
+            auth_collections.len()
+        );
         Ok(())
     }
 
@@ -320,7 +366,7 @@ impl ApplicationBootstrap {
         database: Arc<SqliteDb>,
     ) -> Result<Arc<DatabasePermissionService>> {
         let permission_service = Arc::new(DatabasePermissionService::new(
-            database as Arc<dyn oxide_db::Db>
+            database as Arc<dyn oxide_db::Db>,
         ));
         info!("✅ Permission service initialized");
         Ok(permission_service)
@@ -337,7 +383,8 @@ impl ApplicationBootstrap {
             event_bus.as_ref(),
             auth_service,
             permission_service as Arc<dyn oxide_core::auth::PermissionService>,
-        ).await?;
+        )
+        .await?;
         info!("✅ All system hooks registered via centralized registry");
         Ok(())
     }
@@ -350,26 +397,31 @@ impl ApplicationBootstrap {
         logging_service: &Option<Arc<LogServiceBridge>>,
         vfs_service: &Option<Arc<dyn oxide_core::VirtualFileSystem>>,
     ) -> Result<()> {
-        use oxide_db::{DatabaseDashboardStatsService, LoggingStatsBridge, VfsStatsBridge, register_dashboard_activity_listener};
-        
+        use oxide_db::{
+            register_dashboard_activity_listener, DatabaseDashboardStatsService,
+            LoggingStatsBridge, VfsStatsBridge,
+        };
+
         // Create logging bridge if logging service is available
         let logging_bridge = logging_service.as_ref().map(|logging| {
             let log_api_service = oxide_logging::api::LogApiService::new(logging.inner().clone());
-            Arc::new(LoggingStatsBridge::with_service(Arc::new(log_api_service))) as Arc<dyn oxide_db::LoggingStatsProvider>
+            Arc::new(LoggingStatsBridge::with_service(Arc::new(log_api_service)))
+                as Arc<dyn oxide_db::LoggingStatsProvider>
         });
-        
+
         // Create VFS bridge if VFS service is available
         let vfs_bridge = vfs_service.as_ref().map(|vfs| {
-            Arc::new(VfsStatsBridge::with_service(Arc::clone(vfs))) as Arc<dyn oxide_db::VfsStatsProvider>
+            Arc::new(VfsStatsBridge::with_service(Arc::clone(vfs)))
+                as Arc<dyn oxide_db::VfsStatsProvider>
         });
-        
+
         // Create dashboard service with full integration for activity recording
         let dashboard_service = Arc::new(DatabaseDashboardStatsService::with_full_integration(
             database.clone() as Arc<dyn oxide_db::Db>,
             logging_bridge,
             vfs_bridge,
         )) as Arc<dyn oxide_core::DashboardStatsService>;
-        
+
         // Register the activity listener
         register_dashboard_activity_listener(event_bus, dashboard_service).await?;
         info!("✅ Dashboard activity listener registered with full service integration");
@@ -389,30 +441,59 @@ impl ApplicationBootstrap {
 
         // First, load plugins from database (persistent plugins)
         let plugins_dir = self.config.plugins.plugin_folder.clone();
-        let plugin_config_service = oxide_api::services::PluginConfigService::new(database.clone(), plugins_dir.clone());
+        let plugin_config_service =
+            oxide_api::services::PluginConfigService::new(database.clone(), plugins_dir.clone());
         let enabled_plugins = plugin_config_service.get_enabled_plugins().await?;
-        
+
         if !enabled_plugins.is_empty() {
-            info!("🔌 Loading {} enabled plugins from database", enabled_plugins.len());
-            
+            info!(
+                "🔌 Loading {} enabled plugins from database",
+                enabled_plugins.len()
+            );
+
             for config in enabled_plugins {
-                info!("📦 Loading plugin from database: {} (v{})", config.name, config.version);
-                info!("🔍 Plugin capabilities from database: {} capabilities", config.capabilities.len());
-                
+                info!(
+                    "📦 Loading plugin from database: {} (v{})",
+                    config.name, config.version
+                );
+                info!(
+                    "🔍 Plugin capabilities from database: {} capabilities",
+                    config.capabilities.len()
+                );
+
                 // Get WASM file path from configuration
                 let wasm_path = if let Some(ref path) = config.wasm_path {
                     plugins_dir.join(path)
                 } else {
-                    warn!("❌ Plugin '{}' has no WASM path in configuration, skipping", config.name);
-                    let _ = plugin_config_service.update_plugin_status(&config.name, oxide_core::plugin_config::PluginStatus::Error).await;
+                    warn!(
+                        "❌ Plugin '{}' has no WASM path in configuration, skipping",
+                        config.name
+                    );
+                    let _ = plugin_config_service
+                        .update_plugin_status(
+                            &config.name,
+                            oxide_core::plugin_config::PluginStatus::Error,
+                        )
+                        .await;
                     continue;
                 };
-                
+
                 // Use the new load_plugin_with_config method that automatically uses database capabilities
-                if let Err(e) = plugin_manager.load_plugin_with_config(&config.name, &wasm_path, &config).await {
-                    warn!("❌ Failed to load plugin '{}' from database: {}", config.name, e);
+                if let Err(e) = plugin_manager
+                    .load_plugin_with_config(&config.name, &wasm_path, &config)
+                    .await
+                {
+                    warn!(
+                        "❌ Failed to load plugin '{}' from database: {}",
+                        config.name, e
+                    );
                     // Update status to error
-                    let _ = plugin_config_service.update_plugin_status(&config.name, oxide_core::plugin_config::PluginStatus::Error).await;
+                    let _ = plugin_config_service
+                        .update_plugin_status(
+                            &config.name,
+                            oxide_core::plugin_config::PluginStatus::Error,
+                        )
+                        .await;
                 } else {
                     info!("✅ Successfully loaded plugin from database with database capabilities: {}", config.name);
                 }
@@ -423,18 +504,24 @@ impl ApplicationBootstrap {
 
         // Then, load plugins from folder (legacy support)
         if self.config.plugins.plugin_folder.exists() {
-            info!("🔌 Also loading plugins from folder: {:?}", self.config.plugins.plugin_folder);
-            
-            plugin_manager.load_plugins_from_folder(
-                &self.config.plugins.plugin_folder,
-                &event_bus,
-            ).await?;
+            info!(
+                "🔌 Also loading plugins from folder: {:?}",
+                self.config.plugins.plugin_folder
+            );
+
+            plugin_manager
+                .load_plugins_from_folder(&self.config.plugins.plugin_folder, &event_bus)
+                .await?;
         } else {
-            debug!("Plugin folder {:?} does not exist, skipping folder loading", 
-                  self.config.plugins.plugin_folder);
+            debug!(
+                "Plugin folder {:?} does not exist, skipping folder loading",
+                self.config.plugins.plugin_folder
+            );
         }
 
-        plugin_manager.register_with_event_system(&event_bus).await?;
+        plugin_manager
+            .register_with_event_system(&event_bus)
+            .await?;
 
         let plugin_manager = Arc::new(plugin_manager);
         info!("✅ Plugin system initialized with database persistence");
@@ -461,11 +548,9 @@ impl ApplicationBootstrap {
             .join("vfs_backups");
 
         // Initialize VFS system using the oxide-vfs crate
-        let vfs_service = oxide_vfs::initialize_vfs_system(
-            vfs_path,
-            backup_path,
-            Some(event_bus)
-        ).await.map_err(|e| AppError::internal(format!("Failed to initialize VFS system: {}", e)))?;
+        let vfs_service = oxide_vfs::initialize_vfs_system(vfs_path, backup_path, Some(event_bus))
+            .await
+            .map_err(|e| AppError::internal(format!("Failed to initialize VFS system: {}", e)))?;
 
         let vfs_service: Arc<dyn oxide_core::VirtualFileSystem> = Arc::new(vfs_service);
 
@@ -525,26 +610,31 @@ impl ApplicationBootstrap {
         logging_service: &Option<Arc<LogServiceBridge>>,
     ) -> Result<()> {
         sample_data::populate_database_samples(database, auth_service).await?;
-        
+
         if let Some(ref logging) = logging_service {
             sample_data::populate_logging_samples(logging).await?;
         }
-        
+
         Ok(())
     }
 
     /// Create route configuration
     fn create_route_config(&self) -> Result<oxide_api::routes::RouteConfig> {
-        let admin_enabled = self.config.server.enable_admin && 
-            !matches!(self.config.server.admin_mode, crate::AdminMode::Disabled);
-        
+        let admin_enabled = self.config.server.enable_admin
+            && !matches!(self.config.server.admin_mode, crate::AdminMode::Disabled);
+
         // Validate external admin UI path if needed
         if matches!(self.config.server.admin_mode, crate::AdminMode::External) && admin_enabled {
             if !self.config.server.admin_ui_path.exists() {
-                warn!("External admin UI path {:?} does not exist, admin UI will be unavailable", 
-                      self.config.server.admin_ui_path);
+                warn!(
+                    "External admin UI path {:?} does not exist, admin UI will be unavailable",
+                    self.config.server.admin_ui_path
+                );
             } else {
-                info!("Using external admin UI from: {:?}", self.config.server.admin_ui_path);
+                info!(
+                    "Using external admin UI from: {:?}",
+                    self.config.server.admin_ui_path
+                );
             }
         }
 
@@ -555,7 +645,7 @@ impl ApplicationBootstrap {
             admin_mode: match &self.config.server.admin_mode {
                 crate::AdminMode::Embedded => oxide_api::routes::AdminUiMode::Embedded,
                 crate::AdminMode::External => oxide_api::routes::AdminUiMode::External(
-                    self.config.server.admin_ui_path.clone()
+                    self.config.server.admin_ui_path.clone(),
                 ),
                 crate::AdminMode::Disabled => oxide_api::routes::AdminUiMode::Disabled,
             },
@@ -571,27 +661,83 @@ impl ApplicationBootstrap {
         let mut msg = String::from("\n⚙️  Runtime configuration\n");
 
         // Core configuration
-        let _ = writeln!(msg, "  Database path        : {:?}", self.config.database.db_path);
-        let _ = writeln!(msg, "  Security policy      : {:?}", self.config.plugins.security_policy);
-        let _ = writeln!(msg, "  Plugin folder        : {:?}", self.config.plugins.plugin_folder);
-        let _ = writeln!(msg, "  API port             : {}",  self.config.server.api_port);
-        let _ = writeln!(msg, "  Bind address         : {}",  self.config.server.bind_address);
+        let _ = writeln!(
+            msg,
+            "  Database path        : {:?}",
+            self.config.database.db_path
+        );
+        let _ = writeln!(
+            msg,
+            "  Security policy      : {:?}",
+            self.config.plugins.security_policy
+        );
+        let _ = writeln!(
+            msg,
+            "  Plugin folder        : {:?}",
+            self.config.plugins.plugin_folder
+        );
+        let _ = writeln!(
+            msg,
+            "  API port             : {}",
+            self.config.server.api_port
+        );
+        let _ = writeln!(
+            msg,
+            "  Bind address         : {}",
+            self.config.server.bind_address
+        );
 
         // Admin UI
-        let _ = writeln!(msg, "  Admin enabled        : {}",  self.config.server.enable_admin);
-        let _ = writeln!(msg, "  Admin mode           : {:?}", self.config.server.admin_mode);
+        let _ = writeln!(
+            msg,
+            "  Admin enabled        : {}",
+            self.config.server.enable_admin
+        );
+        let _ = writeln!(
+            msg,
+            "  Admin mode           : {:?}",
+            self.config.server.admin_mode
+        );
         if matches!(self.config.server.admin_mode, crate::AdminMode::External) {
-            let _ = writeln!(msg, "  Admin UI path        : {:?}", self.config.server.admin_ui_path);
+            let _ = writeln!(
+                msg,
+                "  Admin UI path        : {:?}",
+                self.config.server.admin_ui_path
+            );
         }
 
         // Misc.
-        let _ = writeln!(msg, "  Auto-populate DB     : {}",  self.config.database.auto_populate);
-        let _ = writeln!(msg, "  Log level            : {:?}", self.config.logging.log_level);
-        let _ = writeln!(msg, "  Request logging      : {}",  self.config.server.enable_request_logging);
-        let _ = writeln!(msg, "  CORS enabled         : {}",  self.config.server.enable_cors);
-        let _ = writeln!(msg, "  Logging system       : {}",  self.config.logging.enable_logging);
+        let _ = writeln!(
+            msg,
+            "  Auto-populate DB     : {}",
+            self.config.database.auto_populate
+        );
+        let _ = writeln!(
+            msg,
+            "  Log level            : {:?}",
+            self.config.logging.log_level
+        );
+        let _ = writeln!(
+            msg,
+            "  Request logging      : {}",
+            self.config.server.enable_request_logging
+        );
+        let _ = writeln!(
+            msg,
+            "  CORS enabled         : {}",
+            self.config.server.enable_cors
+        );
+        let _ = writeln!(
+            msg,
+            "  Logging system       : {}",
+            self.config.logging.enable_logging
+        );
         if self.config.logging.enable_logging {
-            let _ = writeln!(msg, "  Logging DB path      : {:?}", self.config.logging.logging_db_path);
+            let _ = writeln!(
+                msg,
+                "  Logging DB path      : {:?}",
+                self.config.logging.logging_db_path
+            );
         }
 
         // Emit as DEBUG to keep INFO channel cleaner; users can opt-in via RUST_LOG=debug.
@@ -615,17 +761,33 @@ impl ApplicationBootstrap {
         banner.push_str("  • WASM plugin runtime & audit logging\n\n");
 
         // Runtime URLs
-        let _ = writeln!(banner, "🌐 API server : http://{}:{}", self.config.server.bind_address, self.config.server.api_port);
+        let _ = writeln!(
+            banner,
+            "🌐 API server : http://{}:{}",
+            self.config.server.bind_address, self.config.server.api_port
+        );
 
-        let admin_enabled = self.config.server.enable_admin &&
-            !matches!(self.config.server.admin_mode, crate::AdminMode::Disabled);
+        let admin_enabled = self.config.server.enable_admin
+            && !matches!(self.config.server.admin_mode, crate::AdminMode::Disabled);
 
         if admin_enabled {
-            let _ = writeln!(banner, "🎨 Admin UI   : http://{}:{}{}", self.config.server.bind_address, self.config.server.api_port, self.config.server.admin_path);
+            let _ = writeln!(
+                banner,
+                "🎨 Admin UI   : http://{}:{}{}",
+                self.config.server.bind_address,
+                self.config.server.api_port,
+                self.config.server.admin_path
+            );
             match &self.config.server.admin_mode {
-                crate::AdminMode::Embedded => banner.push_str("   Mode        : Embedded (built-in UI)\n"),
+                crate::AdminMode::Embedded => {
+                    banner.push_str("   Mode        : Embedded (built-in UI)\n")
+                }
                 crate::AdminMode::External => {
-                    let _ = writeln!(banner, "   Mode        : External (serving from {:?})", self.config.server.admin_ui_path);
+                    let _ = writeln!(
+                        banner,
+                        "   Mode        : External (serving from {:?})",
+                        self.config.server.admin_ui_path
+                    );
                 }
                 crate::AdminMode::Disabled => {}
             }
@@ -633,7 +795,9 @@ impl ApplicationBootstrap {
             banner.push_str("🚫 Admin UI   : disabled\n");
         }
 
-        banner.push_str("\nTip: run with RUST_LOG=debug to see full endpoint list and configuration details.\n");
+        banner.push_str(
+            "\nTip: run with RUST_LOG=debug to see full endpoint list and configuration details.\n",
+        );
 
         // Emit banner in a single INFO record.
         info!("{}", banner);
@@ -647,10 +811,13 @@ impl ApplicationBootstrap {
         debug!("📋 Available endpoints:");
         debug!("  • GET  /health                               – Health check");
 
-        let admin_enabled = self.config.server.enable_admin &&
-            !matches!(self.config.server.admin_mode, crate::AdminMode::Disabled);
+        let admin_enabled = self.config.server.enable_admin
+            && !matches!(self.config.server.admin_mode, crate::AdminMode::Disabled);
         if admin_enabled {
-            debug!("  • GET  {}                                – Admin UI", self.config.server.admin_path);
+            debug!(
+                "  • GET  {}                                – Admin UI",
+                self.config.server.admin_path
+            );
         }
 
         debug!("  • GET  /collections                          – List collections");

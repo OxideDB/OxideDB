@@ -4,10 +4,10 @@
 //! It provides comprehensive logging of Before and After events with configurable
 //! log levels and filtering.
 
-use crate::{BeforeEventContext, AfterEventContext, AppError};
+use crate::{AfterEventContext, AppError, BeforeEventContext};
 use serde_json::Value as JsonValue;
 use std::collections::HashSet;
-use tracing::{info, debug, error};
+use tracing::{debug, error, info};
 
 /// Configuration for activity logging
 #[derive(Debug, Clone)]
@@ -67,7 +67,11 @@ impl ActivityLoggerHook {
     }
 
     /// Handle Before events (all types)
-    pub fn handle_before_event(&self, event_type: &str, context: &BeforeEventContext) -> Result<(), AppError> {
+    pub fn handle_before_event(
+        &self,
+        event_type: &str,
+        context: &BeforeEventContext,
+    ) -> Result<(), AppError> {
         if !self.should_log_collection(&context.collection) {
             return Ok(());
         }
@@ -97,9 +101,18 @@ impl ActivityLoggerHook {
     }
 
     /// Handle After events (all types)
-    pub fn handle_after_event(&self, event_type: &str, context: &AfterEventContext) -> Result<(), AppError> {
+    pub fn handle_after_event(
+        &self,
+        event_type: &str,
+        context: &AfterEventContext,
+    ) -> Result<(), AppError> {
         match context {
-            AfterEventContext::RecordCreated { collection, record_id, data, .. } => {
+            AfterEventContext::RecordCreated {
+                collection,
+                record_id,
+                data,
+                ..
+            } => {
                 if self.should_log_collection(collection) {
                     let sanitized_data = if self.config.log_data_content {
                         Some(self.sanitize_data(data))
@@ -112,11 +125,18 @@ impl ActivityLoggerHook {
                         event_type,
                         collection,
                         record_id,
-                        sanitized_data.map_or_else(|| "[HIDDEN]".to_string(), |d| self.truncate_json(&d))
+                        sanitized_data
+                            .map_or_else(|| "[HIDDEN]".to_string(), |d| self.truncate_json(&d))
                     );
                 }
             }
-            AfterEventContext::RecordUpdated { collection, record_id, old_data, new_data, .. } => {
+            AfterEventContext::RecordUpdated {
+                collection,
+                record_id,
+                old_data,
+                new_data,
+                ..
+            } => {
                 if self.should_log_collection(collection) {
                     let old_sanitized = if self.config.log_data_content {
                         Some(self.sanitize_data(old_data))
@@ -134,12 +154,19 @@ impl ActivityLoggerHook {
                         event_type,
                         collection,
                         record_id,
-                        old_sanitized.map_or_else(|| "[HIDDEN]".to_string(), |d| self.truncate_json(&d)),
-                        new_sanitized.map_or_else(|| "[HIDDEN]".to_string(), |d| self.truncate_json(&d))
+                        old_sanitized
+                            .map_or_else(|| "[HIDDEN]".to_string(), |d| self.truncate_json(&d)),
+                        new_sanitized
+                            .map_or_else(|| "[HIDDEN]".to_string(), |d| self.truncate_json(&d))
                     );
                 }
             }
-            AfterEventContext::RecordDeleted { collection, record_id, data: _, .. } => {
+            AfterEventContext::RecordDeleted {
+                collection,
+                record_id,
+                data: _,
+                ..
+            } => {
                 if self.should_log_collection(collection) {
                     info!(
                         "🗑️ [AFTER] {} | Collection: '{}' | Record ID: {} | Deleted data logged separately",
@@ -152,41 +179,30 @@ impl ActivityLoggerHook {
             AfterEventContext::UserRegistered { user_id, email, .. } => {
                 info!(
                     "👤 [AFTER] {} | User ID: {} | Email: {}",
-                    event_type,
-                    user_id,
-                    email
+                    event_type, user_id, email
                 );
             }
             AfterEventContext::UserAuthenticated { user_id, email, .. } => {
                 info!(
                     "🔐 [AFTER] {} | User ID: {} | Email: {}",
-                    event_type,
-                    user_id,
-                    email
+                    event_type, user_id, email
                 );
             }
             AfterEventContext::CollectionCreated { collection, .. } => {
-                info!(
-                    "📁 [AFTER] {} | Collection: '{}'",
-                    event_type,
-                    collection
-                );
+                info!("📁 [AFTER] {} | Collection: '{}'", event_type, collection);
             }
             AfterEventContext::CollectionUpdated { collection, .. } => {
-                info!(
-                    "📝 [AFTER] {} | Collection: '{}'",
-                    event_type,
-                    collection
-                );
+                info!("📝 [AFTER] {} | Collection: '{}'", event_type, collection);
             }
             AfterEventContext::CollectionDeleted { collection, .. } => {
-                info!(
-                    "🗂️ [AFTER] {} | Collection: '{}'",
-                    event_type,
-                    collection
-                );
+                info!("🗂️ [AFTER] {} | Collection: '{}'", event_type, collection);
             }
-            AfterEventContext::ErrorOccurred { error_type, message, context: error_context, .. } => {
+            AfterEventContext::ErrorOccurred {
+                error_type,
+                message,
+                context: error_context,
+                ..
+            } => {
                 error!(
                     "❌ [AFTER] {} | Error Type: {} | Message: {} | Context: {}",
                     event_type,
@@ -196,10 +212,7 @@ impl ActivityLoggerHook {
                 );
             }
             _ => {
-                debug!(
-                    "📋 [AFTER] {} | Generic event logged",
-                    event_type
-                );
+                debug!("📋 [AFTER] {} | Generic event logged", event_type);
             }
         }
 
@@ -209,14 +222,21 @@ impl ActivityLoggerHook {
     /// Check if we should log operations for this collection
     fn should_log_collection(&self, collection: &str) -> bool {
         // If exclusion list is not empty and collection is in it, don't log
-        if !self.config.collections_to_exclude.is_empty() 
-            && self.config.collections_to_exclude.contains(&collection.to_string()) {
+        if !self.config.collections_to_exclude.is_empty()
+            && self
+                .config
+                .collections_to_exclude
+                .contains(&collection.to_string())
+        {
             return false;
         }
 
         // If inclusion list is not empty, only log if collection is in it
         if !self.config.collections_to_log.is_empty() {
-            return self.config.collections_to_log.contains(&collection.to_string());
+            return self
+                .config
+                .collections_to_log
+                .contains(&collection.to_string());
         }
 
         // If both lists are empty, log everything
@@ -249,9 +269,12 @@ impl ActivityLoggerHook {
     /// Truncate JSON string representation if too long
     fn truncate_json(&self, data: &JsonValue) -> String {
         let json_str = serde_json::to_string(data).unwrap_or_else(|_| "[INVALID JSON]".to_string());
-        
+
         if json_str.len() > self.config.max_data_length {
-            format!("{}... [TRUNCATED]", &json_str[..self.config.max_data_length])
+            format!(
+                "{}... [TRUNCATED]",
+                &json_str[..self.config.max_data_length]
+            )
         } else {
             json_str
         }
@@ -305,8 +328,10 @@ mod tests {
 
     #[test]
     fn test_collection_filtering() {
-        let mut config = ActivityLoggerConfig::default();
-        config.collections_to_log = vec!["users".to_string()];
+        let config = ActivityLoggerConfig {
+            collections_to_log: vec!["users".to_string()],
+            ..Default::default()
+        };
         let hook = ActivityLoggerHook::with_config(config);
 
         assert!(hook.should_log_collection("users"));
@@ -323,7 +348,7 @@ mod tests {
         });
 
         let sanitized = hook.sanitize_data(&data);
-        
+
         assert_eq!(sanitized["email"], json!("test@example.com"));
         assert_eq!(sanitized["password"], json!("[MASKED]"));
         assert_eq!(sanitized["name"], json!("John Doe"));
@@ -331,14 +356,16 @@ mod tests {
 
     #[test]
     fn test_data_truncation() {
-        let mut config = ActivityLoggerConfig::default();
-        config.max_data_length = 10;
+        let config = ActivityLoggerConfig {
+            max_data_length: 10,
+            ..Default::default()
+        };
         let hook = ActivityLoggerHook::with_config(config);
 
         let large_data = json!({"key": "very_long_value_that_exceeds_limit"});
         let truncated = hook.truncate_json(&large_data);
-        
+
         assert!(truncated.contains("[TRUNCATED]"));
         assert!(truncated.len() > 10); // Should include the truncation marker
     }
-} 
+}

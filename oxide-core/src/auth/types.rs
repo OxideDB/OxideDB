@@ -236,4 +236,4 @@ pub enum PermissionLevel {
     Public,
     /// Custom rule expression (e.g., "@req.user.id = @record.user_id")
     Rule(String),
-} 
+}

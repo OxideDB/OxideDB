@@ -110,7 +110,7 @@ export const CollectionRulesTab: React.FC<CollectionRulesTabProps> = ({
                               return (
                                 <div key={operation} className="flex items-center gap-2 px-3 py-2 rounded-lg border-2 bg-gradient-to-r from-blue-50/50 to-blue-50/70 hover:border-blue-300 transition-colors">
                                   <div className="flex-shrink-0">
-                                    {getCrudOperationIcon(operation as any)}
+                                    {getCrudOperationIcon(operation)}
                                   </div>
                                   <div className="flex items-center gap-2">
                                     <span className="text-sm font-medium capitalize">{operation}</span>
@@ -143,7 +143,7 @@ export const CollectionRulesTab: React.FC<CollectionRulesTabProps> = ({
                                 return (
                                   <div key={operation} className="flex items-center gap-2 px-3 py-2 rounded-lg border-2 bg-gradient-to-r from-purple-50/50 to-purple-50/70 hover:border-purple-300 transition-colors">
                                     <div className="flex-shrink-0">
-                                      {getAuthOperationIcon(operation as any)}
+                                      {getAuthOperationIcon(operation)}
                                     </div>
                                     <div className="flex items-center gap-2">
                                       <span className="text-sm font-medium capitalize">{operation.replace('_', ' ')}</span>

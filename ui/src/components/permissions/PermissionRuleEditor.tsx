@@ -123,7 +123,7 @@ export const PermissionRuleEditor: React.FC<PermissionRuleEditorProps> = ({
                           value={typeof rule?.permission === 'object' ? 'rule' : rule?.permission || 'none'}
                           onValueChange={(value: string) => {
                             if (value === 'rule') {
-                              updateCrudOperation(operation as CrudOperation, { rule: '@request.auth.id != null' });
+                              updateCrudOperation(operation as CrudOperation, { rule: "@req.user.id != ''" });
                             } else {
                               updateCrudOperation(operation as CrudOperation, value as PermissionLevel);
                             }
@@ -190,13 +190,13 @@ export const PermissionRuleEditor: React.FC<PermissionRuleEditorProps> = ({
                             Custom Rule Expression
                           </label>
                           <Input
-                            placeholder="e.g., @request.auth.id = @record.user_id"
+                            placeholder="e.g., @req.user.id = @record.user_id"
                             value={rule.permission.rule}
                             onChange={(e) => updateCrudOperation(operation as CrudOperation, { rule: e.target.value })}
                             className="font-mono text-sm h-12 border-2"
                           />
                           <p className="text-xs text-muted-foreground">
-                            Use variables like @request.auth.id, @record.field_name to define access logic
+                            Use variables like @req.user.id, @record.field_name to define access logic
                           </p>
                         </div>
                       )}
@@ -287,7 +287,7 @@ export const PermissionRuleEditor: React.FC<PermissionRuleEditorProps> = ({
                             value={typeof rule?.permission === 'object' ? 'rule' : rule?.permission || 'none'}
                             onValueChange={(value: string) => {
                               if (value === 'rule') {
-                                updateAuthOperation(operation as AuthOperation, { rule: '@request.headers.x-api-key != ""' });
+                                updateAuthOperation(operation as AuthOperation, { rule: "@req.headers.x-api-key != ''" });
                               } else {
                                 updateAuthOperation(operation as AuthOperation, value as PermissionLevel);
                               }
@@ -354,7 +354,7 @@ export const PermissionRuleEditor: React.FC<PermissionRuleEditorProps> = ({
                               Custom Rule Expression
                             </label>
                             <Input
-                              placeholder="e.g., @request.headers.x-api-key != ''"
+                              placeholder="e.g., @req.headers.x-api-key != ''"
                               value={rule.permission.rule}
                               onChange={(e) => updateAuthOperation(operation as AuthOperation, { rule: e.target.value })}
                               className="font-mono text-sm h-12 border-2"

@@ -3,11 +3,11 @@
 //! This hook monitors and logs security-related events including authentication
 //! attempts, failed operations, and suspicious activities.
 
-use crate::{BeforeEventContext, AfterEventContext, AppError};
+use crate::{AfterEventContext, AppError, BeforeEventContext};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
-use tracing::{warn, error, info, debug};
+use tracing::{debug, error, info, warn};
 
 /// Security event severity levels
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -20,12 +20,31 @@ pub enum SecurityLevel {
 /// Security event types
 #[derive(Debug, Clone)]
 pub enum SecurityEvent {
-    AuthenticationAttempt { email: String, success: bool },
-    PasswordChangeAttempt { user_id: String, success: bool },
-    UnauthorizedAccess { collection: String, action: String },
-    SuspiciousActivity { description: String, severity: SecurityLevel },
-    DataModification { collection: String, record_id: String, sensitive: bool },
-    PrivilegeEscalation { user_id: String, attempted_action: String },
+    AuthenticationAttempt {
+        email: String,
+        success: bool,
+    },
+    PasswordChangeAttempt {
+        user_id: String,
+        success: bool,
+    },
+    UnauthorizedAccess {
+        collection: String,
+        action: String,
+    },
+    SuspiciousActivity {
+        description: String,
+        severity: SecurityLevel,
+    },
+    DataModification {
+        collection: String,
+        record_id: String,
+        sensitive: bool,
+    },
+    PrivilegeEscalation {
+        user_id: String,
+        attempted_action: String,
+    },
 }
 
 /// Rate limiting configuration
@@ -116,12 +135,19 @@ impl SecurityAuditHook {
     }
 
     /// Handle Before events for security monitoring
-    pub fn handle_before_event(&self, event_type: &str, context: &BeforeEventContext) -> Result<(), AppError> {
+    pub fn handle_before_event(
+        &self,
+        event_type: &str,
+        context: &BeforeEventContext,
+    ) -> Result<(), AppError> {
         // Check for sensitive collection access
         if self.is_sensitive_collection(&context.collection) {
             self.log_security_event(SecurityEvent::DataModification {
                 collection: context.collection.clone(),
-                record_id: context.record_id.clone().unwrap_or_else(|| "new".to_string()),
+                record_id: context
+                    .record_id
+                    .clone()
+                    .unwrap_or_else(|| "new".to_string()),
                 sensitive: true,
             })?;
         }
@@ -140,7 +166,11 @@ impl SecurityAuditHook {
     }
 
     /// Handle After events for security monitoring
-    pub fn handle_after_event(&self, event_type: &str, context: &AfterEventContext) -> Result<(), AppError> {
+    pub fn handle_after_event(
+        &self,
+        event_type: &str,
+        context: &AfterEventContext,
+    ) -> Result<(), AppError> {
         match context {
             AfterEventContext::UserAuthenticated { user_id, email, .. } => {
                 self.log_security_event(SecurityEvent::AuthenticationAttempt {
@@ -152,7 +182,11 @@ impl SecurityAuditHook {
             AfterEventContext::UserRegistered { user_id, email, .. } => {
                 info!("👤 New user registered: {} ({})", email, user_id);
             }
-            AfterEventContext::ErrorOccurred { error_type, message, .. } => {
+            AfterEventContext::ErrorOccurred {
+                error_type,
+                message,
+                ..
+            } => {
                 if error_type.contains("auth") || error_type.contains("Auth") {
                     self.log_security_event(SecurityEvent::SuspiciousActivity {
                         description: format!("Authentication error: {}", message),
@@ -187,24 +221,41 @@ impl SecurityAuditHook {
                 }
             }
             SecurityEvent::UnauthorizedAccess { collection, action } => {
-                error!("🚨 Unauthorized access attempt: {} on {}", action, collection);
+                error!(
+                    "🚨 Unauthorized access attempt: {} on {}",
+                    action, collection
+                );
             }
-            SecurityEvent::SuspiciousActivity { description, severity } => {
-                match severity {
-                    SecurityLevel::Info => info!("ℹ️ Security info: {}", description),
-                    SecurityLevel::Warning => warn!("⚠️ Security warning: {}", description),
-                    SecurityLevel::Critical => error!("🚨 Security alert: {}", description),
-                }
-            }
-            SecurityEvent::DataModification { collection, record_id, sensitive } => {
+            SecurityEvent::SuspiciousActivity {
+                description,
+                severity,
+            } => match severity {
+                SecurityLevel::Info => info!("ℹ️ Security info: {}", description),
+                SecurityLevel::Warning => warn!("⚠️ Security warning: {}", description),
+                SecurityLevel::Critical => error!("🚨 Security alert: {}", description),
+            },
+            SecurityEvent::DataModification {
+                collection,
+                record_id,
+                sensitive,
+            } => {
                 if sensitive {
-                    warn!("🔒 Sensitive data modified: {} record {}", collection, record_id);
+                    warn!(
+                        "🔒 Sensitive data modified: {} record {}",
+                        collection, record_id
+                    );
                 } else {
                     debug!("📝 Data modified: {} record {}", collection, record_id);
                 }
             }
-            SecurityEvent::PrivilegeEscalation { user_id, attempted_action } => {
-                error!("🚨 Privilege escalation attempt: {} tried {}", user_id, attempted_action);
+            SecurityEvent::PrivilegeEscalation {
+                user_id,
+                attempted_action,
+            } => {
+                error!(
+                    "🚨 Privilege escalation attempt: {} tried {}",
+                    user_id, attempted_action
+                );
             }
         }
 
@@ -213,7 +264,9 @@ impl SecurityAuditHook {
 
     /// Check if a collection is considered sensitive
     fn is_sensitive_collection(&self, collection: &str) -> bool {
-        self.config.sensitive_collections.contains(&collection.to_string())
+        self.config
+            .sensitive_collections
+            .contains(&collection.to_string())
     }
 
     /// Detect anomalies in data or access patterns
@@ -223,9 +276,13 @@ impl SecurityAuditHook {
             .map(|s| s.len())
             .unwrap_or(0);
 
-        if data_size > 10_000 { // 10KB threshold
+        if data_size > 10_000 {
+            // 10KB threshold
             self.log_security_event(SecurityEvent::SuspiciousActivity {
-                description: format!("Large data payload: {} bytes in collection {}", data_size, context.collection),
+                description: format!(
+                    "Large data payload: {} bytes in collection {}",
+                    data_size, context.collection
+                ),
                 severity: SecurityLevel::Warning,
             })?;
         }
@@ -237,7 +294,10 @@ impl SecurityAuditHook {
                 if let Some(str_value) = value.as_str() {
                     if self.contains_suspicious_patterns(str_value) {
                         self.log_security_event(SecurityEvent::SuspiciousActivity {
-                            description: format!("Suspicious content in field '{}' of collection {}", key, context.collection),
+                            description: format!(
+                                "Suspicious content in field '{}' of collection {}",
+                                key, context.collection
+                            ),
                             severity: SecurityLevel::Warning,
                         })?;
                     }
@@ -263,7 +323,9 @@ impl SecurityAuditHook {
         ];
 
         let data_lower = data.to_lowercase();
-        suspicious_patterns.iter().any(|pattern| data_lower.contains(&pattern.to_lowercase()))
+        suspicious_patterns
+            .iter()
+            .any(|pattern| data_lower.contains(&pattern.to_lowercase()))
     }
 
     /// Check rate limiting for events
@@ -271,9 +333,10 @@ impl SecurityAuditHook {
         let key = format!("{}:{}", collection, event_type);
         let now = SystemTime::now();
 
-        let mut counters = self.event_counters.lock().map_err(|_| {
-            AppError::internal("Failed to acquire lock for rate limiting")
-        })?;
+        let mut counters = self
+            .event_counters
+            .lock()
+            .map_err(|_| AppError::internal("Failed to acquire lock for rate limiting"))?;
 
         let counter = counters.entry(key.clone()).or_insert(EventCounter {
             count: 0,
@@ -281,7 +344,11 @@ impl SecurityAuditHook {
         });
 
         // Check if we're in a new time window
-        if now.duration_since(counter.window_start).unwrap_or(Duration::ZERO) > self.config.rate_limit.window_duration {
+        if now
+            .duration_since(counter.window_start)
+            .unwrap_or(Duration::ZERO)
+            > self.config.rate_limit.window_duration
+        {
             counter.count = 0;
             counter.window_start = now;
         }
@@ -293,7 +360,7 @@ impl SecurityAuditHook {
                 description: format!("Rate limit exceeded for {}: {} events", key, counter.count),
                 severity: SecurityLevel::Critical,
             })?;
-            
+
             return Err(AppError::validation("rate_limit", "Rate limit exceeded"));
         }
 
@@ -302,18 +369,20 @@ impl SecurityAuditHook {
 
     /// Get current security statistics
     pub fn get_security_stats(&self) -> Result<HashMap<String, usize>, AppError> {
-        let counters = self.event_counters.lock().map_err(|_| {
-            AppError::internal("Failed to acquire lock for security stats")
-        })?;
+        let counters = self
+            .event_counters
+            .lock()
+            .map_err(|_| AppError::internal("Failed to acquire lock for security stats"))?;
 
         Ok(counters.iter().map(|(k, v)| (k.clone(), v.count)).collect())
     }
 
     /// Clear security statistics
     pub fn clear_stats(&self) -> Result<(), AppError> {
-        let mut counters = self.event_counters.lock().map_err(|_| {
-            AppError::internal("Failed to acquire lock for clearing stats")
-        })?;
+        let mut counters = self
+            .event_counters
+            .lock()
+            .map_err(|_| AppError::internal("Failed to acquire lock for clearing stats"))?;
 
         counters.clear();
         Ok(())
@@ -341,7 +410,10 @@ mod tests {
         let config = SecurityAuditConfig::default();
         let hook = SecurityAuditHook::with_config(config);
 
-        assert!(hook.config.sensitive_collections.contains(&"_users".to_string()));
+        assert!(hook
+            .config
+            .sensitive_collections
+            .contains(&"_users".to_string()));
         assert!(hook.config.enable_anomaly_detection);
     }
 
@@ -384,14 +456,14 @@ mod tests {
         let mut config = SecurityAuditConfig::default();
         config.rate_limit.max_events = 2;
         config.rate_limit.window_duration = Duration::from_secs(60);
-        
+
         let hook = SecurityAuditHook::with_config(config);
 
         // First two requests should pass
         assert!(hook.check_rate_limit("_users", "create").is_ok());
         assert!(hook.check_rate_limit("_users", "create").is_ok());
-        
+
         // Third request should be rate limited
         assert!(hook.check_rate_limit("_users", "create").is_err());
     }
-} 
+}

@@ -3,6 +3,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::str::FromStr;
 use uuid::Uuid;
 
 /// Unique identifier for correlating related log entries across operations
@@ -15,14 +16,17 @@ impl CorrelationId {
         Self(Uuid::new_v4())
     }
 
-    /// Parse from string
-    pub fn from_str(s: &str) -> Result<Self, uuid::Error> {
-        Ok(Self(Uuid::parse_str(s)?))
-    }
-
     /// Get the inner UUID
     pub fn as_uuid(&self) -> &Uuid {
         &self.0
+    }
+}
+
+impl FromStr for CorrelationId {
+    type Err = uuid::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(Self(Uuid::parse_str(s)?))
     }
 }
 
@@ -66,14 +70,22 @@ impl LogLevel {
     }
 
     /// Parse from string
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn parse(s: &str) -> Option<Self> {
+        s.parse().ok()
+    }
+}
+
+impl FromStr for LogLevel {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_uppercase().as_str() {
-            "ERROR" => Some(LogLevel::Error),
-            "WARN" | "WARNING" => Some(LogLevel::Warn),
-            "INFO" => Some(LogLevel::Info),
-            "DEBUG" => Some(LogLevel::Debug),
-            "TRACE" => Some(LogLevel::Trace),
-            _ => None,
+            "ERROR" => Ok(LogLevel::Error),
+            "WARN" | "WARNING" => Ok(LogLevel::Warn),
+            "INFO" => Ok(LogLevel::Info),
+            "DEBUG" => Ok(LogLevel::Debug),
+            "TRACE" => Ok(LogLevel::Trace),
+            _ => Err(format!("Invalid log level: {s}")),
         }
     }
 }
@@ -85,7 +97,7 @@ impl std::fmt::Display for LogLevel {
 }
 
 /// Additional context information for log entries
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct LogContext {
     /// User ID if available
     pub user_id: Option<String>,
@@ -103,21 +115,6 @@ pub struct LogContext {
     pub user_agent: Option<String>,
     /// Additional custom metadata
     pub metadata: HashMap<String, serde_json::Value>,
-}
-
-impl Default for LogContext {
-    fn default() -> Self {
-        Self {
-            user_id: None,
-            session_id: None,
-            collection: None,
-            record_id: None,
-            operation: None,
-            client_ip: None,
-            user_agent: None,
-            metadata: HashMap::new(),
-        }
-    }
 }
 
 impl LogContext {
@@ -204,11 +201,7 @@ pub struct LogEntry {
 
 impl LogEntry {
     /// Create a new log entry
-    pub fn new(
-        level: LogLevel,
-        message: impl Into<String>,
-        module: impl Into<String>,
-    ) -> Self {
+    pub fn new(level: LogLevel, message: impl Into<String>, module: impl Into<String>) -> Self {
         Self {
             id: Uuid::new_v4(),
             correlation_id: CorrelationId::new(),

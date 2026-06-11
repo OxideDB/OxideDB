@@ -503,6 +503,12 @@ impl LoggingStatsBridge {
     }
 }
 
+impl Default for LoggingStatsBridge {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[async_trait]
 impl LoggingStatsProvider for LoggingStatsBridge {
     async fn get_api_stats(&self) -> Result<ApiStats, AppError> {
@@ -679,6 +685,12 @@ impl VfsStatsBridge {
         Self {
             vfs_service: Some(vfs_service),
         }
+    }
+}
+
+impl Default for VfsStatsBridge {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

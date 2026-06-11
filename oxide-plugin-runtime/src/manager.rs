@@ -38,6 +38,7 @@ type AfterHandler = Arc<
 pub struct PluginManager {
     pub runtime: Arc<Mutex<WasmtimePluginRuntime>>,
     bridge: PluginEventBridge,
+    security_policies: SecurityPolicies,
 }
 
 impl PluginManager {
@@ -55,7 +56,23 @@ impl PluginManager {
         let runtime = Arc::new(Mutex::new(runtime));
         let bridge = PluginEventBridge::new(Arc::clone(&runtime));
 
-        Ok(Self { runtime, bridge })
+        let security_policies = {
+            let runtime_guard = runtime
+                .lock()
+                .map_err(|_| AppError::internal("Failed to acquire plugin runtime lock"))?;
+            runtime_guard.security_policies().clone()
+        };
+
+        Ok(Self {
+            runtime,
+            bridge,
+            security_policies,
+        })
+    }
+
+    /// Return true when this manager requires verified code signatures.
+    pub fn requires_code_signing(&self) -> bool {
+        self.security_policies.require_code_signing
     }
 
     /// Load all plugins from the specified folder
@@ -65,6 +82,13 @@ impl PluginManager {
         _event_bus: &Arc<dyn EventBus>,
     ) -> Result<(), AppError> {
         info!("Loading plugins from folder: {:?}", plugin_folder);
+
+        if self.requires_code_signing() {
+            warn!(
+                "Skipping legacy plugin folder loading because code signing is required and folder plugins have no persisted signature verification"
+            );
+            return Ok(());
+        }
 
         let entries = std::fs::read_dir(plugin_folder)
             .map_err(|e| AppError::internal(format!("Failed to read plugin folder: {}", e)))?;
@@ -369,10 +393,10 @@ impl PluginManager {
         let routes = self.get_registered_routes()?;
 
         for route in routes {
-            if route.method.to_uppercase() == method.to_uppercase() {
-                if self.path_matches_pattern(&route.path, path) {
-                    return Ok(Some((route.plugin_name, route.handler_function)));
-                }
+            if route.method.to_uppercase() == method.to_uppercase()
+                && self.path_matches_pattern(&route.path, path)
+            {
+                return Ok(Some((route.plugin_name, route.handler_function)));
             }
         }
 
@@ -431,6 +455,8 @@ impl PluginManager {
         let wasm_bytes = std::fs::read(path).map_err(|e| {
             AppError::internal(format!("Failed to read WASM file {:?}: {}", path, e))
         })?;
+
+        self.ensure_code_signing_policy(plugin_name, config)?;
 
         // Determine the expected hash (if any) from the provided configuration
         let expected_hash: Option<String> = config.and_then(|c| c.wasm_hash.clone());
@@ -512,8 +538,8 @@ impl PluginManager {
             PluginCapability::ReadEventData,
             PluginCapability::ModifyEventData,
             PluginCapability::RegisterHttpRoutes {
-                path_patterns: vec!["/api/plugins/*".to_string()],
-                methods: vec!["GET".to_string(), "POST".to_string()],
+                path_patterns: vec!["*".to_string()],
+                methods: vec!["*".to_string()],
             },
             PluginCapability::HandleHttpRequests,
             PluginCapability::CreateRecords {
@@ -565,10 +591,32 @@ impl PluginManager {
             }
         }
 
-        // TODO: Implement signature verification for code signing
-
         Ok(())
     }
+
+    fn ensure_code_signing_policy(
+        &self,
+        plugin_name: &str,
+        config: Option<&oxide_core::plugin_config::PluginConfiguration>,
+    ) -> Result<(), AppError> {
+        if !self.requires_code_signing() || plugin_signature_verified(config) {
+            return Ok(());
+        }
+
+        Err(AppError::security(format!(
+            "Plugin '{}' cannot be loaded because code signing is required and no verified signature is recorded",
+            plugin_name
+        )))
+    }
+}
+
+fn plugin_signature_verified(
+    config: Option<&oxide_core::plugin_config::PluginConfiguration>,
+) -> bool {
+    config
+        .and_then(|config| config.metadata.get("signature_verified"))
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false)
 }
 
 /// Bridge to connect WASM plugins with the EventBus system
@@ -922,6 +970,7 @@ pub enum PluginStatus {
 mod tests {
     use super::*;
     use oxide_core::auth::{AuthService, AuthServiceConfig};
+    use oxide_core::plugin_config::PluginConfiguration;
     use oxide_core::plugin_security::SecurityPolicies;
     use oxide_core::InMemoryEventBus;
     use oxide_db::SqliteDb;
@@ -953,5 +1002,68 @@ mod tests {
 
         // Bridge should be created successfully
         assert!(std::ptr::addr_of!(bridge) as usize > 0);
+    }
+
+    fn test_manager_with_policies(policies: SecurityPolicies) -> PluginManager {
+        let auth_config = AuthServiceConfig::new("test_secret".to_string());
+        let auth_service = Arc::new(AuthService::new(auth_config));
+        let event_bus = Arc::new(InMemoryEventBus::new());
+        let db = SqliteDb::new(":memory:", event_bus, auth_service).unwrap();
+
+        PluginManager::new(Arc::new(db), policies).unwrap()
+    }
+
+    fn plugin_config_with_signature(signature_verified: bool) -> PluginConfiguration {
+        let mut config = PluginConfiguration::new(
+            "test_plugin".to_string(),
+            "1.0.0".to_string(),
+            "Test plugin".to_string(),
+            "Test Author".to_string(),
+            PluginTrustLevel::PartiallyTrusted,
+            vec![PluginCapability::LogInfo],
+            ResourceLimits::default(),
+            Some("test_plugin.wasm".to_string()),
+            Some(128),
+            Some("hash".to_string()),
+        );
+        config.set_metadata(serde_json::json!({
+            "signature_verified": signature_verified
+        }));
+        config
+    }
+
+    #[test]
+    fn code_signing_policy_requires_recorded_verified_signature() {
+        let manager = test_manager_with_policies(SecurityPolicies::default());
+        let verified_config = plugin_config_with_signature(true);
+        let unverified_config = plugin_config_with_signature(false);
+
+        assert!(manager.requires_code_signing());
+        assert!(manager
+            .ensure_code_signing_policy("signed_plugin", Some(&verified_config))
+            .is_ok());
+        assert!(matches!(
+            manager.ensure_code_signing_policy("unsigned_plugin", None),
+            Err(AppError::Security { .. })
+        ));
+        assert!(matches!(
+            manager.ensure_code_signing_policy("unverified_plugin", Some(&unverified_config)),
+            Err(AppError::Security { .. })
+        ));
+    }
+
+    #[test]
+    fn relaxed_policy_allows_unsigned_plugins() {
+        let policies = SecurityPolicies {
+            require_code_signing: false,
+            allow_untrusted_plugins: true,
+            ..Default::default()
+        };
+        let manager = test_manager_with_policies(policies);
+
+        assert!(!manager.requires_code_signing());
+        assert!(manager
+            .ensure_code_signing_policy("unsigned_plugin", None)
+            .is_ok());
     }
 }

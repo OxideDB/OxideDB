@@ -1,4 +1,4 @@
-import type { FieldType } from '../../types/api';
+import type { FieldDefinition, FieldType } from '../../types/api';
 import type { FieldFormData, RelationshipConfig, FileConfig, SelectConfig } from './types';
 
 export const getFieldTypeString = (fieldType: FieldType): string => {
@@ -151,7 +151,7 @@ export const updateFieldType = (field: FieldFormData, newType: string): FieldFor
   }
 };
 
-export const convertSchemaFieldsToFormData = (schemaFields: Record<string, any>): FieldFormData[] => {
+export const convertSchemaFieldsToFormData = (schemaFields: Record<string, FieldDefinition>): FieldFormData[] => {
   return Object.entries(schemaFields).map(([name, fieldDef]) => {
     const field: FieldFormData = {
       name,

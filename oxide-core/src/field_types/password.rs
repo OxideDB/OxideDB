@@ -20,6 +20,7 @@
 //!     unique: false,
 //!     default: None,
 //!     validation: None,
+//!     index: false,
 //! });
 //! ```
 //!
@@ -44,26 +45,26 @@ impl FieldTypeDefinition for PasswordFieldType {
     fn type_name(&self) -> &'static str {
         "password"
     }
-    
+
     fn validate(&self, field_name: &str, value: &JsonValue) -> Result<(), String> {
         if !value.is_string() {
             return Err(format!("Field '{}' must be a string", field_name));
         }
-        
+
         if let Some(password) = value.as_str() {
             if password.is_empty() {
                 return Err(format!("Field '{}' cannot be empty", field_name));
             }
             // Note: Password will be hashed by the password hashing hook
         }
-        
+
         Ok(())
     }
-    
+
     fn requires_hashing(&self) -> bool {
         true
     }
-    
+
     fn convert_value(&self, value: &JsonValue) -> Result<JsonValue, String> {
         // Password fields should be strings
         match value {
@@ -71,7 +72,7 @@ impl FieldTypeDefinition for PasswordFieldType {
             _ => Err("Password must be a string".to_string()),
         }
     }
-    
+
     fn sql_type(&self) -> &'static str {
         "TEXT" // Store as hashed string
     }
@@ -85,35 +86,40 @@ mod tests {
     #[test]
     fn test_password_validation() {
         let field_type = PasswordFieldType;
-        
+
         // Valid passwords
         assert!(field_type.validate("test", &json!("secret123")).is_ok());
-        assert!(field_type.validate("test", &json!("complex_password!")).is_ok());
-        
+        assert!(field_type
+            .validate("test", &json!("complex_password!"))
+            .is_ok());
+
         // Empty password should fail
         assert!(field_type.validate("test", &json!("")).is_err());
-        
+
         // Invalid types
         assert!(field_type.validate("test", &json!(123)).is_err());
         assert!(field_type.validate("test", &json!(true)).is_err());
         assert!(field_type.validate("test", &json!({})).is_err());
     }
-    
+
     #[test]
     fn test_password_conversion() {
         let field_type = PasswordFieldType;
-        
+
         // String stays string
-        assert_eq!(field_type.convert_value(&json!("password123")).unwrap(), json!("password123"));
-        
+        assert_eq!(
+            field_type.convert_value(&json!("password123")).unwrap(),
+            json!("password123")
+        );
+
         // Non-string input fails
         assert!(field_type.convert_value(&json!(123)).is_err());
         assert!(field_type.convert_value(&json!(true)).is_err());
     }
-    
+
     #[test]
     fn test_password_requires_hashing() {
         let field_type = PasswordFieldType;
         assert!(field_type.requires_hashing());
     }
-} 
+}

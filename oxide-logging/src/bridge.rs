@@ -4,8 +4,8 @@
 //! using the concrete oxide-logging service implementations.
 
 use crate::{
+    models::{CorrelationId, LogEntry},
     service::LogService,
-    models::{LogEntry, CorrelationId},
 };
 use std::collections::HashMap;
 use std::future::Future;
@@ -61,7 +61,7 @@ impl LogServiceBridge {
     /// Convert oxide-logging LoggingMetrics to oxide-core LoggingMetrics
     fn convert_metrics(metrics: crate::models::LogMetrics) -> oxide_core::LoggingMetrics {
         let mut entries_by_level = HashMap::new();
-        
+
         // Convert the log level keys
         for (level, count) in metrics.entries_by_level {
             let core_level = match level {
@@ -90,7 +90,8 @@ impl oxide_core::CorrelationIdTrait for CorrelationId {
     }
 
     fn from_str(s: &str) -> Result<Self, oxide_core::AppError> {
-        CorrelationId::from_str(s).map_err(|e| oxide_core::AppError::internal(format!("Invalid correlation ID: {}", e)))
+        s.parse::<CorrelationId>()
+            .map_err(|e| oxide_core::AppError::internal(format!("Invalid correlation ID: {}", e)))
     }
 
     fn to_string(&self) -> String {
@@ -102,49 +103,79 @@ impl oxide_core::CorrelationIdTrait for CorrelationId {
 impl oxide_core::ApplicationLogger for LogServiceBridge {
     type CorrelationId = CorrelationId;
 
-    fn info(&self, message: String, module: String) -> Pin<Box<dyn Future<Output = oxide_core::LoggingResult<()>> + Send + '_>> {
+    fn info(
+        &self,
+        message: String,
+        module: String,
+    ) -> Pin<Box<dyn Future<Output = oxide_core::LoggingResult<()>> + Send + '_>> {
         let log_service = Arc::clone(&self.log_service);
-        
+
         Box::pin(async move {
-            log_service.info(message, module).await
+            log_service
+                .info(message, module)
+                .await
                 .map_err(|e| oxide_core::AppError::internal(format!("Logging error: {}", e)))
         })
     }
 
-    fn warn(&self, message: String, module: String) -> Pin<Box<dyn Future<Output = oxide_core::LoggingResult<()>> + Send + '_>> {
+    fn warn(
+        &self,
+        message: String,
+        module: String,
+    ) -> Pin<Box<dyn Future<Output = oxide_core::LoggingResult<()>> + Send + '_>> {
         let log_service = Arc::clone(&self.log_service);
-        
+
         Box::pin(async move {
-            log_service.warn(message, module).await
+            log_service
+                .warn(message, module)
+                .await
                 .map_err(|e| oxide_core::AppError::internal(format!("Logging error: {}", e)))
         })
     }
 
-    fn error(&self, message: String, module: String) -> Pin<Box<dyn Future<Output = oxide_core::LoggingResult<()>> + Send + '_>> {
+    fn error(
+        &self,
+        message: String,
+        module: String,
+    ) -> Pin<Box<dyn Future<Output = oxide_core::LoggingResult<()>> + Send + '_>> {
         let log_service = Arc::clone(&self.log_service);
-        
+
         Box::pin(async move {
-            log_service.error(message, module).await
+            log_service
+                .error(message, module)
+                .await
                 .map_err(|e| oxide_core::AppError::internal(format!("Logging error: {}", e)))
         })
     }
 
-    fn debug(&self, message: String, module: String) -> Pin<Box<dyn Future<Output = oxide_core::LoggingResult<()>> + Send + '_>> {
+    fn debug(
+        &self,
+        message: String,
+        module: String,
+    ) -> Pin<Box<dyn Future<Output = oxide_core::LoggingResult<()>> + Send + '_>> {
         let log_service = Arc::clone(&self.log_service);
-        
+
         Box::pin(async move {
             let entry = LogEntry::new(crate::models::LogLevel::Debug, message, module);
-            log_service.log(entry).await
+            log_service
+                .log(entry)
+                .await
                 .map_err(|e| oxide_core::AppError::internal(format!("Logging error: {}", e)))
         })
     }
 
-    fn trace(&self, message: String, module: String) -> Pin<Box<dyn Future<Output = oxide_core::LoggingResult<()>> + Send + '_>> {
+    fn trace(
+        &self,
+        message: String,
+        module: String,
+    ) -> Pin<Box<dyn Future<Output = oxide_core::LoggingResult<()>> + Send + '_>> {
         let log_service = Arc::clone(&self.log_service);
-        
+
         Box::pin(async move {
             let entry = LogEntry::new(crate::models::LogLevel::Trace, message, module);
-            log_service.log(entry).await
+            log_service
+                .log(entry)
+                .await
                 .map_err(|e| oxide_core::AppError::internal(format!("Logging error: {}", e)))
         })
     }
@@ -159,9 +190,11 @@ impl oxide_core::ApplicationLogger for LogServiceBridge {
         let log_service = Arc::clone(&self.log_service);
         let level = Self::convert_log_level(level);
         let context = Self::convert_log_context(context);
-        
+
         Box::pin(async move {
-            log_service.log_with_context(level, message, module, context).await
+            log_service
+                .log_with_context(level, message, module, context)
+                .await
                 .map_err(|e| oxide_core::AppError::internal(format!("Logging error: {}", e)))
         })
     }
@@ -175,9 +208,11 @@ impl oxide_core::ApplicationLogger for LogServiceBridge {
     ) -> Pin<Box<dyn Future<Output = oxide_core::LoggingResult<()>> + Send + '_>> {
         let log_service = Arc::clone(&self.log_service);
         let level = Self::convert_log_level(level);
-        
+
         Box::pin(async move {
-            log_service.log_with_correlation(level, message, module, correlation_id).await
+            log_service
+                .log_with_correlation(level, message, module, correlation_id)
+                .await
                 .map_err(|e| oxide_core::AppError::internal(format!("Logging error: {}", e)))
         })
     }
@@ -193,21 +228,25 @@ impl oxide_core::ApplicationLogger for LogServiceBridge {
         let log_service = Arc::clone(&self.log_service);
         let level = Self::convert_log_level(level);
         let context = Self::convert_log_context(context);
-        
+
         Box::pin(async move {
             let entry = LogEntry::new(level, message, module)
                 .with_context(context)
                 .with_correlation_id(correlation_id);
-            log_service.log(entry).await
+            log_service
+                .log(entry)
+                .await
                 .map_err(|e| oxide_core::AppError::internal(format!("Logging error: {}", e)))
         })
     }
 
     fn flush(&self) -> Pin<Box<dyn Future<Output = oxide_core::LoggingResult<()>> + Send + '_>> {
         let log_service = Arc::clone(&self.log_service);
-        
+
         Box::pin(async move {
-            log_service.flush().await
+            log_service
+                .flush()
+                .await
                 .map_err(|e| oxide_core::AppError::internal(format!("Logging error: {}", e)))
         })
     }
@@ -227,9 +266,11 @@ impl oxide_core::SecurityAuditor for LogServiceBridge {
     ) -> Pin<Box<dyn Future<Output = oxide_core::LoggingResult<Uuid>> + Send + '_>> {
         let audit_service = self.log_service.audit_service();
         let context = Self::convert_log_context(context);
-        
+
         Box::pin(async move {
-            audit_service.log_authentication(actor, action, result, context, risk_score).await
+            audit_service
+                .log_authentication(actor, action, result, context, risk_score)
+                .await
                 .map_err(|e| oxide_core::AppError::internal(format!("Audit error: {}", e)))
         })
     }
@@ -245,9 +286,11 @@ impl oxide_core::SecurityAuditor for LogServiceBridge {
     ) -> Pin<Box<dyn Future<Output = oxide_core::LoggingResult<Uuid>> + Send + '_>> {
         let audit_service = self.log_service.audit_service();
         let context = Self::convert_log_context(context);
-        
+
         Box::pin(async move {
-            audit_service.log_authorization(actor, target, action, result, context, risk_score).await
+            audit_service
+                .log_authorization(actor, target, action, result, context, risk_score)
+                .await
                 .map_err(|e| oxide_core::AppError::internal(format!("Audit error: {}", e)))
         })
     }
@@ -261,9 +304,11 @@ impl oxide_core::SecurityAuditor for LogServiceBridge {
     ) -> Pin<Box<dyn Future<Output = oxide_core::LoggingResult<Uuid>> + Send + '_>> {
         let audit_service = self.log_service.audit_service();
         let context = Self::convert_log_context(context);
-        
+
         Box::pin(async move {
-            audit_service.log_data_access(actor, target, action, context).await
+            audit_service
+                .log_data_access(actor, target, action, context)
+                .await
                 .map_err(|e| oxide_core::AppError::internal(format!("Audit error: {}", e)))
         })
     }
@@ -277,9 +322,11 @@ impl oxide_core::SecurityAuditor for LogServiceBridge {
     ) -> Pin<Box<dyn Future<Output = oxide_core::LoggingResult<Uuid>> + Send + '_>> {
         let audit_service = self.log_service.audit_service();
         let context = Self::convert_log_context(context);
-        
+
         Box::pin(async move {
-            audit_service.log_data_modification(actor, target, action, context).await
+            audit_service
+                .log_data_modification(actor, target, action, context)
+                .await
                 .map_err(|e| oxide_core::AppError::internal(format!("Audit error: {}", e)))
         })
     }
@@ -293,9 +340,11 @@ impl oxide_core::SecurityAuditor for LogServiceBridge {
     ) -> Pin<Box<dyn Future<Output = oxide_core::LoggingResult<Uuid>> + Send + '_>> {
         let audit_service = self.log_service.audit_service();
         let context = Self::convert_log_context(context);
-        
+
         Box::pin(async move {
-            audit_service.log_configuration_change(actor, target, action, context).await
+            audit_service
+                .log_configuration_change(actor, target, action, context)
+                .await
                 .map_err(|e| oxide_core::AppError::internal(format!("Audit error: {}", e)))
         })
     }
@@ -309,9 +358,11 @@ impl oxide_core::SecurityAuditor for LogServiceBridge {
     ) -> Pin<Box<dyn Future<Output = oxide_core::LoggingResult<Uuid>> + Send + '_>> {
         let audit_service = self.log_service.audit_service();
         let context = Self::convert_log_context(context);
-        
+
         Box::pin(async move {
-            audit_service.log_security_violation(actor, violation_type, description, context).await
+            audit_service
+                .log_security_violation(actor, violation_type, description, context)
+                .await
                 .map_err(|e| oxide_core::AppError::internal(format!("Audit error: {}", e)))
         })
     }
@@ -325,9 +376,11 @@ impl oxide_core::SecurityAuditor for LogServiceBridge {
     ) -> Pin<Box<dyn Future<Output = oxide_core::LoggingResult<Uuid>> + Send + '_>> {
         let audit_service = self.log_service.audit_service();
         let context = Self::convert_log_context(context);
-        
+
         Box::pin(async move {
-            audit_service.log_plugin_event(plugin_name, action, result, context).await
+            audit_service
+                .log_plugin_event(plugin_name, action, result, context)
+                .await
                 .map_err(|e| oxide_core::AppError::internal(format!("Audit error: {}", e)))
         })
     }
@@ -340,9 +393,11 @@ impl oxide_core::SecurityAuditor for LogServiceBridge {
     ) -> Pin<Box<dyn Future<Output = oxide_core::LoggingResult<Uuid>> + Send + '_>> {
         let audit_service = self.log_service.audit_service();
         let context = Self::convert_log_context(context);
-        
+
         Box::pin(async move {
-            audit_service.log_system_event(event_type, description, context).await
+            audit_service
+                .log_system_event(event_type, description, context)
+                .await
                 .map_err(|e| oxide_core::AppError::internal(format!("Audit error: {}", e)))
         })
     }
@@ -350,27 +405,35 @@ impl oxide_core::SecurityAuditor for LogServiceBridge {
 
 // Implementation of LoggingService trait
 impl oxide_core::LoggingService for LogServiceBridge {
-    fn get_metrics(&self) -> Pin<Box<dyn Future<Output = oxide_core::LoggingResult<oxide_core::LoggingMetrics>> + Send + '_>> {
+    fn get_metrics(
+        &self,
+    ) -> Pin<
+        Box<dyn Future<Output = oxide_core::LoggingResult<oxide_core::LoggingMetrics>> + Send + '_>,
+    > {
         let log_service = Arc::clone(&self.log_service);
-        
+
         Box::pin(async move {
-            let metrics = log_service.get_metrics().await
+            let metrics = log_service
+                .get_metrics()
+                .await
                 .map_err(|e| oxide_core::AppError::internal(format!("Metrics error: {}", e)))?;
             Ok(Self::convert_metrics(metrics))
         })
     }
 
-    fn shutdown(self: Arc<Self>) -> Pin<Box<dyn Future<Output = oxide_core::LoggingResult<()>> + Send>> {
+    fn shutdown(
+        self: Arc<Self>,
+    ) -> Pin<Box<dyn Future<Output = oxide_core::LoggingResult<()>> + Send>> {
         let log_service = Arc::clone(&self.log_service);
-        
+
         Box::pin(async move {
             // Reference to the log service for shutdown
             drop(log_service); // Drop our reference
-            
+
             // Note: This assumes LogService has a method to extract itself from the Arc
             // In practice, you might need to modify LogService to support this pattern
             // For now, we'll just return Ok since the service will be dropped
             Ok(())
         })
     }
-} 
+}

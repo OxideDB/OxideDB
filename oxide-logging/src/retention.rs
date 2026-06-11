@@ -92,7 +92,10 @@ impl RetentionService {
             warnings: Vec::new(),
         };
 
-        info!("Starting log retention cleanup with policy: {:?}", self.policy);
+        info!(
+            "Starting log retention cleanup with policy: {:?}",
+            self.policy
+        );
 
         // Check available disk space if configured
         if let Some(min_free_space) = self.policy.min_free_space_bytes {
@@ -103,15 +106,16 @@ impl RetentionService {
                             "Low disk space detected: {} bytes free, minimum required: {} bytes",
                             free_space, min_free_space
                         );
-                        result.warnings.push(format!(
-                            "Low disk space: {} bytes free",
-                            free_space
-                        ));
+                        result
+                            .warnings
+                            .push(format!("Low disk space: {} bytes free", free_space));
                         // Could implement aggressive cleanup here
                     }
                 }
                 Err(e) => {
-                    result.warnings.push(format!("Failed to check disk space: {}", e));
+                    result
+                        .warnings
+                        .push(format!("Failed to check disk space: {}", e));
                 }
             }
         }
@@ -121,20 +125,32 @@ impl RetentionService {
             match self.archive_old_logs(&mut result).await {
                 Ok(_) => {}
                 Err(e) => {
-                    result.warnings.push(format!("Archive operation failed: {}", e));
+                    result
+                        .warnings
+                        .push(format!("Archive operation failed: {}", e));
                 }
             }
         }
 
         // Clean up standard logs
-        let standard_cutoff = Utc::now() - Duration::days(self.policy.standard_retention_days as i64);
-        match self.storage.cleanup_old_entries(self.policy.standard_retention_days).await {
+        let standard_cutoff =
+            Utc::now() - Duration::days(self.policy.standard_retention_days as i64);
+        match self
+            .storage
+            .cleanup_old_entries(self.policy.standard_retention_days)
+            .await
+        {
             Ok(deleted) => {
                 result.standard_logs_deleted = deleted;
-                info!("Deleted {} standard log entries older than {}", deleted, standard_cutoff);
+                info!(
+                    "Deleted {} standard log entries older than {}",
+                    deleted, standard_cutoff
+                );
             }
             Err(e) => {
-                result.warnings.push(format!("Failed to cleanup standard logs: {}", e));
+                result
+                    .warnings
+                    .push(format!("Failed to cleanup standard logs: {}", e));
             }
         }
 
@@ -145,7 +161,9 @@ impl RetentionService {
                 info!("Deleted {} audit events", deleted);
             }
             Err(e) => {
-                result.warnings.push(format!("Failed to cleanup audit events: {}", e));
+                result
+                    .warnings
+                    .push(format!("Failed to cleanup audit events: {}", e));
             }
         }
 
@@ -156,9 +174,7 @@ impl RetentionService {
 
         info!(
             "Retention cleanup completed in {}ms: {} standard logs, {} audit events deleted",
-            result.cleanup_duration_ms,
-            result.standard_logs_deleted,
-            result.audit_events_deleted
+            result.cleanup_duration_ms, result.standard_logs_deleted, result.audit_events_deleted
         );
 
         Ok(result)
@@ -166,13 +182,15 @@ impl RetentionService {
 
     /// Archive old logs to compressed files
     async fn archive_old_logs(&self, _result: &mut CleanupResult) -> LoggingResult<()> {
-        let archive_dir = self.policy.archive_directory.as_ref()
+        let archive_dir = self
+            .policy
+            .archive_directory
+            .as_ref()
             .ok_or_else(|| LoggingError::configuration("Archive directory not configured"))?;
 
         // Create archive directory if it doesn't exist
         if !archive_dir.exists() {
-            std::fs::create_dir_all(archive_dir)
-                .map_err(LoggingError::from)?;
+            std::fs::create_dir_all(archive_dir).map_err(LoggingError::from)?;
         }
 
         // For now, this is a placeholder for archive functionality
@@ -205,7 +223,7 @@ impl RetentionService {
     /// Get retention statistics
     pub async fn get_retention_stats(&self) -> LoggingResult<RetentionStats> {
         let metrics = self.storage.get_metrics().await?;
-        
+
         Ok(RetentionStats {
             total_log_entries: metrics.total_entries,
             storage_size_bytes: metrics.storage_size_bytes,
@@ -237,28 +255,29 @@ impl RetentionService {
     pub fn validate_policy(policy: &RetentionPolicy) -> LoggingResult<()> {
         if policy.standard_retention_days == 0 {
             return Err(LoggingError::configuration(
-                "Standard retention days must be greater than 0"
+                "Standard retention days must be greater than 0",
             ));
         }
 
         if policy.audit_retention_days == 0 {
             return Err(LoggingError::configuration(
-                "Audit retention days must be greater than 0"
+                "Audit retention days must be greater than 0",
             ));
         }
 
         if policy.error_retention_days == 0 {
             return Err(LoggingError::configuration(
-                "Error retention days must be greater than 0"
+                "Error retention days must be greater than 0",
             ));
         }
 
         if let Some(ref archive_dir) = policy.archive_directory {
             if let Some(parent) = archive_dir.parent() {
                 if !parent.exists() {
-                    return Err(LoggingError::configuration(
-                        format!("Archive directory parent does not exist: {:?}", parent)
-                    ));
+                    return Err(LoggingError::configuration(format!(
+                        "Archive directory parent does not exist: {:?}",
+                        parent
+                    )));
                 }
             }
         }
@@ -368,4 +387,4 @@ impl Default for RetentionPolicyBuilder {
     fn default() -> Self {
         Self::new()
     }
-} 
+}

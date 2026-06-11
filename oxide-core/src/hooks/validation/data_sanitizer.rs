@@ -3,7 +3,7 @@
 //! This hook sanitizes input data to prevent security issues and ensure
 //! data consistency across the system.
 
-use crate::{BeforeEventContext, AppError};
+use crate::{AppError, BeforeEventContext};
 use regex::Regex;
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -70,13 +70,12 @@ impl DataSanitizerHook {
         // Compile regex patterns
         let html_regex = Arc::new(
             Regex::new(r"<script[^>]*>.*?</script>|<[^>]*>")
-                .map_err(|e| AppError::internal(format!("Failed to compile HTML regex: {}", e)))?
+                .map_err(|e| AppError::internal(format!("Failed to compile HTML regex: {}", e)))?,
         );
 
-        let whitespace_regex = Arc::new(
-            Regex::new(r"\s+")
-                .map_err(|e| AppError::internal(format!("Failed to compile whitespace regex: {}", e)))?
-        );
+        let whitespace_regex = Arc::new(Regex::new(r"\s+").map_err(|e| {
+            AppError::internal(format!("Failed to compile whitespace regex: {}", e))
+        })?);
 
         Ok(Self {
             config,
@@ -86,30 +85,44 @@ impl DataSanitizerHook {
     }
 
     /// Handle Before record create events for data sanitization
-    pub fn handle_before_record_create(&self, context: &mut BeforeEventContext) -> Result<(), AppError> {
+    pub fn handle_before_record_create(
+        &self,
+        context: &mut BeforeEventContext,
+    ) -> Result<(), AppError> {
         if self.should_skip_sanitization(&context.collection) {
             return Ok(());
         }
 
-        debug!("Sanitizing data for create in collection: {}", context.collection);
+        debug!(
+            "Sanitizing data for create in collection: {}",
+            context.collection
+        );
         self.sanitize_data(context)?;
         Ok(())
     }
 
     /// Handle Before record update events for data sanitization
-    pub fn handle_before_record_update(&self, context: &mut BeforeEventContext) -> Result<(), AppError> {
+    pub fn handle_before_record_update(
+        &self,
+        context: &mut BeforeEventContext,
+    ) -> Result<(), AppError> {
         if self.should_skip_sanitization(&context.collection) {
             return Ok(());
         }
 
-        debug!("Sanitizing data for update in collection: {}", context.collection);
+        debug!(
+            "Sanitizing data for update in collection: {}",
+            context.collection
+        );
         self.sanitize_data(context)?;
         Ok(())
     }
 
     /// Check if sanitization should be skipped for this collection
     fn should_skip_sanitization(&self, collection: &str) -> bool {
-        self.config.skip_collections.contains(&collection.to_string())
+        self.config
+            .skip_collections
+            .contains(&collection.to_string())
     }
 
     /// Sanitize all data in the context
@@ -125,7 +138,11 @@ impl DataSanitizerHook {
     }
 
     /// Sanitize a single value
-    fn sanitize_value(&self, field_name: &str, value: &mut serde_json::Value) -> Result<(), AppError> {
+    fn sanitize_value(
+        &self,
+        field_name: &str,
+        value: &mut serde_json::Value,
+    ) -> Result<(), AppError> {
         match value {
             serde_json::Value::String(s) => {
                 let mut sanitized = s.clone();
@@ -151,12 +168,21 @@ impl DataSanitizerHook {
                 }
 
                 // Check string length
-                if self.config.max_string_length > 0 && sanitized.len() > self.config.max_string_length {
-                    warn!("String too long in field '{}': {} characters", field_name, sanitized.len());
+                if self.config.max_string_length > 0
+                    && sanitized.len() > self.config.max_string_length
+                {
+                    warn!(
+                        "String too long in field '{}': {} characters",
+                        field_name,
+                        sanitized.len()
+                    );
                     return Err(AppError::validation(
                         field_name,
-                        &format!("String too long: {} characters (max: {})", 
-                                sanitized.len(), self.config.max_string_length)
+                        &format!(
+                            "String too long: {} characters (max: {})",
+                            sanitized.len(),
+                            self.config.max_string_length
+                        ),
                     ));
                 }
 
@@ -204,7 +230,10 @@ impl DataSanitizerHook {
             .collect();
 
         // Normalize excessive whitespace
-        sanitized = self.whitespace_regex.replace_all(&sanitized, " ").to_string();
+        sanitized = self
+            .whitespace_regex
+            .replace_all(&sanitized, " ")
+            .to_string();
 
         // Check for suspicious patterns
         if self.contains_suspicious_patterns(&sanitized) {
@@ -231,7 +260,9 @@ impl DataSanitizerHook {
         ];
 
         let s_lower = s.to_lowercase();
-        suspicious_patterns.iter().any(|pattern| s_lower.contains(pattern))
+        suspicious_patterns
+            .iter()
+            .any(|pattern| s_lower.contains(pattern))
     }
 
     /// Add a field to the exclusion list
@@ -298,12 +329,15 @@ mod tests {
         );
 
         assert!(hook.handle_before_record_create(&mut context).is_ok());
-        
+
         // Title should be stripped (not excluded)
         assert_eq!(context.data["title"], json!("Hello World"));
-        
+
         // Content should be preserved (excluded by default)
-        assert_eq!(context.data["content"], json!("This should <b>not</b> be stripped"));
+        assert_eq!(
+            context.data["content"],
+            json!("This should <b>not</b> be stripped")
+        );
     }
 
     #[test]
@@ -319,18 +353,20 @@ mod tests {
         );
 
         assert!(hook.handle_before_record_create(&mut context).is_ok());
-        
+
         // Name should be trimmed
         assert_eq!(context.data["name"], json!("John Doe"));
-        
+
         // Email should be trimmed and lowercased
         assert_eq!(context.data["email"], json!("john@example.com"));
     }
 
     #[test]
     fn test_string_length_validation() {
-        let mut config = DataSanitizerConfig::default();
-        config.max_string_length = 10;
+        let config = DataSanitizerConfig {
+            max_string_length: 10,
+            ..Default::default()
+        };
         let hook = DataSanitizerHook::with_config(config).unwrap();
 
         let mut context = BeforeEventContext::new_create(
@@ -361,7 +397,7 @@ mod tests {
         );
 
         assert!(hook.handle_before_record_create(&mut context).is_ok());
-        
+
         // Nested fields should be sanitized
         assert_eq!(context.data["user"]["name"], json!("John"));
         assert_eq!(context.data["user"]["profile"]["bio"], json!("Developer"));
@@ -370,7 +406,7 @@ mod tests {
     #[test]
     fn test_suspicious_content_detection() {
         let hook = DataSanitizerHook::new().unwrap();
-        
+
         assert!(hook.contains_suspicious_patterns("javascript:alert('xss')"));
         assert!(hook.contains_suspicious_patterns("<script>alert(1)</script>"));
         assert!(!hook.contains_suspicious_patterns("normal content"));
