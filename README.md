@@ -83,7 +83,7 @@ cargo build --release --target wasm32-unknown-unknown
 cd ..
 
 # Build and run the main application
-cargo run --bin oxidedb
+cargo run --bin oxidedb start
 ```
 
 The backend will start on `http://localhost:8080`
@@ -162,7 +162,7 @@ curl -X POST http://localhost:8080/collections/test/records \
 
 ```bash
 # Run with debug logging
-RUST_LOG=debug cargo run --bin oxidedb
+cargo run --bin oxidedb start --log-level debug
 
 # Run tests
 cargo test

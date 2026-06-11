@@ -439,6 +439,13 @@ pub async fn auth_middleware(
         .extensions_mut()
         .insert(ClaimsExtension(claims.clone()));
 
+    let claims_json = match &claims {
+        Some(claims) => serde_json::to_value(claims).map_err(|e| {
+            ApiError::internal(format!("Failed to serialize authenticated claims: {}", e))
+        })?,
+        None => serde_json::Value::Null,
+    };
+
     // Convert headers to JSON for event dispatch
     let headers_json = headers_to_json(&headers);
 
@@ -448,7 +455,8 @@ pub async fn auth_middleware(
         serde_json::json!({
             "method": method.to_string(),
             "path": path,
-            "headers": headers_json
+            "headers": headers_json,
+            "claims": claims_json
         }),
     );
 
@@ -458,7 +466,22 @@ pub async fn auth_middleware(
         .dispatch_before(BeforeEventType::ApiRequest, &mut context)
         .await
     {
-        Ok(_results) => {
+        Ok(results) => {
+            if let Some(failed_result) = results
+                .iter()
+                .find(|result| !result.success && !result.skipped)
+            {
+                let message = failed_result
+                    .error
+                    .clone()
+                    .unwrap_or_else(|| format!("Handler {} failed", failed_result.handler_id));
+                warn!(
+                    "🚫 Authorization handler {} failed for {} {}: {}",
+                    failed_result.handler_id, method, uri, message
+                );
+                return Err(ApiError::auth(message));
+            }
+
             // Authorization passed, continue with the request
             debug!("✅ Authorization passed for {} {}", method, uri);
             Ok(next.run(request).await)

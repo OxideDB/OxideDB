@@ -6,7 +6,7 @@
   "scripts": {
     "build": "npm run build:ts && npm run build:wasm",
     "build:ts": "tsc",
-    "build:wasm": "asc src/lib.ts --target release --outFile dist/plugin.wasm --exportRuntime --optimize --runtime stub",
+    "build:wasm": "asc assembly/plugin.ts --target release --outFile dist/plugin.wasm --exportRuntime --optimize --runtime stub",
     "dev": "tsc --watch",
     "clean": "rm -rf dist",
     "test": "npm run build && node test/test.js"

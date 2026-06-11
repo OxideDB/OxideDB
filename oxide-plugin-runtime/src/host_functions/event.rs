@@ -3,7 +3,8 @@
 //! These functions handle event payload management and result buffer access
 //! for plugin communication during event processing.
 
-use crate::host_state::HostState;
+use crate::host_state::{lock_host_state, record_host_call, HostState};
+use crate::utils::allocate_plugin_memory_and_copy;
 use oxide_core::plugin_api::{host_functions, PluginError};
 use oxide_core::plugin_security::PluginCapability;
 use std::sync::{Arc, Mutex};
@@ -24,51 +25,43 @@ pub fn define_event_functions(
             "env",
             host_functions::GET_EVENT_PAYLOAD,
             |mut caller: Caller<'_, Arc<Mutex<HostState>>>| -> i32 {
-                caller.data().lock().unwrap().record_host_call();
-
-                let state = caller.data().lock().unwrap();
-                if !state.current_plugin_has_capability(&PluginCapability::ReadEventData) {
+                if !record_host_call(caller.data(), "recording get_event_payload host call") {
                     return -1;
                 }
 
-                if let Some(payload) = &state.current_payload {
+                let payload = {
+                    let Some(state) =
+                        lock_host_state(caller.data(), "reading current event payload")
+                    else {
+                        return -1;
+                    };
+                    if !state.current_plugin_has_capability(&PluginCapability::ReadEventData) {
+                        return -1;
+                    }
+                    state.current_payload.clone()
+                };
+
+                if let Some(payload) = payload {
                     let payload_bytes = payload.as_bytes().to_vec();
-                    drop(state); // Release the lock early
 
-                    // Get plugin memory and allocate space
-                    if let Some(memory) = caller.get_export("memory").and_then(|e| e.into_memory())
+                    if let Some((ptr, len)) =
+                        allocate_plugin_memory_and_copy(&mut caller, &payload_bytes)
                     {
-                        // Call plugin's alloc function to get memory
-                        if let Some(alloc_export) = caller.get_export("alloc") {
-                            if let Some(alloc_func_raw) = alloc_export.into_func() {
-                                if let Ok(alloc_func) =
-                                    alloc_func_raw.typed::<i32, i32>(&mut caller)
-                                {
-                                    if let Ok(ptr) =
-                                        alloc_func.call(&mut caller, payload_bytes.len() as i32)
-                                    {
-                                        // Copy data to plugin memory
-                                        let data = memory.data_mut(&mut caller);
-                                        let start = ptr as usize;
-                                        let end = start + payload_bytes.len();
+                        let Ok(ptr) = u32::try_from(ptr) else {
+                            return -1;
+                        };
+                        let Ok(len_u32) = u32::try_from(len) else {
+                            return -1;
+                        };
+                        let Some(mut state) =
+                            lock_host_state(caller.data(), "storing event payload result pointer")
+                        else {
+                            return -1;
+                        };
+                        state.result_buffer =
+                            [ptr.to_le_bytes().to_vec(), len_u32.to_le_bytes().to_vec()].concat();
 
-                                        if end <= data.len() {
-                                            data[start..end].copy_from_slice(&payload_bytes);
-
-                                            // Store the pointer and length in result buffer for get_result_ptr/len
-                                            let mut state = caller.data().lock().unwrap();
-                                            state.result_buffer = [
-                                                (ptr as u32).to_le_bytes().to_vec(),
-                                                (payload_bytes.len() as u32).to_le_bytes().to_vec(),
-                                            ]
-                                            .concat();
-
-                                            return payload_bytes.len() as i32;
-                                        }
-                                    }
-                                }
-                            }
-                        }
+                        return len;
                     }
                 }
                 -1
@@ -84,9 +77,13 @@ pub fn define_event_functions(
             "env",
             "get_result_ptr",
             |caller: Caller<'_, Arc<Mutex<HostState>>>| -> i32 {
-                caller.data().lock().unwrap().record_host_call();
+                if !record_host_call(caller.data(), "recording get_result_ptr host call") {
+                    return 0;
+                }
 
-                let state = caller.data().lock().unwrap();
+                let Some(state) = lock_host_state(caller.data(), "reading result pointer") else {
+                    return 0;
+                };
                 if state.result_buffer.len() >= 4 {
                     // Read pointer from first 4 bytes (works for all operations)
                     u32::from_le_bytes([
@@ -110,9 +107,13 @@ pub fn define_event_functions(
             "env",
             "get_result_len",
             |caller: Caller<'_, Arc<Mutex<HostState>>>| -> i32 {
-                caller.data().lock().unwrap().record_host_call();
+                if !record_host_call(caller.data(), "recording get_result_len host call") {
+                    return 0;
+                }
 
-                let state = caller.data().lock().unwrap();
+                let Some(state) = lock_host_state(caller.data(), "reading result length") else {
+                    return 0;
+                };
                 if state.result_buffer.len() >= 8 {
                     // Read length from bytes 4-7 (works for all operations)
                     u32::from_le_bytes([

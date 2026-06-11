@@ -582,6 +582,21 @@ impl SqliteLogStorage {
                     params.push(Box::new(audit_event_type.as_str().to_string()));
                 }
 
+                if let Some(ref actor) = query.filter.audit_actor {
+                    sql.push_str(" AND actor = ?");
+                    params.push(Box::new(actor.clone()));
+                }
+
+                if let Some(ref target) = query.filter.audit_target {
+                    sql.push_str(" AND target = ?");
+                    params.push(Box::new(target.clone()));
+                }
+
+                if let Some(min_risk_score) = query.filter.min_audit_risk_score {
+                    sql.push_str(" AND risk_score >= ?");
+                    params.push(Box::new(min_risk_score as i32));
+                }
+
                 // Add ordering
                 if query.sort_desc {
                     sql.push_str(" ORDER BY timestamp DESC");

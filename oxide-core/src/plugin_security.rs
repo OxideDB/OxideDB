@@ -67,6 +67,13 @@ pub enum PluginCapability {
         /// Allowed event types
         event_types: Vec<String>,
     },
+    /// Allow plugin to access VFS namespaces
+    AccessVfs {
+        /// Namespace patterns the plugin can access
+        namespaces: Vec<String>,
+        /// VFS operations allowed on those namespaces
+        operations: Vec<VfsOperation>,
+    },
     /// Allow plugin to register HTTP routes
     RegisterHttpRoutes {
         /// Allowed path patterns (regex)
@@ -96,6 +103,22 @@ pub enum PluginCapability {
     },
     /// Allow plugin to handle HTTP requests
     HandleHttpRequests,
+}
+
+/// VFS operations that can be granted to plugins.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub enum VfsOperation {
+    /// Write files in a VFS namespace
+    Write,
+    /// Read files in a VFS namespace
+    Read,
+    /// Delete files in a VFS namespace
+    Delete,
+    /// List files in a VFS namespace
+    List,
+    /// Read VFS usage statistics for a namespace
+    Usage,
 }
 
 impl PluginCapability {
@@ -168,6 +191,21 @@ impl PluginCapability {
                 },
             ) => string_patterns_cover(granted_event_types, requested_event_types, false),
             (
+                AccessVfs {
+                    namespaces: granted_namespaces,
+                    operations: granted_operations,
+                },
+                AccessVfs {
+                    namespaces: requested_namespaces,
+                    operations: requested_operations,
+                },
+            ) => {
+                string_patterns_cover(granted_namespaces, requested_namespaces, false)
+                    && requested_operations
+                        .iter()
+                        .all(|operation| granted_operations.contains(operation))
+            }
+            (
                 RegisterHttpRoutes {
                     path_patterns: granted_paths,
                     methods: granted_methods,
@@ -225,6 +263,20 @@ impl PluginCapability {
             (_, DeleteRecords { collections }) => collections
                 .iter()
                 .all(|collection| self.allows_record_operation(&CrudOperation::Delete, collection)),
+            _ => false,
+        }
+    }
+
+    /// Return true when this capability allows a VFS operation in a namespace.
+    pub fn allows_vfs_operation(&self, operation: &VfsOperation, namespace: &str) -> bool {
+        match self {
+            PluginCapability::AccessVfs {
+                namespaces,
+                operations,
+            } => {
+                operations.contains(operation)
+                    && string_patterns_cover(namespaces, &[namespace.to_string()], false)
+            }
             _ => false,
         }
     }
@@ -630,6 +682,25 @@ impl PluginSecurityManager {
         Ok(())
     }
 
+    /// Set resource limits for a registered plugin.
+    pub fn set_resource_limits(
+        &mut self,
+        plugin_name: &str,
+        resource_limits: ResourceLimits,
+    ) -> Result<(), AppError> {
+        let context = self
+            .contexts
+            .get_mut(plugin_name)
+            .ok_or_else(|| AppError::Plugin {
+                plugin_name: plugin_name.to_string(),
+                message: "Plugin not registered".to_string(),
+            })?;
+
+        context.resource_limits = resource_limits;
+        debug!("Updated resource limits for plugin {}", plugin_name);
+        Ok(())
+    }
+
     /// Revoke a capability from a plugin
     pub fn revoke_capability(
         &mut self,
@@ -724,28 +795,42 @@ impl PluginSecurityManager {
         host_function_calls: u64,
         peak_memory_usage: u64,
     ) -> Result<(), AppError> {
-        let context = self
-            .contexts
-            .get_mut(plugin_name)
-            .ok_or_else(|| AppError::Plugin {
-                plugin_name: plugin_name.to_string(),
-                message: "Plugin not registered".to_string(),
-            })?;
+        let resource_violations = {
+            let context = self
+                .contexts
+                .get_mut(plugin_name)
+                .ok_or_else(|| AppError::Plugin {
+                    plugin_name: plugin_name.to_string(),
+                    message: "Plugin not registered".to_string(),
+                })?;
 
-        context.stats.total_executions = context.stats.total_executions.saturating_add(1);
-        context.stats.total_execution_time = context
-            .stats
-            .total_execution_time
-            .saturating_add(execution_time_ms);
-        context.stats.host_function_calls = context
-            .stats
-            .host_function_calls
-            .saturating_add(host_function_calls);
-        context.stats.peak_memory_usage = context.stats.peak_memory_usage.max(peak_memory_usage);
-        context.stats.last_execution = Some(Self::current_timestamp());
+            context.stats.total_executions = context.stats.total_executions.saturating_add(1);
+            context.stats.total_execution_time = context
+                .stats
+                .total_execution_time
+                .saturating_add(execution_time_ms);
+            context.stats.host_function_calls = context
+                .stats
+                .host_function_calls
+                .saturating_add(host_function_calls);
+            context.stats.peak_memory_usage =
+                context.stats.peak_memory_usage.max(peak_memory_usage);
+            context.stats.last_execution = Some(Self::current_timestamp());
 
-        if failed {
-            context.stats.failed_executions = context.stats.failed_executions.saturating_add(1);
+            if failed {
+                context.stats.failed_executions = context.stats.failed_executions.saturating_add(1);
+            }
+
+            resource_limit_violations(
+                &context.resource_limits,
+                execution_time_ms,
+                host_function_calls,
+                peak_memory_usage,
+            )
+        };
+
+        for violation in resource_violations {
+            self.record_violation(plugin_name, violation)?;
         }
 
         Ok(())
@@ -921,13 +1006,21 @@ impl PluginSecurityManager {
                         | PluginCapability::ReadEventData
                 )
             }
-            PluginTrustLevel::PartiallyTrusted => !matches!(
-                capability,
+            PluginTrustLevel::PartiallyTrusted => match capability {
                 PluginCapability::HttpRequest { .. }
-                    | PluginCapability::ScheduleTasks
-                    | PluginCapability::RegisterHttpRoutes { .. }
-                    | PluginCapability::DeleteRecords { .. }
-            ),
+                | PluginCapability::ScheduleTasks
+                | PluginCapability::RegisterHttpRoutes { .. }
+                | PluginCapability::DeleteRecords { .. } => false,
+                PluginCapability::AccessVfs { operations, .. } => {
+                    operations.iter().all(|operation| {
+                        matches!(
+                            operation,
+                            VfsOperation::Read | VfsOperation::List | VfsOperation::Usage
+                        )
+                    })
+                }
+                _ => true,
+            },
             PluginTrustLevel::FullyTrusted | PluginTrustLevel::System => true,
         }
     }
@@ -955,11 +1048,31 @@ impl PluginSecurityManager {
             "read_records" => Ok(PluginCapability::ReadRecords {
                 collections: vec!["*".to_string()],
             }),
-            "update_records" => Ok(PluginCapability::UpdateRecords {
+            "update_record" | "update_records" => Ok(PluginCapability::UpdateRecords {
                 collections: vec!["*".to_string()],
             }),
-            "delete_records" => Ok(PluginCapability::DeleteRecords {
+            "delete_record" | "delete_records" => Ok(PluginCapability::DeleteRecords {
                 collections: vec!["*".to_string()],
+            }),
+            "vfs_write_file" => Ok(PluginCapability::AccessVfs {
+                namespaces: vec!["*".to_string()],
+                operations: vec![VfsOperation::Write],
+            }),
+            "vfs_read_file" => Ok(PluginCapability::AccessVfs {
+                namespaces: vec!["*".to_string()],
+                operations: vec![VfsOperation::Read],
+            }),
+            "vfs_delete_file" => Ok(PluginCapability::AccessVfs {
+                namespaces: vec!["*".to_string()],
+                operations: vec![VfsOperation::Delete],
+            }),
+            "vfs_list_files" => Ok(PluginCapability::AccessVfs {
+                namespaces: vec!["*".to_string()],
+                operations: vec![VfsOperation::List],
+            }),
+            "vfs_get_usage_stats" => Ok(PluginCapability::AccessVfs {
+                namespaces: vec!["*".to_string()],
+                operations: vec![VfsOperation::Usage],
             }),
             "get_http_request" => Ok(PluginCapability::HandleHttpRequests),
             "set_http_response" => Ok(PluginCapability::HandleHttpRequests),
@@ -997,6 +1110,41 @@ impl PluginSecurityManager {
             .unwrap_or_default()
             .as_secs()
     }
+}
+
+fn resource_limit_violations(
+    limits: &ResourceLimits,
+    execution_time_ms: u64,
+    host_function_calls: u64,
+    peak_memory_usage: u64,
+) -> Vec<SecurityViolation> {
+    let mut violations = Vec::new();
+
+    if execution_time_ms > limits.max_execution_time {
+        violations.push(SecurityViolation::ResourceLimitExceeded {
+            limit_type: "execution_time_ms".to_string(),
+            limit_value: limits.max_execution_time,
+            actual_value: execution_time_ms,
+        });
+    }
+
+    if host_function_calls > u64::from(limits.max_host_calls) {
+        violations.push(SecurityViolation::ResourceLimitExceeded {
+            limit_type: "host_function_calls".to_string(),
+            limit_value: u64::from(limits.max_host_calls),
+            actual_value: host_function_calls,
+        });
+    }
+
+    if peak_memory_usage > limits.max_memory {
+        violations.push(SecurityViolation::ResourceLimitExceeded {
+            limit_type: "memory_bytes".to_string(),
+            limit_value: limits.max_memory,
+            actual_value: peak_memory_usage,
+        });
+    }
+
+    violations
 }
 
 #[cfg(test)]
@@ -1070,6 +1218,30 @@ mod tests {
     }
 
     #[test]
+    fn test_scoped_vfs_capability_grants() {
+        let granted = PluginCapability::AccessVfs {
+            namespaces: vec!["media/*".to_string()],
+            operations: vec![VfsOperation::Read, VfsOperation::List],
+        };
+        let requested = PluginCapability::AccessVfs {
+            namespaces: vec!["media/public".to_string()],
+            operations: vec![VfsOperation::Read],
+        };
+        let denied_namespace = PluginCapability::AccessVfs {
+            namespaces: vec!["private".to_string()],
+            operations: vec![VfsOperation::Read],
+        };
+        let denied_operation = PluginCapability::AccessVfs {
+            namespaces: vec!["media/public".to_string()],
+            operations: vec![VfsOperation::Delete],
+        };
+
+        assert!(granted.grants(&requested));
+        assert!(!granted.grants(&denied_namespace));
+        assert!(!granted.grants(&denied_operation));
+    }
+
+    #[test]
     fn test_trust_level_restrictions() {
         let policies = SecurityPolicies {
             allow_untrusted_plugins: true, // Allow untrusted plugins for this test
@@ -1092,6 +1264,39 @@ mod tests {
         assert!(manager
             .grant_capability("untrusted_plugin", PluginCapability::ScheduleTasks)
             .is_err());
+    }
+
+    #[test]
+    fn test_resource_limit_violations_suspend_plugin() {
+        let policies = SecurityPolicies {
+            allow_untrusted_plugins: true,
+            max_violations_before_suspension: 1,
+            ..Default::default()
+        };
+        let mut manager = PluginSecurityManager::with_policies(policies);
+        manager
+            .register_plugin(
+                "limited_plugin".to_string(),
+                Some(PluginTrustLevel::Untrusted),
+            )
+            .unwrap();
+        manager
+            .set_resource_limits(
+                "limited_plugin",
+                ResourceLimits {
+                    max_memory: 1024,
+                    max_execution_time: 10,
+                    max_host_calls: 1,
+                    rate_limit: 60,
+                },
+            )
+            .unwrap();
+
+        manager
+            .record_execution("limited_plugin", 11, false, 1, 512)
+            .unwrap();
+
+        assert!(manager.get_context("limited_plugin").unwrap().suspended);
     }
 
     #[test]

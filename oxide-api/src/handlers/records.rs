@@ -298,7 +298,9 @@ pub async fn get_record(
                 .await?;
         }
 
-        record = records.into_iter().next().unwrap();
+        record = records.into_iter().next().ok_or_else(|| {
+            ApiError::internal("Record unexpectedly missing after relationship population")
+        })?;
     }
 
     Ok(Json(ApiResponse::success(record)))

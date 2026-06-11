@@ -19,9 +19,9 @@ use oxide_core::{
 };
 use oxide_db::Db;
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Instant;
-use tracing::{debug, info};
+use tracing::{debug, error, info};
 use wasmtime::{Engine, ExternType, Instance, Linker, Module, Store};
 
 /// Wasmtime-based implementation of the PluginRuntime trait
@@ -116,6 +116,25 @@ impl WasmtimePluginRuntime {
         Ok(())
     }
 
+    fn host_state(&self, action: &str) -> PluginResult<MutexGuard<'_, HostState>> {
+        self.store.data().lock().map_err(|_| {
+            PluginError::ExecutionFailed(format!(
+                "Plugin host state lock was poisoned while {}",
+                action
+            ))
+        })
+    }
+
+    fn try_host_state(&self, action: &str) -> Option<MutexGuard<'_, HostState>> {
+        match self.store.data().lock() {
+            Ok(state) => Some(state),
+            Err(_) => {
+                error!("Plugin host state lock was poisoned while {}", action);
+                None
+            }
+        }
+    }
+
     /// Get the current host state (for testing)
     pub fn get_host_state(&self) -> Arc<Mutex<HostState>> {
         self.store.data().clone()
@@ -123,12 +142,15 @@ impl WasmtimePluginRuntime {
 
     /// Get the error message set by the plugin (for testing)
     pub fn get_plugin_error(&self) -> Option<String> {
-        self.store.data().lock().unwrap().error_message.clone()
+        self.try_host_state("reading plugin error")
+            .and_then(|state| state.error_message.clone())
     }
 
     /// Get log messages from the plugin (for testing)
     pub fn get_plugin_logs(&self) -> Vec<String> {
-        self.store.data().lock().unwrap().log_messages.clone()
+        self.try_host_state("reading plugin logs")
+            .map(|state| state.log_messages.clone())
+            .unwrap_or_default()
     }
 
     /// Set the current event payload for plugin processing
@@ -137,7 +159,7 @@ impl WasmtimePluginRuntime {
             PluginError::ExecutionFailed(format!("Failed to serialize payload: {}", e))
         })?;
 
-        let mut state = self.store.data().lock().unwrap();
+        let mut state = self.host_state("setting current event payload")?;
         state.current_payload = Some(payload_json.clone());
         state.result_buffer = payload_json.into_bytes();
         drop(state);
@@ -181,7 +203,31 @@ impl WasmtimePluginRuntime {
             .ok_or_else(|| PluginError::ExecutionFailed("Plugin memory not found".to_string()))?;
 
         let data = memory.data(&self.store);
-        let response_bytes = &data[response_ptr as usize..(response_ptr + response_len) as usize];
+        let response_start = usize::try_from(response_ptr).map_err(|_| {
+            PluginError::InvalidResponse(format!(
+                "Plugin returned negative response pointer: {}",
+                response_ptr
+            ))
+        })?;
+        let response_len = usize::try_from(response_len).map_err(|_| {
+            PluginError::InvalidResponse(format!(
+                "Plugin returned invalid response length: {}",
+                response_len
+            ))
+        })?;
+        let response_end = response_start.checked_add(response_len).ok_or_else(|| {
+            PluginError::InvalidResponse(
+                "Plugin response pointer overflowed memory bounds".to_string(),
+            )
+        })?;
+        let response_bytes = data.get(response_start..response_end).ok_or_else(|| {
+            PluginError::InvalidResponse(format!(
+                "Plugin response range {}..{} exceeds memory size {}",
+                response_start,
+                response_end,
+                data.len()
+            ))
+        })?;
         let response_json = std::str::from_utf8(response_bytes)
             .map_err(|e| PluginError::InvalidResponse(format!("Invalid UTF-8: {}", e)))?;
 
@@ -197,7 +243,7 @@ impl WasmtimePluginRuntime {
                 .ok_or_else(|| PluginError::PluginNotFound(name.to_string()))?;
 
             {
-                let mut state = self.store.data().lock().unwrap();
+                let mut state = self.host_state("preparing plugin initialization")?;
                 state.current_plugin = Some(name.to_string());
                 state.current_http_request = None;
                 state.error_message = None;
@@ -231,13 +277,18 @@ impl WasmtimePluginRuntime {
             Ok(())
         })();
 
-        {
-            let mut state = self.store.data().lock().unwrap();
-            state.current_plugin = None;
-            state.set_execution_context(ExecutionContext::Idle);
-        }
+        let cleanup_result = self
+            .host_state("clearing plugin initialization context")
+            .map(|mut state| {
+                state.current_plugin = None;
+                state.set_execution_context(ExecutionContext::Idle);
+            });
 
-        result
+        match (result, cleanup_result) {
+            (Err(error), _) => Err(error),
+            (Ok(()), Err(error)) => Err(error),
+            (Ok(()), Ok(())) => Ok(()),
+        }
     }
 
     fn remove_plugin_runtime_state(&mut self, plugin_name: &str) {
@@ -245,11 +296,12 @@ impl WasmtimePluginRuntime {
         self.modules.remove(plugin_name);
         self.instances.remove(plugin_name);
 
-        let mut state = self.store.data().lock().unwrap();
-        state
-            .registered_routes
-            .retain(|route| route.plugin_name != plugin_name);
-        state.remove_plugin_capabilities(plugin_name);
+        if let Some(mut state) = self.try_host_state("removing plugin runtime state") {
+            state
+                .registered_routes
+                .retain(|route| route.plugin_name != plugin_name);
+            state.remove_plugin_capabilities(plugin_name);
+        }
     }
 
     fn sync_plugin_capabilities_to_host_state(&mut self, plugin_name: &str) {
@@ -259,11 +311,9 @@ impl WasmtimePluginRuntime {
             .map(|context| context.capabilities.iter().cloned().collect())
             .unwrap_or_default();
 
-        self.store
-            .data()
-            .lock()
-            .unwrap()
-            .set_plugin_capabilities(plugin_name.to_string(), capabilities);
+        if let Some(mut state) = self.try_host_state("syncing plugin capabilities") {
+            state.set_plugin_capabilities(plugin_name.to_string(), capabilities);
+        }
     }
 
     /// Load a plugin with specific trust level and capabilities
@@ -273,7 +323,7 @@ impl WasmtimePluginRuntime {
         wasm_bytes: &[u8],
         trust_level: PluginTrustLevel,
         capabilities: Vec<PluginCapability>,
-        _limits: ResourceLimits,
+        limits: ResourceLimits,
     ) -> PluginResult<()> {
         debug!(
             "Loading plugin '{}' with trust level {:?}",
@@ -300,6 +350,11 @@ impl WasmtimePluginRuntime {
             .register_plugin(name.to_string(), Some(trust_level.clone()))
             .map_err(|e| {
                 PluginError::SecurityViolation(format!("Failed to register plugin: {:?}", e))
+            })?;
+        self.security_manager
+            .set_resource_limits(name, limits)
+            .map_err(|e| {
+                PluginError::SecurityViolation(format!("Failed to apply resource limits: {:?}", e))
             })?;
 
         // Grant specified capabilities
@@ -374,7 +429,11 @@ impl WasmtimePluginRuntime {
 
     /// Resume a suspended plugin
     pub fn resume_plugin(&mut self, plugin_name: &str) -> PluginResult<()> {
-        let _ = self.security_manager.resume_plugin(plugin_name);
+        self.security_manager
+            .resume_plugin(plugin_name)
+            .map_err(|e| {
+                PluginError::SecurityViolation(format!("Failed to resume plugin: {:?}", e))
+            })?;
         info!("Plugin '{}' has been resumed", plugin_name);
         Ok(())
     }
@@ -464,20 +523,22 @@ impl WasmtimePluginRuntime {
     }
 
     /// Reset per-execution telemetry before entering plugin code.
-    fn reset_execution_metrics(&mut self) {
-        let mut state = self.store.data().lock().unwrap();
+    fn reset_execution_metrics(&mut self) -> PluginResult<()> {
+        let mut state = self.host_state("resetting plugin execution metrics")?;
         state.current_execution_host_calls = 0;
+        state.result_buffer.clear();
+        state.db_result_buffer.clear();
+        state.clear_function_results();
+        Ok(())
     }
 
     /// Record elapsed execution telemetry after a plugin call completes.
     fn record_execution_metrics(&mut self, plugin_name: &str, started_at: Instant, failed: bool) {
         let execution_time_ms = started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
         let host_function_calls = self
-            .store
-            .data()
-            .lock()
-            .unwrap()
-            .current_execution_host_calls;
+            .try_host_state("recording plugin execution metrics")
+            .map(|state| state.current_execution_host_calls)
+            .unwrap_or_default();
         let peak_memory_usage = self.get_plugin_memory_usage(plugin_name);
 
         if let Err(e) = self.security_manager.record_execution(
@@ -505,7 +566,9 @@ impl WasmtimePluginRuntime {
 
     /// Get all registered HTTP routes from plugins
     pub fn get_registered_routes(&self) -> Vec<oxide_core::plugin_api::RouteRegistration> {
-        self.store.data().lock().unwrap().registered_routes.clone()
+        self.try_host_state("reading registered plugin HTTP routes")
+            .map(|state| state.registered_routes.clone())
+            .unwrap_or_default()
     }
 
     /// Handle an HTTP request for a plugin route
@@ -516,7 +579,7 @@ impl WasmtimePluginRuntime {
         request: &oxide_core::plugin_api::HttpRequestContext,
     ) -> PluginResult<oxide_core::plugin_api::HttpResponse> {
         let started_at = Instant::now();
-        self.reset_execution_metrics();
+        self.reset_execution_metrics()?;
         let result = self.handle_http_request_inner(plugin_name, request);
         self.record_execution_metrics(plugin_name, started_at, result.is_err());
         self.clear_http_request_context();
@@ -554,7 +617,7 @@ impl WasmtimePluginRuntime {
 
         // Set the current HTTP request context
         {
-            let mut state = self.store.data().lock().unwrap();
+            let mut state = self.host_state("setting plugin HTTP request context")?;
             state.current_http_request = Some(request.clone());
             state.http_response_buffer.clear();
             state.error_message = None;
@@ -586,7 +649,7 @@ impl WasmtimePluginRuntime {
 
         // Get the HTTP response from the plugin
         let response_json = {
-            let state = self.store.data().lock().unwrap();
+            let state = self.host_state("reading plugin HTTP response")?;
             if state.http_response_buffer.is_empty() {
                 // Return default response if plugin didn't set one
                 serde_json::to_string(&oxide_core::plugin_api::HttpResponse::default())
@@ -602,17 +665,18 @@ impl WasmtimePluginRuntime {
     }
 
     fn clear_http_request_context(&mut self) {
-        let mut state = self.store.data().lock().unwrap();
-        state.current_http_request = None;
-        state.http_response_buffer.clear();
-        state.current_plugin = None;
-        state.set_execution_context(ExecutionContext::Idle);
-        state.exit_database_operation();
+        if let Some(mut state) = self.try_host_state("clearing plugin HTTP request context") {
+            state.current_http_request = None;
+            state.http_response_buffer.clear();
+            state.current_plugin = None;
+            state.set_execution_context(ExecutionContext::Idle);
+            state.exit_database_operation();
+        }
     }
 
     /// Get database operation result from the plugin's result buffer
     pub fn get_db_result(&self) -> Option<serde_json::Value> {
-        let state = self.store.data().lock().unwrap();
+        let state = self.try_host_state("reading plugin database result")?;
         if state.result_buffer.len() >= 8 {
             // For database operations, read the length and then access plugin memory
             let len = u32::from_le_bytes([
@@ -637,15 +701,18 @@ impl WasmtimePluginRuntime {
 
     /// Clear all state buffers
     pub fn clear_state(&mut self) {
-        let mut state = self.store.data().lock().unwrap();
-        state.current_http_request = None;
-        state.http_response_buffer.clear();
-        state.result_buffer.clear();
-        state.log_messages.clear();
-        state.error_message = None;
-        state.current_plugin = None;
-        state.set_execution_context(ExecutionContext::Idle);
-        state.exit_database_operation();
+        if let Some(mut state) = self.try_host_state("clearing plugin runtime state") {
+            state.current_http_request = None;
+            state.http_response_buffer.clear();
+            state.result_buffer.clear();
+            state.db_result_buffer.clear();
+            state.log_messages.clear();
+            state.error_message = None;
+            state.current_plugin = None;
+            state.clear_function_results();
+            state.set_execution_context(ExecutionContext::Idle);
+            state.exit_database_operation();
+        }
     }
 }
 
@@ -718,7 +785,7 @@ impl PluginRuntime for WasmtimePluginRuntime {
         payload: &EventPayload,
     ) -> PluginResult<PluginResponse> {
         let started_at = Instant::now();
-        self.reset_execution_metrics();
+        self.reset_execution_metrics()?;
 
         let result = (|| {
             debug!(
@@ -748,7 +815,7 @@ impl PluginRuntime for WasmtimePluginRuntime {
 
             // Clear previous state and set current plugin context
             {
-                let mut state = self.store.data().lock().unwrap();
+                let mut state = self.host_state("preparing plugin event call")?;
                 state.log_messages.clear();
                 state.error_message = None;
                 state.current_plugin = Some(plugin_name.to_string());
@@ -810,7 +877,7 @@ impl PluginRuntime for WasmtimePluginRuntime {
             );
 
             // Check if plugin set an error
-            let state = self.store.data().lock().unwrap();
+            let state = self.host_state("reading plugin event error state")?;
             if let Some(error_msg) = &state.error_message {
                 debug!("Plugin set error: {}", error_msg);
             }
@@ -841,7 +908,7 @@ impl PluginRuntime for WasmtimePluginRuntime {
 
     fn unload_plugin(&mut self, plugin_name: &str) -> PluginResult<()> {
         let removed_count = {
-            let state = self.store.data().lock().unwrap();
+            let state = self.host_state("counting plugin routes before unload")?;
             state
                 .registered_routes
                 .iter()

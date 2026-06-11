@@ -137,6 +137,10 @@ impl SqliteDb {
             ));
         }
 
+        let collection_schema = self
+            .get_collection_schema(&register_request.collection)
+            .await?;
+
         // Check if user already exists in any auth collection to prevent duplicates
         let auth_collections = self.list_auth_collections().await?;
         for schema in &auth_collections {
@@ -170,12 +174,30 @@ impl SqliteDb {
             }
         }
 
-        // Set default verification status based on auth config
-        if !user_data.as_object().unwrap().contains_key("verified") {
-            user_data.as_object_mut().unwrap().insert(
-                "verified".to_string(),
-                serde_json::Value::Bool(!auth_config.email_verification_required),
-            );
+        // Add built-in auth metadata only when the target schema supports it.
+        if let serde_json::Value::Object(ref mut user_map) = user_data {
+            let verification_value =
+                serde_json::Value::Bool(!auth_config.email_verification_required);
+
+            if collection_schema.fields.contains_key("email_verified") {
+                user_map
+                    .entry("email_verified".to_string())
+                    .or_insert(verification_value);
+            } else if collection_schema.fields.contains_key("verified") {
+                user_map
+                    .entry("verified".to_string())
+                    .or_insert(verification_value);
+            }
+
+            if collection_schema.fields.contains_key("role") {
+                user_map.entry("role".to_string()).or_insert_with(|| {
+                    serde_json::Value::String(auth_config.default_role.to_string())
+                });
+            }
+        } else {
+            return Err(AppError::internal(
+                "User registration data must be an object",
+            ));
         }
 
         // Use the standard record creation flow - hooks will handle all transformations

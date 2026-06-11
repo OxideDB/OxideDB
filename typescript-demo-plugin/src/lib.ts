@@ -32,7 +32,7 @@ declare function get_result_ptr(): number;
 declare function get_result_len(): number;
 
 // Global memory management
-let memory: WebAssembly.Memory;
+let memory: WebAssembly.Memory = new WebAssembly.Memory({ initial: 1 });
 let responseBuffer: Uint8Array;
 
 // Helper functions for host communication
@@ -91,19 +91,19 @@ function hostGetEventPayload(): EventPayload | null {
 }
 
 // Memory allocation function (required for WASM)
-export function alloc(size: number): number {
+export function alloc(_size: number): number {
   // This would typically allocate memory in the WASM linear memory
   // For demo purposes, we'll simulate this
   return 0; // Placeholder
 }
 
 // Memory deallocation function
-export function dealloc(ptr: number, size: number): void {
+export function dealloc(_ptr: number, _size: number): void {
   // Deallocate memory - implementation depends on allocator
 }
 
 // Simulated memory allocation for demo
-function allocateMemory(size: number): number {
+function allocateMemory(_size: number): number {
   // In a real implementation, this would manage WASM linear memory
   return 0; // Placeholder
 }
@@ -176,7 +176,7 @@ class DataTransformer {
 
 // Simulated third-party API integration
 class ThirdPartyIntegration {
-  static async enrichUserData(data: any): Promise<any> {
+  static enrichUserData(data: any): any {
     // Simulate API call delay and processing
     hostLogInfo(`Enriching user data for: ${data.email}`);
     
@@ -197,7 +197,7 @@ class ThirdPartyIntegration {
     return enrichedData;
   }
 
-  static async validateWithExternalService(data: any): Promise<boolean> {
+  static validateWithExternalService(data: any): boolean {
     // Simulate external validation
     hostLogInfo(`Validating user with external service: ${data.email}`);
     
@@ -259,7 +259,7 @@ export function on_before_create(): number {
 }
 
 function handleUserCreation(data: any, payload: EventPayload): number {
-  hostLogInfo("Processing user creation");
+  hostLogInfo(`Processing user creation for ${payload.collection}`);
   
   // Validate user data
   const validation = DataValidator.validateUserData(data);
@@ -272,9 +272,8 @@ function handleUserCreation(data: any, payload: EventPayload): number {
   // Transform and normalize data
   const normalizedData = DataTransformer.normalizeUserData(data);
   
-  // Simulate external validation (in real scenario, this would be async)
-  // For demo, we'll simulate the result
-  const externalValidation = !normalizedData.email.includes('blocked');
+  const externalValidation = ThirdPartyIntegration.validateWithExternalService(normalizedData)
+    && !normalizedData.email.includes('blocked');
   if (!externalValidation) {
     hostSetError("User blocked by external validation service");
     return 0;
@@ -282,7 +281,7 @@ function handleUserCreation(data: any, payload: EventPayload): number {
 
   // Enrich data with external information
   const enrichedData = {
-    ...normalizedData,
+    ...ThirdPartyIntegration.enrichUserData(normalizedData),
     account_status: 'pending_verification',
     created_by_plugin: 'typescript-demo-plugin',
     validation_passed: true
@@ -307,7 +306,7 @@ function handleUserCreation(data: any, payload: EventPayload): number {
 }
 
 function handleOrderCreation(data: any, payload: EventPayload): number {
-  hostLogInfo("Processing order creation");
+  hostLogInfo(`Processing order creation for ${payload.collection}`);
   
   // Validate required order fields
   const requiredFields = ['customer_id', 'items', 'total'];
@@ -359,7 +358,7 @@ function handleOrderCreation(data: any, payload: EventPayload): number {
 }
 
 function handleSensitiveDataCreation(data: any, payload: EventPayload): number {
-  hostLogInfo("Processing sensitive data creation - applying strict validation");
+  hostLogInfo(`Processing sensitive data creation for ${payload.collection} - applying strict validation`);
   
   // For sensitive data, we apply stricter rules
   // This demonstrates how plugins can implement collection-specific security
@@ -533,7 +532,7 @@ function storeResponse(response: PluginResponse): void {
     
     // In a real implementation, this would store the response in a way
     // that the host can retrieve it
-    hostLogInfo(`Response prepared: ${responseJson.length} bytes`);
+    hostLogInfo(`Response prepared: ${responseBuffer.length} bytes`);
   } catch (error) {
     hostLogError(`Failed to store response: ${error}`);
   }

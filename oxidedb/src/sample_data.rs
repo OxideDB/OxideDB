@@ -76,8 +76,7 @@ async fn register_sample_superuser(
             identifier: "admin@oxide.rs".to_string(),
             credential: "admin123".to_string(),
             additional_data: Some(serde_json::json!({
-                "name": "System Administrator",
-                "role": "admin"
+                "name": "System Administrator"
             })),
         };
 
@@ -128,8 +127,7 @@ async fn register_sample_user(
             identifier: "user@oxide.rs".to_string(),
             credential: "user123".to_string(),
             additional_data: Some(serde_json::json!({
-                "name": "Sample User",
-                "role": "member"
+                "name": "Sample User"
             })),
         };
 

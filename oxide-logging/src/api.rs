@@ -475,6 +475,10 @@ impl LogApiService {
             );
         }
 
+        filter.audit_actor = params.actor;
+        filter.audit_target = params.target;
+        filter.min_audit_risk_score = params.min_risk_score;
+
         // Set pagination
         let limit = params.limit.map(|l| l.min(1000));
         let offset = params.offset;
@@ -513,6 +517,15 @@ impl LogApiService {
         if filter.collection.is_some() {
             filters.push("collection".to_string());
         }
+        if filter.audit_actor.is_some() {
+            filters.push("audit_actor".to_string());
+        }
+        if filter.audit_target.is_some() {
+            filters.push("audit_target".to_string());
+        }
+        if filter.min_audit_risk_score.is_some() {
+            filters.push("min_audit_risk_score".to_string());
+        }
         if filter.message_contains.is_some() {
             filters.push("message_search".to_string());
         }
@@ -544,4 +557,137 @@ pub enum WebSocketMessage {
     Ping,
     /// Heartbeat/pong
     Pong,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        models::{AuditEventType, LogContext, LogLevel, SecurityAuditEvent},
+        service::{LogService, LogServiceConfig},
+    };
+    use std::{error::Error, path::Path, sync::Arc};
+    use uuid::Uuid;
+
+    #[tokio::test]
+    async fn audit_query_filters_actor_target_and_risk_end_to_end(
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
+        let db_path =
+            std::env::temp_dir().join(format!("oxidedb-audit-query-{}.sqlite", Uuid::new_v4()));
+        let log_service = Arc::new(
+            LogService::with_config(LogServiceConfig {
+                db_path: db_path.clone(),
+                ..LogServiceConfig::default()
+            })
+            .await?,
+        );
+        let api = LogApiService::new(Arc::clone(&log_service));
+
+        let matching_event = SecurityAuditEvent::new(
+            AuditEventType::PluginEvent,
+            LogLevel::Info,
+            "Plugin installed",
+            "demo-plugin",
+            "plugin_installed",
+            "success",
+        )
+        .with_target("plugin:demo-plugin")
+        .with_context(
+            LogContext::new()
+                .with_operation("plugin_installed")
+                .with_metadata("trust_level", serde_json::json!("untrusted")),
+        )
+        .with_risk_score(70);
+
+        let low_risk_event = SecurityAuditEvent::new(
+            AuditEventType::PluginEvent,
+            LogLevel::Info,
+            "Plugin inspected",
+            "demo-plugin",
+            "plugin_inspected",
+            "success",
+        )
+        .with_target("plugin:demo-plugin")
+        .with_risk_score(20);
+
+        let other_plugin_event = SecurityAuditEvent::new(
+            AuditEventType::PluginEvent,
+            LogLevel::Info,
+            "Plugin installed",
+            "other-plugin",
+            "plugin_installed",
+            "success",
+        )
+        .with_target("plugin:other-plugin")
+        .with_risk_score(90);
+
+        log_service
+            .audit_service()
+            .log_audit_event(matching_event)
+            .await?;
+        log_service
+            .audit_service()
+            .log_audit_event(low_risk_event)
+            .await?;
+        log_service
+            .audit_service()
+            .log_audit_event(other_plugin_event)
+            .await?;
+
+        let response = api
+            .query_audit_events(AuditQueryParams {
+                severity: None,
+                start_time: None,
+                end_time: None,
+                event_type: Some("plugin_event".to_string()),
+                actor: Some("demo-plugin".to_string()),
+                target: Some("plugin:demo-plugin".to_string()),
+                correlation_id: None,
+                min_risk_score: Some(50),
+                limit: Some(10),
+                offset: Some(0),
+                sort: Some("asc".to_string()),
+            })
+            .await?;
+
+        assert_eq!(response.data.len(), 1);
+        assert_eq!(response.data[0].actor, "demo-plugin");
+        assert_eq!(
+            response.data[0].target.as_deref(),
+            Some("plugin:demo-plugin")
+        );
+        assert_eq!(response.data[0].action, "plugin_installed");
+        assert!(response
+            .metadata
+            .filters_applied
+            .contains(&"audit_actor".to_string()));
+        assert!(response
+            .metadata
+            .filters_applied
+            .contains(&"audit_target".to_string()));
+        assert!(response
+            .metadata
+            .filters_applied
+            .contains(&"min_audit_risk_score".to_string()));
+
+        drop(api);
+        let log_service = match Arc::try_unwrap(log_service) {
+            Ok(log_service) => log_service,
+            Err(_) => return Err("logging service still has outstanding references".into()),
+        };
+        log_service.shutdown().await?;
+        cleanup_sqlite_files(&db_path);
+
+        Ok(())
+    }
+
+    fn cleanup_sqlite_files(db_path: &Path) {
+        let _ = std::fs::remove_file(db_path);
+
+        for suffix in ["-shm", "-wal"] {
+            let mut path = db_path.as_os_str().to_os_string();
+            path.push(suffix);
+            let _ = std::fs::remove_file(std::path::PathBuf::from(path));
+        }
+    }
 }

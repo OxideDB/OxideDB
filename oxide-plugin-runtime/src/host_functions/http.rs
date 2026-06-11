@@ -3,8 +3,8 @@
 //! These functions provide HTTP capabilities for plugins to register routes,
 //! handle HTTP requests, and send HTTP responses.
 
-use crate::host_state::HostState;
-use crate::utils::read_string_from_plugin_memory;
+use crate::host_state::{lock_host_state, record_host_call, HostState};
+use crate::utils::{allocate_plugin_memory_and_copy, read_string_from_plugin_memory};
 use oxide_core::plugin_api::{host_functions, HttpResponse, PluginError, RouteRegistration};
 use oxide_core::plugin_security::PluginCapability;
 use std::collections::HashMap;
@@ -34,7 +34,9 @@ pub fn define_http_functions(
              handler_ptr: i32,
              handler_len: i32|
              -> i32 {
-                caller.data().lock().unwrap().record_host_call();
+                if !record_host_call(caller.data(), "recording register_http_route host call") {
+                    return -1;
+                }
 
                 let method =
                     match read_string_from_plugin_memory(&mut caller, method_ptr, method_len) {
@@ -54,13 +56,23 @@ pub fn define_http_functions(
                     };
 
                 let plugin_name = {
-                    let state = caller.data().lock().unwrap();
+                    let Some(state) = lock_host_state(
+                        caller.data(),
+                        "reading current plugin for route registration",
+                    ) else {
+                        return -1;
+                    };
                     state.current_plugin.clone()
                 };
 
                 if let Some(plugin_name) = plugin_name {
                     {
-                        let state = caller.data().lock().unwrap();
+                        let Some(state) = lock_host_state(
+                            caller.data(),
+                            "checking route registration capability",
+                        ) else {
+                            return -1;
+                        };
                         if !state.current_plugin_can_register_http_route(&method, &path) {
                             warn!(
                                 "Denied HTTP route registration for plugin '{}': {} {}",
@@ -79,7 +91,11 @@ pub fn define_http_functions(
 
                     let route_path = format!("{} {}", route.method, route.path);
 
-                    let mut state = caller.data().lock().unwrap();
+                    let Some(mut state) =
+                        lock_host_state(caller.data(), "storing registered HTTP route")
+                    else {
+                        return -1;
+                    };
                     state.registered_routes.push(route);
                     info!("Registered HTTP route: {}", route_path);
                     0 // Success
@@ -101,52 +117,46 @@ pub fn define_http_functions(
             "env",
             host_functions::GET_HTTP_REQUEST,
             |mut caller: Caller<'_, Arc<Mutex<HostState>>>| -> i32 {
-                caller.data().lock().unwrap().record_host_call();
-
-                let state = caller.data().lock().unwrap();
-                if !state.current_plugin_has_capability(&PluginCapability::HandleHttpRequests) {
+                if !record_host_call(caller.data(), "recording get_http_request host call") {
                     return -1;
                 }
 
-                if let Some(request) = &state.current_http_request {
-                    if let Ok(request_json) = serde_json::to_string(request) {
+                let request = {
+                    let Some(state) =
+                        lock_host_state(caller.data(), "reading current HTTP request")
+                    else {
+                        return -1;
+                    };
+                    if !state.current_plugin_has_capability(&PluginCapability::HandleHttpRequests) {
+                        return -1;
+                    }
+                    state.current_http_request.clone()
+                };
+
+                if let Some(request) = request {
+                    if let Ok(request_json) = serde_json::to_string(&request) {
                         let request_bytes = request_json.as_bytes().to_vec();
-                        drop(state);
 
-                        // Get plugin memory and allocate space
-                        if let Some(memory) =
-                            caller.get_export("memory").and_then(|e| e.into_memory())
+                        if let Some((ptr, len)) =
+                            allocate_plugin_memory_and_copy(&mut caller, &request_bytes)
                         {
-                            if let Some(alloc_export) = caller.get_export("alloc") {
-                                if let Some(alloc_func_raw) = alloc_export.into_func() {
-                                    if let Ok(alloc_func) =
-                                        alloc_func_raw.typed::<i32, i32>(&mut caller)
-                                    {
-                                        if let Ok(ptr) =
-                                            alloc_func.call(&mut caller, request_bytes.len() as i32)
-                                        {
-                                            let data = memory.data_mut(&mut caller);
-                                            let start = ptr as usize;
-                                            let end = start + request_bytes.len();
+                            let Ok(ptr) = u32::try_from(ptr) else {
+                                return -1;
+                            };
+                            let Ok(len_u32) = u32::try_from(len) else {
+                                return -1;
+                            };
+                            let Some(mut state) = lock_host_state(
+                                caller.data(),
+                                "storing HTTP request result pointer",
+                            ) else {
+                                return -1;
+                            };
+                            state.result_buffer =
+                                [ptr.to_le_bytes().to_vec(), len_u32.to_le_bytes().to_vec()]
+                                    .concat();
 
-                                            if end <= data.len() {
-                                                data[start..end].copy_from_slice(&request_bytes);
-
-                                                let mut state = caller.data().lock().unwrap();
-                                                state.result_buffer = [
-                                                    (ptr as u32).to_le_bytes().to_vec(),
-                                                    (request_bytes.len() as u32)
-                                                        .to_le_bytes()
-                                                        .to_vec(),
-                                                ]
-                                                .concat();
-
-                                                return request_bytes.len() as i32;
-                                            }
-                                        }
-                                    }
-                                }
-                            }
+                            return len;
                         }
                     }
                 }
@@ -169,10 +179,16 @@ pub fn define_http_functions(
              body_ptr: i32,
              body_len: i32|
              -> i32 {
-                caller.data().lock().unwrap().record_host_call();
+                if !record_host_call(caller.data(), "recording set_http_response host call") {
+                    return -1;
+                }
 
                 {
-                    let state = caller.data().lock().unwrap();
+                    let Some(state) =
+                        lock_host_state(caller.data(), "checking set_http_response capability")
+                    else {
+                        return -1;
+                    };
                     if !state.current_plugin_has_capability(&PluginCapability::HandleHttpRequests)
                     {
                         warn!("set_http_response denied: current plugin lacks HandleHttpRequests capability");
@@ -200,15 +216,27 @@ pub fn define_http_functions(
 
                 let headers: HashMap<String, String> =
                     serde_json::from_str(&headers_json).unwrap_or_default();
+                let Ok(status_code) = u16::try_from(status_code) else {
+                    warn!("Plugin attempted to set invalid negative HTTP status");
+                    return -1;
+                };
+                if !(100..=599).contains(&status_code) {
+                    warn!("Plugin attempted to set invalid HTTP status: {}", status_code);
+                    return -1;
+                }
 
                 let response = HttpResponse {
-                    status_code: status_code as u16,
+                    status_code,
                     headers,
                     body,
                 };
 
                 if let Ok(response_json) = serde_json::to_string(&response) {
-                    let mut state = caller.data().lock().unwrap();
+                    let Some(mut state) =
+                        lock_host_state(caller.data(), "storing plugin HTTP response")
+                    else {
+                        return -1;
+                    };
                     state.http_response_buffer = response_json.into_bytes();
                     info!("Set HTTP response: status {}", status_code);
                     0 // Success

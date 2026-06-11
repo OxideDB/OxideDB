@@ -13,10 +13,13 @@ use std::collections::HashMap;
 use std::convert::TryInto;
 use std::io::{Cursor, Read};
 use std::path::{Component, Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::{debug, error, info, warn};
 use zip::ZipArchive;
 
 use super::{
+    audit::record_plugin_audit_event,
     capabilities::{
         capability_satisfies, is_capability_allowed_for_trust_level,
         minimum_trust_level_for_capabilities, parse_capability_strings, parse_trust_level_string,
@@ -29,6 +32,15 @@ use oxide_core::plugin_security::{PluginCapability, PluginTrustLevel, ResourceLi
 const TRUSTED_PLUGIN_KEYS_ENV: &str = "OXIDEDB_PLUGIN_TRUSTED_KEYS";
 const TRUSTED_PLUGIN_KEYS_FILE_ENV: &str = "OXIDEDB_PLUGIN_TRUSTED_KEYS_FILE";
 const SIGNATURE_PAYLOAD_MAGIC: &[u8] = b"OxideDB plugin package signature v1\n";
+const MAX_PLUGIN_PACKAGE_SIZE_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_PLUGIN_EXTRACTED_SIZE_BYTES: u64 = 256 * 1024 * 1024;
+const MAX_PLUGIN_FILE_COUNT: usize = 512;
+const MAX_PLUGIN_MANIFEST_SIZE_BYTES: u64 = 256 * 1024;
+const MAX_PLUGIN_SIGNATURE_SIZE_BYTES: u64 = 16 * 1024;
+const MAX_PLUGIN_WASM_SIZE_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_PLUGIN_SUPPLEMENTAL_FILE_SIZE_BYTES: u64 = 16 * 1024 * 1024;
+
+static TEMP_EXTRACTION_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Register/Install a new plugin from a ZIP package
 pub async fn register_plugin(
@@ -121,29 +133,42 @@ pub async fn register_plugin(
     // Extract and validate the plugin package
     debug!("🔌 Extracting plugin package");
     let package = extract_plugin_package(&package_data)?;
+    let _extraction_cleanup = TempExtractionGuard::new(package.extraction_path.clone());
+    let plugin_name = package.manifest.plugin.name.clone();
+    let plugin_version = package.manifest.plugin.version.clone();
 
     // Verify digital signature if present
     let signature_valid = verify_plugin_signature(&package).await?;
-    enforce_plugin_signature_policy(
-        &package.manifest.plugin.name,
+    if let Err(error) = enforce_plugin_signature_policy(
+        &plugin_name,
         plugin_manager.requires_code_signing(),
         signature_valid,
-    )?;
+    ) {
+        record_plugin_audit_event(
+            &state,
+            &plugin_name,
+            "plugin_signature_rejected",
+            "failure",
+            serde_json::json!({
+                "source": "zip_package",
+                "version": plugin_version,
+                "code_signing_required": plugin_manager.requires_code_signing(),
+                "signature_verified": signature_valid,
+                "reason": error.to_string(),
+            }),
+        )
+        .await;
+        return Err(error);
+    }
 
     if signature_valid {
-        info!(
-            "✅ Plugin signature verified: {}",
-            package.manifest.plugin.name
-        );
+        info!("✅ Plugin signature verified: {}", plugin_name);
     } else {
         warn!(
             "⚠️  Plugin signature not verified (may be unsigned): {}",
-            package.manifest.plugin.name
+            plugin_name
         );
     }
-
-    let plugin_name = package.manifest.plugin.name.clone();
-    let plugin_version = package.manifest.plugin.version.clone();
 
     // Parse declared capabilities from manifest
     let declared_capabilities: Vec<PluginCapability> =
@@ -161,6 +186,24 @@ pub async fn register_plugin(
         user_capabilities
     };
 
+    record_plugin_audit_event(
+        &state,
+        &plugin_name,
+        "plugin_install_attempted",
+        "started",
+        serde_json::json!({
+            "source": "zip_package",
+            "version": plugin_version,
+            "trust_level": user_trust_level,
+            "requested_capabilities": final_capabilities,
+            "declared_capabilities": declared_capabilities,
+            "signature_verified": signature_valid,
+            "package_hash": package.package_hash,
+            "package_size": package.package_size,
+        }),
+    )
+    .await;
+
     // Validate that user-granted capabilities include all required ones
     let missing_capabilities: Vec<&PluginCapability> = declared_capabilities
         .iter()
@@ -172,6 +215,19 @@ pub async fn register_plugin(
         .collect();
 
     if !missing_capabilities.is_empty() {
+        record_plugin_audit_event(
+            &state,
+            &plugin_name,
+            "plugin_install_failed",
+            "failure",
+            serde_json::json!({
+                "source": "zip_package",
+                "version": plugin_version,
+                "reason": "missing_required_capabilities",
+                "missing_capabilities": missing_capabilities,
+            }),
+        )
+        .await;
         return Err(ApiError::bad_request(format!(
             "Plugin '{}' requires capabilities that were not granted: {:?}. Please grant these capabilities or contact the plugin author.",
             plugin_name, missing_capabilities
@@ -185,6 +241,21 @@ pub async fn register_plugin(
 
     if !disallowed_capabilities.is_empty() {
         let minimum_trust_level = minimum_trust_level_for_capabilities(&final_capabilities);
+        record_plugin_audit_event(
+            &state,
+            &plugin_name,
+            "plugin_install_failed",
+            "failure",
+            serde_json::json!({
+                "source": "zip_package",
+                "version": plugin_version,
+                "reason": "capability_not_allowed_for_trust_level",
+                "trust_level": user_trust_level,
+                "minimum_trust_level": minimum_trust_level,
+                "disallowed_capabilities": disallowed_capabilities,
+            }),
+        )
+        .await;
         return Err(ApiError::bad_request(format!(
             "Trust level {:?} does not allow capabilities {:?}. Use at least {:?} for plugin '{}'.",
             user_trust_level, disallowed_capabilities, minimum_trust_level, plugin_name
@@ -196,6 +267,7 @@ pub async fn register_plugin(
         "DeleteRecords",
         "ModifyEventData",
         "BlockOperations",
+        "AccessVfs",
         "HttpRequest",
     ];
     let granted_sensitive: Vec<String> = final_capabilities
@@ -216,7 +288,7 @@ pub async fn register_plugin(
     }
 
     // Install plugin using directory-based approach
-    let _record_id = state
+    let _record_id = match state
         .plugin_config_service
         .install_plugin_from_directory(
             plugin_name.clone(),
@@ -238,7 +310,27 @@ pub async fn register_plugin(
             })),
         )
         .await
-        .map_err(|e| ApiError::internal(format!("Failed to install plugin: {}", e)))?;
+    {
+        Ok(record_id) => record_id,
+        Err(error) => {
+            record_plugin_audit_event(
+                &state,
+                &plugin_name,
+                "plugin_install_failed",
+                "failure",
+                serde_json::json!({
+                    "source": "zip_package",
+                    "version": plugin_version,
+                    "reason": error.to_string(),
+                }),
+            )
+            .await;
+            return Err(ApiError::internal(format!(
+                "Failed to install plugin: {}",
+                error
+            )));
+        }
+    };
 
     // Load the plugin into runtime (NO METADATA EXTRACTION FROM WASM)
     let load_result = {
@@ -257,6 +349,18 @@ pub async fn register_plugin(
     };
 
     if let Err(e) = load_result {
+        record_plugin_audit_event(
+            &state,
+            &plugin_name,
+            "plugin_load_failed",
+            "failure",
+            serde_json::json!({
+                "source": "zip_package",
+                "version": plugin_version,
+                "reason": e.to_string(),
+            }),
+        )
+        .await;
         if let Err(rollback_error) = state
             .plugin_config_service
             .uninstall_plugin(&plugin_name)
@@ -271,20 +375,49 @@ pub async fn register_plugin(
         return Err(ApiError::internal(format!("Failed to load plugin: {}", e)));
     }
 
-    plugin_manager
+    if let Err(e) = plugin_manager
         .register_plugin_with_event_system(&state.event_bus, &plugin_name)
         .await
-        .map_err(|e| {
-            ApiError::internal(format!(
-                "Failed to register plugin event handlers for '{}': {}",
-                plugin_name, e
-            ))
-        })?;
+    {
+        record_plugin_audit_event(
+            &state,
+            &plugin_name,
+            "plugin_registration_failed",
+            "failure",
+            serde_json::json!({
+                "source": "zip_package",
+                "version": plugin_version,
+                "reason": e.to_string(),
+            }),
+        )
+        .await;
+        return Err(ApiError::internal(format!(
+            "Failed to register plugin event handlers for '{}': {}",
+            plugin_name, e
+        )));
+    }
 
     info!(
         "✅ Plugin '{}' v{} registered successfully from ZIP package",
         plugin_name, plugin_version
     );
+
+    record_plugin_audit_event(
+        &state,
+        &plugin_name,
+        "plugin_installed",
+        "success",
+        serde_json::json!({
+            "source": "zip_package",
+            "version": plugin_version,
+            "trust_level": user_trust_level,
+            "capabilities": final_capabilities,
+            "signature_verified": signature_valid,
+            "package_hash": package.package_hash,
+            "package_size": package.package_size,
+        }),
+    )
+    .await;
 
     // Return plugin info based on manifest data
     let plugin_info = PluginInfo {
@@ -312,6 +445,15 @@ pub fn extract_plugin_package(package_data: &[u8]) -> Result<PluginPackage, ApiE
         package_data.len()
     );
 
+    let package_size = u64::try_from(package_data.len())
+        .map_err(|_| ApiError::bad_request("Plugin package is too large".to_string()))?;
+    if package_size > MAX_PLUGIN_PACKAGE_SIZE_BYTES {
+        return Err(ApiError::bad_request(format!(
+            "Plugin package is too large: {} bytes exceeds {} bytes",
+            package_size, MAX_PLUGIN_PACKAGE_SIZE_BYTES
+        )));
+    }
+
     // Calculate package hash for integrity
     let package_hash = {
         use sha2::{Digest, Sha256};
@@ -321,9 +463,8 @@ pub fn extract_plugin_package(package_data: &[u8]) -> Result<PluginPackage, ApiE
     };
 
     // Create temporary directory for extraction
-    let temp_dir = std::env::temp_dir().join(format!("oxide_plugin_{}", package_hash));
-    std::fs::create_dir_all(&temp_dir)
-        .map_err(|e| ApiError::internal(format!("Failed to create extraction directory: {}", e)))?;
+    let mut temp_guard = create_temp_extraction_dir(&package_hash)?;
+    let temp_dir = temp_guard.path().to_path_buf();
 
     debug!(
         "📁 Extracting to temporary directory: {}",
@@ -334,11 +475,19 @@ pub fn extract_plugin_package(package_data: &[u8]) -> Result<PluginPackage, ApiE
     let cursor = Cursor::new(package_data);
     let mut archive = ZipArchive::new(cursor)
         .map_err(|e| ApiError::bad_request(format!("Invalid ZIP archive: {}", e)))?;
+    if archive.len() > MAX_PLUGIN_FILE_COUNT {
+        return Err(ApiError::bad_request(format!(
+            "Plugin package contains too many files: {} exceeds {}",
+            archive.len(),
+            MAX_PLUGIN_FILE_COUNT
+        )));
+    }
 
     // Track extracted files
     let mut manifest_data: Option<Vec<u8>> = None;
     let mut wasm_files: HashMap<String, Vec<u8>> = HashMap::new();
     let mut signature_data: Option<Vec<u8>> = None;
+    let mut total_extracted_size = 0_u64;
 
     // Extract all files from ZIP to directory
     for i in 0..archive.len() {
@@ -364,6 +513,25 @@ pub fn extract_plugin_package(package_data: &[u8]) -> Result<PluginPackage, ApiE
             continue;
         }
 
+        let file_size = file.size();
+        let file_size_limit = max_file_size_for_zip_entry(&normalized_name);
+        if file_size > file_size_limit {
+            return Err(ApiError::bad_request(format!(
+                "Plugin package file '{}' is too large: {} bytes exceeds {} bytes",
+                file_name, file_size, file_size_limit
+            )));
+        }
+
+        total_extracted_size = total_extracted_size.checked_add(file_size).ok_or_else(|| {
+            ApiError::bad_request("Plugin package expanded size overflow".to_string())
+        })?;
+        if total_extracted_size > MAX_PLUGIN_EXTRACTED_SIZE_BYTES {
+            return Err(ApiError::bad_request(format!(
+                "Plugin package expanded size is too large: {} bytes exceeds {} bytes",
+                total_extracted_size, MAX_PLUGIN_EXTRACTED_SIZE_BYTES
+            )));
+        }
+
         // Create directory structure if needed
         let file_path = temp_dir.join(&relative_path);
         if let Some(parent) = file_path.parent() {
@@ -374,9 +542,20 @@ pub fn extract_plugin_package(package_data: &[u8]) -> Result<PluginPackage, ApiE
 
         // Extract file
         let mut buffer = Vec::new();
-        file.read_to_end(&mut buffer).map_err(|e| {
-            ApiError::bad_request(format!("Failed to read file '{}': {}", file_name, e))
-        })?;
+        file.by_ref()
+            .take(file_size_limit.saturating_add(1))
+            .read_to_end(&mut buffer)
+            .map_err(|e| {
+                ApiError::bad_request(format!("Failed to read file '{}': {}", file_name, e))
+            })?;
+        let actual_size = u64::try_from(buffer.len())
+            .map_err(|_| ApiError::bad_request("Plugin package file is too large".to_string()))?;
+        if actual_size > file_size_limit {
+            return Err(ApiError::bad_request(format!(
+                "Plugin package file '{}' is too large: {} bytes exceeds {} bytes",
+                file_name, actual_size, file_size_limit
+            )));
+        }
 
         // Write file to extraction directory
         std::fs::write(&file_path, &buffer).map_err(|e| {
@@ -420,7 +599,7 @@ pub fn extract_plugin_package(package_data: &[u8]) -> Result<PluginPackage, ApiE
     let manifest_str = String::from_utf8(manifest_data.clone())
         .map_err(|e| ApiError::bad_request(format!("Invalid UTF-8 in plugin.toml: {}", e)))?;
 
-    let manifest: PluginManifest = toml::from_str(&manifest_str)
+    let mut manifest: PluginManifest = toml::from_str(&manifest_str)
         .map_err(|e| ApiError::bad_request(format!("Invalid TOML manifest: {}", e)))?;
 
     let declared_wasm_path =
@@ -437,6 +616,7 @@ pub fn extract_plugin_package(package_data: &[u8]) -> Result<PluginPackage, ApiE
     })?;
     let signature_payload =
         build_signature_payload(&manifest_data, declared_wasm_name.as_bytes(), &wasm_data);
+    manifest.plugin.wasm_file = declared_wasm_name;
 
     // Validate plugin name format
     if !is_valid_plugin_name(&manifest.plugin.name) {
@@ -461,15 +641,89 @@ pub fn extract_plugin_package(package_data: &[u8]) -> Result<PluginPackage, ApiE
         temp_dir.display()
     );
 
+    temp_guard.disarm();
+
     Ok(PluginPackage {
         manifest,
         wasm_data,
         signature_data,
         signature_payload,
         package_hash,
-        package_size: package_data.len() as u64,
+        package_size,
         extraction_path: temp_dir,
     })
+}
+
+/// Removes an extracted plugin package directory when validation or analysis exits early.
+pub(super) struct TempExtractionGuard {
+    path: PathBuf,
+    active: bool,
+}
+
+impl TempExtractionGuard {
+    /// Create a cleanup guard for an already-created extraction path.
+    pub(super) fn new(path: PathBuf) -> Self {
+        Self { path, active: true }
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+
+    fn disarm(&mut self) {
+        self.active = false;
+    }
+}
+
+impl Drop for TempExtractionGuard {
+    fn drop(&mut self) {
+        if !self.active || !self.path.exists() {
+            return;
+        }
+
+        if let Err(error) = std::fs::remove_dir_all(&self.path) {
+            warn!(
+                "Failed to clean up plugin extraction directory '{}': {}",
+                self.path.display(),
+                error
+            );
+        }
+    }
+}
+
+fn create_temp_extraction_dir(package_hash: &str) -> Result<TempExtractionGuard, ApiError> {
+    let hash_prefix: String = package_hash.chars().take(16).collect();
+    let counter = TEMP_EXTRACTION_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let timestamp_nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    let temp_dir = std::env::temp_dir().join(format!(
+        "oxide_plugin_{}_{}_{}_{}",
+        hash_prefix,
+        std::process::id(),
+        timestamp_nanos,
+        counter
+    ));
+
+    std::fs::create_dir(&temp_dir).map_err(|e| {
+        ApiError::internal(format!(
+            "Failed to create plugin extraction directory '{}': {}",
+            temp_dir.display(),
+            e
+        ))
+    })?;
+
+    Ok(TempExtractionGuard::new(temp_dir))
+}
+
+fn max_file_size_for_zip_entry(normalized_name: &str) -> u64 {
+    match normalized_name {
+        "plugin.toml" => MAX_PLUGIN_MANIFEST_SIZE_BYTES,
+        "signature" | "plugin.sig" => MAX_PLUGIN_SIGNATURE_SIZE_BYTES,
+        name if name.ends_with(".wasm") => MAX_PLUGIN_WASM_SIZE_BYTES,
+        _ => MAX_PLUGIN_SUPPLEMENTAL_FILE_SIZE_BYTES,
+    }
 }
 
 fn build_signature_payload(manifest_data: &[u8], wasm_path: &[u8], wasm_data: &[u8]) -> Vec<u8> {
@@ -766,9 +1020,14 @@ fn is_valid_plugin_name(name: &str) -> bool {
         return false;
     }
 
-    name.chars()
-        .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
-        && name.chars().next().unwrap().is_alphabetic()
+    let Some(first_char) = name.chars().next() else {
+        return false;
+    };
+
+    first_char.is_alphabetic()
+        && name
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
 }
 
 /// Validate version format (basic semver validation)
@@ -797,6 +1056,39 @@ mod tests {
     use super::*;
     use axum::http::StatusCode;
     use ed25519_dalek::{Signer, SigningKey};
+    use std::io::{Cursor, Write};
+
+    fn test_manifest(wasm_file: &str) -> String {
+        format!(
+            r#"
+[plugin]
+name = "signed_plugin"
+version = "1.0.0"
+description = "Test plugin"
+author = "Test Author"
+build_timestamp = "2026-01-01T00:00:00Z"
+wasm_file = "{}"
+
+[security]
+required_capabilities = ["LogInfo"]
+recommended_trust_level = "Untrusted"
+"#,
+            wasm_file
+        )
+    }
+
+    fn test_zip(entries: &[(&str, &[u8])]) -> Vec<u8> {
+        let cursor = Cursor::new(Vec::new());
+        let mut archive = zip::ZipWriter::new(cursor);
+        let options = zip::write::SimpleFileOptions::default();
+
+        for (name, contents) in entries {
+            archive.start_file(name, options).unwrap();
+            archive.write_all(contents).unwrap();
+        }
+
+        archive.finish().unwrap().into_inner()
+    }
 
     #[test]
     fn signature_policy_fails_closed_when_required() {
@@ -809,6 +1101,38 @@ mod tests {
     fn signature_policy_allows_verified_or_optional_signatures() {
         assert!(enforce_plugin_signature_policy("plugin", true, true).is_ok());
         assert!(enforce_plugin_signature_policy("plugin", false, false).is_ok());
+    }
+
+    #[test]
+    fn extraction_normalizes_manifest_wasm_path_and_uses_unique_temp_dirs() {
+        let manifest = test_manifest("./nested/./plugin.wasm");
+        let wasm_data = b"\0asmtest plugin bytes";
+        let package_data = test_zip(&[
+            ("plugin.toml", manifest.as_bytes()),
+            ("nested/plugin.wasm", wasm_data),
+        ]);
+
+        let package_a = extract_plugin_package(&package_data).unwrap();
+        let _cleanup_a = TempExtractionGuard::new(package_a.extraction_path.clone());
+        let package_b = extract_plugin_package(&package_data).unwrap();
+        let _cleanup_b = TempExtractionGuard::new(package_b.extraction_path.clone());
+
+        assert_eq!(package_a.manifest.plugin.wasm_file, "nested/plugin.wasm");
+        assert_eq!(package_a.wasm_data, wasm_data);
+        assert_ne!(package_a.extraction_path, package_b.extraction_path);
+    }
+
+    #[test]
+    fn extraction_rejects_oversized_manifest() {
+        let oversized_manifest = vec![b'a'; MAX_PLUGIN_MANIFEST_SIZE_BYTES as usize + 1];
+        let package_data = test_zip(&[
+            ("plugin.toml", oversized_manifest.as_slice()),
+            ("plugin.wasm", b"\0asmtest plugin bytes"),
+        ]);
+
+        let error = extract_plugin_package(&package_data).unwrap_err();
+
+        assert_eq!(error.status_code(), StatusCode::BAD_REQUEST);
     }
 
     fn test_plugin_package() -> PluginPackage {

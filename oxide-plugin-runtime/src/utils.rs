@@ -23,20 +23,22 @@ pub fn allocate_plugin_memory_and_copy(
     caller: &mut Caller<'_, Arc<Mutex<HostState>>>,
     data: &[u8],
 ) -> Option<(i32, i32)> {
+    let len = i32::try_from(data.len()).ok()?;
+
     if let Some(memory) = caller.get_export("memory").and_then(|e| e.into_memory()) {
         // Call plugin's alloc function to get memory
         if let Some(alloc_export) = caller.get_export("alloc") {
             if let Some(alloc_func_raw) = alloc_export.into_func() {
                 if let Ok(alloc_func) = alloc_func_raw.typed::<i32, i32>(&mut *caller) {
-                    if let Ok(ptr) = alloc_func.call(&mut *caller, data.len() as i32) {
+                    if let Ok(ptr) = alloc_func.call(&mut *caller, len) {
                         // Copy data to plugin memory
                         let memory_data = memory.data_mut(&mut *caller);
-                        let start = ptr as usize;
-                        let end = start + data.len();
+                        let start = usize::try_from(ptr).ok()?;
+                        let end = start.checked_add(data.len())?;
 
                         if end <= memory_data.len() {
                             memory_data[start..end].copy_from_slice(data);
-                            return Some((ptr, data.len() as i32));
+                            return Some((ptr, len));
                         }
                     }
                 }
@@ -63,8 +65,11 @@ pub fn read_string_from_plugin_memory(
 ) -> Result<String, &'static str> {
     if let Some(memory) = caller.get_export("memory").and_then(|e| e.into_memory()) {
         let data = memory.data(caller);
-        let start = ptr as usize;
-        let end = start + len as usize;
+        let start = usize::try_from(ptr).map_err(|_| "Negative memory pointer")?;
+        let len = usize::try_from(len).map_err(|_| "Negative memory length")?;
+        let end = start
+            .checked_add(len)
+            .ok_or("Memory access range overflow")?;
 
         if end <= data.len() {
             std::str::from_utf8(&data[start..end])
@@ -76,6 +81,25 @@ pub fn read_string_from_plugin_memory(
     } else {
         Err("Plugin memory not found")
     }
+}
+
+/// Read a checked byte slice from plugin memory data.
+pub fn read_memory_slice<'a>(
+    data: &'a [u8],
+    ptr: i32,
+    len: i32,
+    label: &str,
+) -> wasmtime::Result<&'a [u8]> {
+    let start = usize::try_from(ptr)
+        .map_err(|_| wasmtime::Error::msg(format!("negative pointer for {}", label)))?;
+    let len = usize::try_from(len)
+        .map_err(|_| wasmtime::Error::msg(format!("negative length for {}", label)))?;
+    let end = start
+        .checked_add(len)
+        .ok_or_else(|| wasmtime::Error::msg(format!("memory range overflow for {}", label)))?;
+
+    data.get(start..end)
+        .ok_or_else(|| wasmtime::Error::msg(format!("failed to read {} from memory", label)))
 }
 
 /// Create a standardized error response for database operations.

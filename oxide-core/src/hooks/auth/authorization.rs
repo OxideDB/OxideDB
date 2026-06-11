@@ -104,8 +104,9 @@ impl AuthorizationHook {
             return Ok(());
         }
 
-        // Extract authentication information from headers
-        let user_claims = self.extract_user_claims(headers)?;
+        // Extract authentication information from the API middleware when
+        // available, falling back to bearer headers for direct hook callers.
+        let user_claims = self.extract_user_claims_from_context(context, headers)?;
 
         // Get permission rules for the collection from permission service
         let permissions = match self.permission_service.get_permissions(&collection).await? {
@@ -269,9 +270,21 @@ impl AuthorizationHook {
             ));
         }
 
+        // Plugin management endpoints are protected like any other API surface.
+        if path == "/plugins" || path.starts_with("/plugins/") {
+            let operation = match method {
+                "GET" => Operation::Crud(CrudOperation::Read),
+                "POST" => Operation::Crud(CrudOperation::Create),
+                "PUT" | "PATCH" => Operation::Crud(CrudOperation::Update),
+                "DELETE" => Operation::Crud(CrudOperation::Delete),
+                _ => Operation::Crud(CrudOperation::Read),
+            };
+            return Ok(("plugins".to_string(), operation, None));
+        }
+
         // Plugin HTTP routes are authorized after route matching, using the
         // owning plugin's synthetic collection (`plugin:{name}`).
-        if path.starts_with("/plugin") {
+        if path == "/plugin" || path.starts_with("/plugin/") {
             let operation = match method {
                 "GET" => Operation::Crud(CrudOperation::Read),
                 "POST" => Operation::Crud(CrudOperation::Create),
@@ -373,6 +386,26 @@ impl AuthorizationHook {
                 debug!("🔑 Invalid or expired token provided");
                 Ok(None) // Invalid token treated as no authentication
             }
+        }
+    }
+
+    fn extract_user_claims_from_context(
+        &self,
+        context: &BeforeEventContext,
+        headers: &serde_json::Value,
+    ) -> Result<Option<Claims>, AppError> {
+        match context.data.get("claims") {
+            Some(claims_value) if !claims_value.is_null() => {
+                serde_json::from_value::<Claims>(claims_value.clone())
+                    .map(Some)
+                    .map_err(|e| {
+                        AppError::auth(format!(
+                            "Invalid authenticated claims in request context: {}",
+                            e
+                        ))
+                    })
+            }
+            _ => self.extract_user_claims(headers),
         }
     }
 
@@ -522,6 +555,34 @@ mod tests {
         assert!(result.is_err());
     }
 
+    #[tokio::test]
+    async fn test_authorization_uses_context_claims() {
+        let auth_config = AuthServiceConfig::new("test_secret".to_string());
+        let auth_service = Arc::new(AuthService::new(auth_config));
+        let permission_service = Arc::new(MockPermissionService::new());
+        let hook = AuthorizationHook::new(auth_service, permission_service);
+        let claims = Claims::new(
+            "user-1".to_string(),
+            "admin@example.com".to_string(),
+            "superuser".to_string(),
+            "_superusers".to_string(),
+            1,
+        );
+
+        let mut context = BeforeEventContext::new_create(
+            "api".to_string(),
+            serde_json::json!({
+                "method": "GET",
+                "path": "/collections",
+                "headers": {},
+                "claims": serde_json::to_value(claims).unwrap()
+            }),
+        );
+
+        let result = hook.handle_before_api_request(&mut context).await;
+        assert!(result.is_ok());
+    }
+
     #[test]
     fn test_parse_request_info() {
         let auth_config = AuthServiceConfig::new("test_secret".to_string());
@@ -558,6 +619,20 @@ mod tests {
         assert_eq!(collection, "users");
         assert_eq!(operation, Operation::Crud(CrudOperation::Read));
         assert_eq!(record_id, Some("123".to_string()));
+
+        // Test plugin management is distinct from plugin route execution
+        let (collection, operation, record_id) =
+            hook.parse_request_info("GET", "/plugins").unwrap();
+        assert_eq!(collection, "plugins");
+        assert_eq!(operation, Operation::Crud(CrudOperation::Read));
+        assert_eq!(record_id, None);
+
+        let (collection, operation, record_id) = hook
+            .parse_request_info("POST", "/plugin/demo/action")
+            .unwrap();
+        assert_eq!(collection, "plugin");
+        assert_eq!(operation, Operation::Crud(CrudOperation::Create));
+        assert_eq!(record_id, None);
     }
 
     #[test]

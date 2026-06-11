@@ -8,7 +8,10 @@ use oxide_api::{
     server::ApiServer,
     services::{DatabasePermissionService, LoggingApiService},
 };
-use oxide_core::{register_system_hooks, AppError, AuthService, EventBus, InMemoryEventBus};
+use oxide_core::{
+    register_system_hooks, AppError, AuthService, CollectionSchema, CollectionType, EventBus,
+    FieldDefinition, FieldType, InMemoryEventBus,
+};
 use oxide_db::{Db, SqliteDb};
 use oxide_logging::{LogService, LogServiceBridge, LogServiceBuilder};
 use oxide_plugin_runtime::PluginManager;
@@ -133,24 +136,28 @@ impl ApplicationBootstrap {
         let route_config = self.create_route_config()?;
 
         // Create API server based on available services
-        let api_server = if let Some(ref logging_service) = services.logging_service {
-            ApiServer::new_with_logging(
+        let api_server = match (&services.logging_service, &services.logging_api_service) {
+            (Some(logging_service), Some(logging_api_service)) => ApiServer::new_with_logging(
                 Arc::clone(&services.database) as Arc<dyn Db>,
                 Arc::clone(&services.event_bus),
                 Arc::clone(&services.auth_service),
                 Arc::clone(logging_service),
-                services.logging_api_service.unwrap(),
+                Arc::clone(logging_api_service),
                 self.config.server.bind_address.clone(),
                 self.config.server.api_port,
-            )
-        } else {
-            ApiServer::new(
+            ),
+            (Some(_), None) => {
+                return Err(AppError::internal(
+                    "Logging API service missing while logging is enabled",
+                ));
+            }
+            (None, _) => ApiServer::new(
                 Arc::clone(&services.database) as Arc<dyn Db>,
                 Arc::clone(&services.event_bus),
                 Arc::clone(&services.auth_service),
                 self.config.server.bind_address.clone(),
                 self.config.server.api_port,
-            )
+            ),
         };
 
         // Print startup information
@@ -265,84 +272,112 @@ impl ApplicationBootstrap {
     async fn ensure_auth_collections_exist(&self, database: &Arc<SqliteDb>) -> Result<()> {
         info!("🔐 Ensuring auth system collections exist...");
 
-        // Get existing auth collections
-        let existing_collections = database.list_auth_collections().await?;
-        let existing_names: std::collections::HashSet<String> = existing_collections
-            .iter()
-            .map(|c| c.name.clone())
-            .collect();
-
-        // Check and create _users collection if it doesn't exist
-        if !existing_names.contains("_users") {
-            info!("📋 Creating _users auth collection...");
-            let mut users_schema = oxide_core::CollectionSchema::new(
-                "_users".to_string(),
-                oxide_core::CollectionType::Auth,
-            );
-            users_schema.add_field(
-                "email".to_string(),
-                oxide_core::FieldDefinition::new(oxide_core::FieldType::Email)
-                    .required()
-                    .unique(),
-            );
-            users_schema.add_field(
-                "password".to_string(),
-                oxide_core::FieldDefinition::new(oxide_core::FieldType::Password).required(),
-            );
-
-            match database.create_collection_with_schema(users_schema).await {
-                Ok(_) => {
-                    info!("✅ _users auth collection created successfully");
-                }
-                Err(e) if e.to_string().contains("already exists") => {
-                    info!("ℹ️ _users auth collection already exists");
-                }
-                Err(e) => {
-                    warn!("❌ Failed to create _users auth collection: {}", e);
-                }
-            }
-        } else {
-            info!("ℹ️ _users auth collection already exists");
-        }
-
-        // Check and create _superusers collection if it doesn't exist
-        if !existing_names.contains("_superusers") {
-            info!("📋 Creating _superusers auth collection...");
-            let mut superusers_schema = oxide_core::CollectionSchema::new(
-                "_superusers".to_string(),
-                oxide_core::CollectionType::Auth,
-            );
-            superusers_schema.add_field(
-                "email".to_string(),
-                oxide_core::FieldDefinition::new(oxide_core::FieldType::Email)
-                    .required()
-                    .unique(),
-            );
-            superusers_schema.add_field(
-                "password".to_string(),
-                oxide_core::FieldDefinition::new(oxide_core::FieldType::Password).required(),
-            );
-
-            match database
-                .create_collection_with_schema(superusers_schema)
-                .await
-            {
-                Ok(_) => {
-                    info!("✅ _superusers auth collection created successfully");
-                }
-                Err(e) if e.to_string().contains("already exists") => {
-                    info!("ℹ️ _superusers auth collection already exists");
-                }
-                Err(e) => {
-                    warn!("❌ Failed to create _superusers auth collection: {}", e);
-                }
-            }
-        } else {
-            info!("ℹ️ _superusers auth collection already exists");
-        }
+        self.ensure_builtin_auth_collection(database, "_users", "user")
+            .await?;
+        self.ensure_builtin_auth_collection(database, "_superusers", "superuser")
+            .await?;
 
         info!("✅ Auth system collections verification completed");
         Ok(())
+    }
+
+    async fn ensure_builtin_auth_collection(
+        &self,
+        database: &Arc<SqliteDb>,
+        collection: &str,
+        default_role: &str,
+    ) -> Result<()> {
+        let desired_schema = Self::builtin_auth_collection_schema(collection, default_role);
+
+        if !database.collection_exists(collection).await? {
+            info!("📋 Creating {} auth collection...", collection);
+            match database.create_collection_with_schema(desired_schema).await {
+                Ok(_) => {
+                    info!("✅ {} auth collection created successfully", collection);
+                }
+                Err(e) if e.to_string().contains("already exists") => {
+                    info!("ℹ️ {} auth collection already exists", collection);
+                }
+                Err(e) => {
+                    warn!("❌ Failed to create {} auth collection: {}", collection, e);
+                    return Err(e);
+                }
+            }
+            return Ok(());
+        }
+
+        let mut existing_schema = database.get_collection_schema(collection).await?;
+        let mut changed = false;
+
+        for (field_name, desired_field) in desired_schema.fields {
+            match existing_schema.fields.get_mut(&field_name) {
+                Some(existing_field) if field_name == "role" => {
+                    if existing_field.default
+                        != Some(serde_json::Value::String(default_role.to_string()))
+                    {
+                        existing_field.default =
+                            Some(serde_json::Value::String(default_role.to_string()));
+                        changed = true;
+                    }
+                    if !existing_field.required {
+                        existing_field.required = true;
+                        changed = true;
+                    }
+                    if !existing_field.index {
+                        existing_field.index = true;
+                        changed = true;
+                    }
+                }
+                Some(_) => {}
+                None => {
+                    existing_schema.fields.insert(field_name, desired_field);
+                    changed = true;
+                }
+            }
+        }
+
+        if changed {
+            existing_schema.bump_version();
+            database
+                .update_collection_schema(collection, existing_schema)
+                .await?;
+            info!("✅ {} auth collection schema repaired", collection);
+        } else {
+            info!("ℹ️ {} auth collection already exists", collection);
+        }
+
+        Ok(())
+    }
+
+    fn builtin_auth_collection_schema(collection: &str, default_role: &str) -> CollectionSchema {
+        let mut schema = CollectionSchema::new(collection.to_string(), CollectionType::Auth);
+        schema.add_field(
+            "email".to_string(),
+            FieldDefinition::new(FieldType::Email)
+                .required()
+                .unique()
+                .indexed(),
+        );
+        schema.add_field(
+            "password".to_string(),
+            FieldDefinition::new(FieldType::Password).required(),
+        );
+        schema.add_field(
+            "role".to_string(),
+            FieldDefinition::new(FieldType::Text)
+                .required()
+                .indexed()
+                .with_default(serde_json::Value::String(default_role.to_string())),
+        );
+        schema.add_field(
+            "email_verified".to_string(),
+            FieldDefinition::new(FieldType::Boolean)
+                .required()
+                .indexed()
+                .with_default(serde_json::Value::Bool(true)),
+        );
+        schema.add_field("name".to_string(), FieldDefinition::new(FieldType::Text));
+        schema
     }
 
     /// Update auth service with discovered collections

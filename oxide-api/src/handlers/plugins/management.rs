@@ -6,7 +6,11 @@ use axum::{
 };
 use tracing::{info, warn};
 
-use super::{audit::get_plugin_audit_log, permissions::get_plugin_permissions_info, types::*};
+use super::{
+    audit::{get_plugin_audit_log, record_plugin_audit_event},
+    permissions::get_plugin_permissions_info,
+    types::*,
+};
 use crate::{errors::ApiError, responses::ApiResponse, server::AppState};
 use oxide_core::{
     auth::PermissionService, plugin_api::PluginRuntime, plugin_config::PluginConfiguration,
@@ -155,32 +159,81 @@ pub async fn enable_plugin(
         .map_err(|e| ApiError::internal(format!("Failed to update plugin configuration: {}", e)))?;
 
     if is_plugin_loaded(plugin_manager, &plugin_name)? {
-        let mut runtime_guard = plugin_manager
-            .runtime
-            .lock()
-            .map_err(|_| ApiError::internal("Failed to acquire plugin runtime lock".to_string()))?;
+        let resume_result = {
+            let mut runtime_guard = plugin_manager.runtime.lock().map_err(|_| {
+                ApiError::internal("Failed to acquire plugin runtime lock".to_string())
+            })?;
 
-        runtime_guard
-            .resume_plugin(&plugin_name)
-            .map_err(|e| ApiError::internal(format!("Failed to enable plugin: {}", e)))?;
+            runtime_guard.resume_plugin(&plugin_name)
+        };
+
+        if let Err(e) = resume_result {
+            record_plugin_audit_event(
+                &state,
+                &plugin_name,
+                "plugin_resume_failed",
+                "failure",
+                serde_json::json!({
+                    "source": "api",
+                    "reason": e.to_string(),
+                }),
+            )
+            .await;
+            return Err(ApiError::internal(format!(
+                "Failed to enable plugin: {}",
+                e
+            )));
+        }
     } else if let Err(e) = load_persisted_plugin_into_runtime(&state, &plugin_name).await {
         let _ = state
             .plugin_config_service
             .update_plugin_status(&plugin_name, oxide_core::plugin_config::PluginStatus::Error)
             .await;
+        record_plugin_audit_event(
+            &state,
+            &plugin_name,
+            "plugin_load_failed",
+            "failure",
+            serde_json::json!({
+                "source": "api",
+                "reason": e.to_string(),
+            }),
+        )
+        .await;
         return Err(e);
     }
 
-    plugin_manager
+    if let Err(e) = plugin_manager
         .register_plugin_with_event_system(&state.event_bus, &plugin_name)
         .await
-        .map_err(|e| {
-            ApiError::internal(format!(
-                "Failed to register plugin event handlers for '{}': {}",
-                plugin_name, e
-            ))
-        })?;
+    {
+        record_plugin_audit_event(
+            &state,
+            &plugin_name,
+            "plugin_registration_failed",
+            "failure",
+            serde_json::json!({
+                "source": "api",
+                "reason": e.to_string(),
+            }),
+        )
+        .await;
+        return Err(ApiError::internal(format!(
+            "Failed to register plugin event handlers for '{}': {}",
+            plugin_name, e
+        )));
+    }
 
+    record_plugin_audit_event(
+        &state,
+        &plugin_name,
+        "plugin_enabled",
+        "success",
+        serde_json::json!({
+            "source": "api",
+        }),
+    )
+    .await;
     info!("✅ Plugin '{}' enabled and saved to database", plugin_name);
     Ok(Json(ApiResponse::success(PluginStatus::Enabled)))
 }
@@ -203,14 +256,31 @@ pub async fn disable_plugin(
         .map_err(|e| ApiError::internal(format!("Failed to update plugin configuration: {}", e)))?;
 
     if is_plugin_loaded(plugin_manager, &plugin_name)? {
-        let mut runtime_guard = plugin_manager
-            .runtime
-            .lock()
-            .map_err(|_| ApiError::internal("Failed to acquire plugin runtime lock".to_string()))?;
+        let suspend_result = {
+            let mut runtime_guard = plugin_manager.runtime.lock().map_err(|_| {
+                ApiError::internal("Failed to acquire plugin runtime lock".to_string())
+            })?;
 
-        runtime_guard
-            .suspend_plugin(&plugin_name, "Manually disabled".to_string())
-            .map_err(|e| ApiError::internal(format!("Failed to disable plugin: {}", e)))?;
+            runtime_guard.suspend_plugin(&plugin_name, "Manually disabled".to_string())
+        };
+
+        if let Err(e) = suspend_result {
+            record_plugin_audit_event(
+                &state,
+                &plugin_name,
+                "plugin_suspend_failed",
+                "failure",
+                serde_json::json!({
+                    "source": "api",
+                    "reason": e.to_string(),
+                }),
+            )
+            .await;
+            return Err(ApiError::internal(format!(
+                "Failed to disable plugin: {}",
+                e
+            )));
+        }
     } else {
         info!(
             "Plugin '{}' is disabled in database and was not loaded in runtime",
@@ -218,6 +288,17 @@ pub async fn disable_plugin(
         );
     }
 
+    record_plugin_audit_event(
+        &state,
+        &plugin_name,
+        "plugin_disabled",
+        "success",
+        serde_json::json!({
+            "source": "api",
+            "reason": "Manually disabled",
+        }),
+    )
+    .await;
     info!("✅ Plugin '{}' disabled and saved to database", plugin_name);
     Ok(Json(ApiResponse::success(PluginStatus::Disabled)))
 }
@@ -232,26 +313,54 @@ pub async fn unregister_plugin(
         .as_ref()
         .ok_or_else(|| ApiError::internal("Plugin system not available".to_string()))?;
 
-    plugin_manager
+    if let Err(e) = plugin_manager
         .unregister_plugin_from_event_system(&state.event_bus, &plugin_name)
         .await
-        .map_err(|e| {
-            ApiError::internal(format!(
-                "Failed to unregister plugin event handlers for '{}': {}",
-                plugin_name, e
-            ))
-        })?;
+    {
+        record_plugin_audit_event(
+            &state,
+            &plugin_name,
+            "plugin_unregister_failed",
+            "failure",
+            serde_json::json!({
+                "source": "api",
+                "reason": e.to_string(),
+            }),
+        )
+        .await;
+        return Err(ApiError::internal(format!(
+            "Failed to unregister plugin event handlers for '{}': {}",
+            plugin_name, e
+        )));
+    }
 
     // Remove from runtime first if the plugin is currently loaded.
     if is_plugin_loaded(plugin_manager, &plugin_name)? {
-        let mut runtime_guard = plugin_manager
-            .runtime
-            .lock()
-            .map_err(|_| ApiError::internal("Failed to acquire plugin runtime lock".to_string()))?;
+        let unload_result = {
+            let mut runtime_guard = plugin_manager.runtime.lock().map_err(|_| {
+                ApiError::internal("Failed to acquire plugin runtime lock".to_string())
+            })?;
 
-        runtime_guard
-            .unload_plugin(&plugin_name)
-            .map_err(|e| ApiError::internal(format!("Failed to unregister plugin: {}", e)))?;
+            runtime_guard.unload_plugin(&plugin_name)
+        };
+
+        if let Err(e) = unload_result {
+            record_plugin_audit_event(
+                &state,
+                &plugin_name,
+                "plugin_unload_failed",
+                "failure",
+                serde_json::json!({
+                    "source": "api",
+                    "reason": e.to_string(),
+                }),
+            )
+            .await;
+            return Err(ApiError::internal(format!(
+                "Failed to unregister plugin: {}",
+                e
+            )));
+        }
     } else {
         info!(
             "Plugin '{}' was not loaded in runtime; removing persisted config and files",
@@ -260,12 +369,38 @@ pub async fn unregister_plugin(
     }
 
     // Remove from database and filesystem using the new service method
-    state
+    if let Err(e) = state
         .plugin_config_service
         .uninstall_plugin(&plugin_name)
         .await
-        .map_err(|e| ApiError::internal(format!("Failed to uninstall plugin: {}", e)))?;
+    {
+        record_plugin_audit_event(
+            &state,
+            &plugin_name,
+            "plugin_uninstall_failed",
+            "failure",
+            serde_json::json!({
+                "source": "api",
+                "reason": e.to_string(),
+            }),
+        )
+        .await;
+        return Err(ApiError::internal(format!(
+            "Failed to uninstall plugin: {}",
+            e
+        )));
+    }
 
+    record_plugin_audit_event(
+        &state,
+        &plugin_name,
+        "plugin_uninstalled",
+        "success",
+        serde_json::json!({
+            "source": "api",
+        }),
+    )
+    .await;
     info!(
         "✅ Plugin '{}' unregistered and removed from database",
         plugin_name
@@ -322,6 +457,18 @@ pub async fn load_plugins_from_database(state: &AppState) -> Result<(), ApiError
                         oxide_core::plugin_config::PluginStatus::Error,
                     )
                     .await;
+                record_plugin_audit_event(
+                    state,
+                    &config.name,
+                    "plugin_startup_load_failed",
+                    "failure",
+                    serde_json::json!({
+                        "source": "startup",
+                        "version": config.version,
+                        "reason": e.to_string(),
+                    }),
+                )
+                .await;
                 failed_count += 1;
                 continue;
             }
@@ -365,6 +512,18 @@ pub async fn load_plugins_from_database(state: &AppState) -> Result<(), ApiError
                         oxide_core::plugin_config::PluginStatus::Error,
                     )
                     .await;
+                record_plugin_audit_event(
+                    state,
+                    &config.name,
+                    "plugin_startup_load_failed",
+                    "failure",
+                    serde_json::json!({
+                        "source": "startup",
+                        "version": config.version,
+                        "reason": e.to_string(),
+                    }),
+                )
+                .await;
                 failed_count += 1;
                 false
             }
@@ -387,8 +546,31 @@ pub async fn load_plugins_from_database(state: &AppState) -> Result<(), ApiError
                         oxide_core::plugin_config::PluginStatus::Error,
                     )
                     .await;
+                record_plugin_audit_event(
+                    state,
+                    &config.name,
+                    "plugin_startup_registration_failed",
+                    "failure",
+                    serde_json::json!({
+                        "source": "startup",
+                        "version": config.version,
+                        "reason": e.to_string(),
+                    }),
+                )
+                .await;
                 failed_count += 1;
             } else {
+                record_plugin_audit_event(
+                    state,
+                    &config.name,
+                    "plugin_startup_loaded",
+                    "success",
+                    serde_json::json!({
+                        "source": "startup",
+                        "version": config.version,
+                    }),
+                )
+                .await;
                 loaded_count += 1;
             }
         }

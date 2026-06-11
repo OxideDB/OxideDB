@@ -19,7 +19,7 @@ use base64::{
 use ed25519_dalek::{Signer, SigningKey};
 use oxide_api::services::{DatabasePermissionService, PluginConfigService};
 use oxide_core::{
-    plugin_security::{PluginCapability, PluginTrustLevel, ResourceLimits},
+    plugin_security::{PluginCapability, PluginTrustLevel, ResourceLimits, VfsOperation},
     register_system_hooks, AppError, AuthService, EventBus, InMemoryEventBus,
 };
 use oxide_db::SqliteDb;
@@ -1327,6 +1327,10 @@ impl ManagePluginsCommand {
             }),
             "HandleHttpRequests" => Ok(PluginCapability::HandleHttpRequests),
             "BlockOperations" => Ok(PluginCapability::BlockOperations),
+            "AccessVfs" => Ok(PluginCapability::AccessVfs {
+                namespaces: vec!["*".to_string()],
+                operations: vec![VfsOperation::Read, VfsOperation::List, VfsOperation::Usage],
+            }),
             "HttpRequest" => Ok(PluginCapability::HttpRequest {
                 allowed_urls: vec![".*".to_string()],
                 rate_limit: 60,

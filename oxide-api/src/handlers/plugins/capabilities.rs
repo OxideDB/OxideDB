@@ -10,7 +10,7 @@ use super::types::*;
 use crate::{errors::ApiError, responses::ApiResponse, server::AppState};
 use oxide_core::{
     auth::CrudOperation,
-    plugin_security::{PluginCapability, PluginTrustLevel},
+    plugin_security::{PluginCapability, PluginTrustLevel, VfsOperation},
 };
 use serde_json::Value;
 use std::collections::HashMap;
@@ -192,6 +192,14 @@ fn parse_capability_from_request(
         "EmitEvents" => Ok(PluginCapability::EmitEvents {
             event_types: json_string_array(&config, "event_types", vec!["custom.*".to_string()])?,
         }),
+        "AccessVfs" => Ok(PluginCapability::AccessVfs {
+            namespaces: json_string_array(&config, "namespaces", vec!["*".to_string()])?,
+            operations: vfs_operations_from_strings(json_string_array(
+                &config,
+                "operations",
+                vec!["Read".to_string(), "List".to_string(), "Usage".to_string()],
+            )?)?,
+        }),
         "RegisterHttpRoutes" => {
             let path_patterns = config
                 .get("path_patterns")
@@ -290,6 +298,14 @@ pub fn parse_capability_string(cap_str: &str) -> Result<PluginCapability, ApiErr
         }),
         "EmitEvents" => Ok(PluginCapability::EmitEvents {
             event_types: string_vec_arg(&args, "event_types", vec!["custom.*".to_string()])?,
+        }),
+        "AccessVfs" => Ok(PluginCapability::AccessVfs {
+            namespaces: string_vec_arg(&args, "namespaces", vec!["*".to_string()])?,
+            operations: vfs_operations_arg(
+                &args,
+                "operations",
+                vec![VfsOperation::Read, VfsOperation::List, VfsOperation::Usage],
+            )?,
         }),
         _ => Err(ApiError::bad_request(format!(
             "Unknown capability: {}",
@@ -602,6 +618,24 @@ fn crud_operations_arg(
         .collect()
 }
 
+fn vfs_operations_arg(
+    args: &CapabilityArgs,
+    key: &str,
+    default_value: Vec<VfsOperation>,
+) -> Result<Vec<VfsOperation>, ApiError> {
+    let operation_names = match args.get(key) {
+        Some(value) => value_to_string_vec(value).ok_or_else(|| {
+            ApiError::bad_request(format!(
+                "Capability argument '{}' must be a VFS operation string or array",
+                key
+            ))
+        })?,
+        None => return Ok(default_value),
+    };
+
+    vfs_operations_from_strings(operation_names)
+}
+
 fn parse_crud_operation(operation: &str) -> Result<CrudOperation, ApiError> {
     match operation.trim().to_lowercase().as_str() {
         "create" => Ok(CrudOperation::Create),
@@ -611,6 +645,27 @@ fn parse_crud_operation(operation: &str) -> Result<CrudOperation, ApiError> {
         "list" => Ok(CrudOperation::List),
         _ => Err(ApiError::bad_request(format!(
             "Unknown CRUD operation in capability: {}",
+            operation
+        ))),
+    }
+}
+
+fn vfs_operations_from_strings(operations: Vec<String>) -> Result<Vec<VfsOperation>, ApiError> {
+    operations
+        .into_iter()
+        .map(|operation| parse_vfs_operation(&operation))
+        .collect()
+}
+
+fn parse_vfs_operation(operation: &str) -> Result<VfsOperation, ApiError> {
+    match operation.trim().to_lowercase().as_str() {
+        "write" => Ok(VfsOperation::Write),
+        "read" => Ok(VfsOperation::Read),
+        "delete" => Ok(VfsOperation::Delete),
+        "list" => Ok(VfsOperation::List),
+        "usage" | "stats" | "usage_stats" => Ok(VfsOperation::Usage),
+        _ => Err(ApiError::bad_request(format!(
+            "Unknown VFS operation in capability: {}",
             operation
         ))),
     }
@@ -712,13 +767,19 @@ pub fn is_capability_allowed_for_trust_level(
                 | PluginCapability::LogError
                 | PluginCapability::ReadEventData
         ),
-        PluginTrustLevel::PartiallyTrusted => !matches!(
-            capability,
+        PluginTrustLevel::PartiallyTrusted => match capability {
             PluginCapability::HttpRequest { .. }
-                | PluginCapability::ScheduleTasks
-                | PluginCapability::RegisterHttpRoutes { .. }
-                | PluginCapability::DeleteRecords { .. }
-        ),
+            | PluginCapability::ScheduleTasks
+            | PluginCapability::RegisterHttpRoutes { .. }
+            | PluginCapability::DeleteRecords { .. } => false,
+            PluginCapability::AccessVfs { operations, .. } => operations.iter().all(|operation| {
+                matches!(
+                    operation,
+                    VfsOperation::Read | VfsOperation::List | VfsOperation::Usage
+                )
+            }),
+            _ => true,
+        },
         PluginTrustLevel::FullyTrusted | PluginTrustLevel::System => true,
     }
 }
@@ -799,6 +860,23 @@ mod tests {
             capability,
             PluginCapability::CreateRecords { collections }
                 if collections == vec!["items".to_string()]
+        ));
+    }
+
+    #[test]
+    fn parses_scoped_vfs_capability() {
+        let capability = parse_capability_string(
+            r#"AccessVfs(namespaces=["media/*"], operations=["read", "list"])"#,
+        )
+        .unwrap();
+
+        assert!(matches!(
+            capability,
+            PluginCapability::AccessVfs {
+                namespaces,
+                operations,
+            } if namespaces == vec!["media/*".to_string()]
+                && operations == vec![VfsOperation::Read, VfsOperation::List]
         ));
     }
 

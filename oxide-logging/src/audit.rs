@@ -235,10 +235,11 @@ impl SecurityAuditService {
             AuditEventType::PluginEvent,
             LogLevel::Info,
             format!("Plugin event: {} performed {}", plugin_name_str, action_str),
-            plugin_name_str,
+            plugin_name_str.clone(),
             action_str,
             result_str,
         )
+        .with_target(format!("plugin:{}", plugin_name_str))
         .with_context(context.clone())
         .with_risk_score(self.calculate_plugin_risk_score(&context));
 

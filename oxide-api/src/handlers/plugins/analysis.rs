@@ -11,7 +11,7 @@ use super::{
         minimum_trust_level_for_capabilities, parse_capability_string, parse_trust_level_string,
         trust_level_rank,
     },
-    installation::{extract_plugin_package, verify_plugin_signature},
+    installation::{extract_plugin_package, verify_plugin_signature, TempExtractionGuard},
     types::*,
 };
 use crate::{errors::ApiError, responses::ApiResponse, server::AppState};
@@ -53,6 +53,7 @@ pub async fn analyze_plugin(
     // Extract and validate the plugin package WITHOUT loading WASM
     debug!("🔍 Extracting plugin package for analysis");
     let package = extract_plugin_package(&package_data)?;
+    let _extraction_cleanup = TempExtractionGuard::new(package.extraction_path.clone());
 
     // Verify digital signature if present
     let signature_valid = verify_plugin_signature(&package).await?;
@@ -110,6 +111,7 @@ pub async fn analyze_plugin(
         "DeleteRecords",
         "ModifyEventData",
         "BlockOperations",
+        "AccessVfs",
         "HandleHttpRequests",
     ];
     let has_sensitive_caps: Vec<&String> = declared_capabilities

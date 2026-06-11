@@ -691,7 +691,9 @@ impl PluginEventBridge {
                 // If so, skip the event handler to prevent recursive calls
                 {
                     let host_state = runtime_guard.get_host_state();
-                    let state = host_state.lock().unwrap();
+                    let state = host_state.lock().map_err(|_| {
+                        AppError::internal("Failed to acquire plugin host state lock")
+                    })?;
                     if let Some(current_plugin) = &state.current_plugin {
                         if current_plugin == &plugin_name && state.current_http_request.is_some() {
                             info!("🔌 Plugin '{}' is handling HTTP request, skipping BeforeRecordCreate event to prevent recursion", plugin_name);

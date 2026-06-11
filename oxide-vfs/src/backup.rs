@@ -668,15 +668,15 @@ pub fn initialize_backup_service(backup_directory: PathBuf) {
 }
 
 /// Get the global backup service
-fn get_backup_service() -> &'static BackupService {
-    BACKUP_SERVICE
-        .get()
-        .expect("Backup service not initialized")
+fn get_backup_service() -> VfsResult<&'static BackupService> {
+    BACKUP_SERVICE.get().ok_or_else(|| VfsError::IoError {
+        message: "Backup service not initialized".to_string(),
+    })
 }
 
 /// Create a backup of a VFS namespace
 pub async fn create_backup(namespace: &VfsNamespace) -> VfsResult<String> {
-    let service = get_backup_service();
+    let service = get_backup_service()?;
 
     // Determine the namespace path based on VFS storage structure
     let namespace_path = service
@@ -704,7 +704,9 @@ pub async fn create_backup(namespace: &VfsNamespace) -> VfsResult<String> {
         service.create_full_backup(namespace, &namespace_path).await
     } else {
         // Find the most recent backup
-        let latest_backup = existing_backups.first().unwrap(); // Already sorted by creation time
+        let latest_backup = existing_backups.first().ok_or_else(|| VfsError::IoError {
+            message: "Backup list unexpectedly empty".to_string(),
+        })?; // Already sorted by creation time
 
         // Check if we should create incremental or full backup
         // Create incremental if the latest backup is less than 7 days old
@@ -724,7 +726,7 @@ pub async fn create_backup(namespace: &VfsNamespace) -> VfsResult<String> {
 
 /// Restore a VFS namespace from backup
 pub async fn restore_backup(namespace: &VfsNamespace, backup_id: &str) -> VfsResult<()> {
-    let service = get_backup_service();
+    let service = get_backup_service()?;
 
     // Determine the restore path based on VFS storage structure
     let restore_path = service

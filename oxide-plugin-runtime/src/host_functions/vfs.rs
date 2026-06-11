@@ -3,9 +3,90 @@
 //! These functions allow plugins to interact with the VFS through the host,
 //! maintaining security by preventing direct filesystem access.
 
-use crate::host_state::HostStateRef;
-use oxide_core::{FileIdentifier, FileListRequest, FileReadRequest, FileWriteRequest};
+use crate::{
+    host_state::{lock_host_state, record_host_call, HostStateRef},
+    utils::read_memory_slice,
+};
+use oxide_core::{
+    plugin_security::VfsOperation, FileIdentifier, FileListRequest, FileReadRequest,
+    FileWriteRequest,
+};
+use std::{future::Future, sync::OnceLock};
+use tokio::runtime::RuntimeFlavor;
+use tracing::warn;
 use wasmtime::{Caller, Linker};
+
+static VFS_HOST_RUNTIME: OnceLock<Result<tokio::runtime::Runtime, String>> = OnceLock::new();
+
+fn begin_vfs_call(state: &HostStateRef, function_name: &str, action: &str) -> bool {
+    if !record_host_call(state, action) {
+        return false;
+    }
+
+    let Some(mut state_guard) = lock_host_state(state, "clearing VFS host function result") else {
+        return false;
+    };
+    state_guard.clear_function_result(function_name);
+    true
+}
+
+fn ensure_vfs_capability(
+    state: &HostStateRef,
+    function_name: &str,
+    operation: &VfsOperation,
+    namespace: &str,
+) -> bool {
+    let Some(mut state_guard) = lock_host_state(state, "checking VFS capability") else {
+        return false;
+    };
+
+    if state_guard.current_plugin_can_access_vfs(operation, namespace) {
+        return true;
+    }
+
+    let plugin_name = state_guard
+        .current_plugin
+        .clone()
+        .unwrap_or_else(|| "unknown".to_string());
+    let message = format!(
+        "Plugin '{}' lacks {:?} VFS access to namespace '{}'",
+        plugin_name, operation, namespace
+    );
+    warn!("{}", message);
+    state_guard.store_error(function_name, &message);
+    false
+}
+
+fn run_vfs_operation<F, T>(operation: F) -> Result<T, String>
+where
+    F: Future<Output = T> + Send + 'static,
+    T: Send + 'static,
+{
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) if handle.runtime_flavor() == RuntimeFlavor::MultiThread => {
+            Ok(tokio::task::block_in_place(|| handle.block_on(operation)))
+        }
+        _ => {
+            let runtime = vfs_host_runtime()?;
+            std::thread::spawn(move || runtime.block_on(operation))
+                .join()
+                .map_err(|_| "VFS operation thread panicked".to_string())
+        }
+    }
+}
+
+fn vfs_host_runtime() -> Result<&'static tokio::runtime::Runtime, String> {
+    VFS_HOST_RUNTIME
+        .get_or_init(|| {
+            tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .thread_name("oxide-plugin-vfs-host")
+                .build()
+                .map_err(|e| format!("failed to initialize plugin VFS host runtime: {}", e))
+        })
+        .as_ref()
+        .map_err(Clone::clone)
+}
 
 /// Write a file to the VFS
 pub fn vfs_write_file(
@@ -15,7 +96,15 @@ pub fn vfs_write_file(
     request_ptr: i32,
     request_len: i32,
 ) -> wasmtime::Result<i64> {
-    caller.data().lock().unwrap().record_host_call();
+    const FUNCTION_NAME: &str = "vfs_write_file";
+
+    if !begin_vfs_call(
+        caller.data(),
+        FUNCTION_NAME,
+        "recording vfs_write_file host call",
+    ) {
+        return Ok(-1);
+    }
 
     let memory = caller
         .get_export("memory")
@@ -25,29 +114,33 @@ pub fn vfs_write_file(
     let data = memory.data(&caller);
 
     // Read namespace from memory
-    let namespace_bytes = data
-        .get(namespace_ptr as usize..(namespace_ptr + namespace_len) as usize)
-        .ok_or_else(|| wasmtime::Error::msg("failed to read namespace from memory"))?;
+    let namespace_bytes = read_memory_slice(data, namespace_ptr, namespace_len, "namespace")?;
     let namespace = String::from_utf8(namespace_bytes.to_vec())
         .map_err(|e| wasmtime::Error::msg(format!("invalid UTF-8 in namespace: {}", e)))?;
+    let state = caller.data().clone();
+    if !ensure_vfs_capability(&state, FUNCTION_NAME, &VfsOperation::Write, &namespace) {
+        return Ok(-1);
+    }
 
     // Read request from memory
-    let request_bytes = data
-        .get(request_ptr as usize..(request_ptr + request_len) as usize)
-        .ok_or_else(|| wasmtime::Error::msg("failed to read request from memory"))?;
+    let request_bytes = read_memory_slice(data, request_ptr, request_len, "request")?;
     let request_json = String::from_utf8(request_bytes.to_vec())
         .map_err(|e| wasmtime::Error::msg(format!("invalid UTF-8 in request: {}", e)))?;
 
     let request: FileWriteRequest = serde_json::from_str(&request_json)
         .map_err(|e| wasmtime::Error::msg(format!("failed to parse request: {}", e)))?;
 
-    let state = caller.data().clone();
-    let rt = tokio::runtime::Handle::current();
-
     // Execute VFS operation
-    let result = rt.block_on(async {
+    let operation_state = state.clone();
+    let result = run_vfs_operation(async move {
         let vfs_bridge = {
-            let state_guard = state.lock().unwrap();
+            let Some(state_guard) =
+                lock_host_state(&operation_state, "reading VFS bridge for write")
+            else {
+                return Err(oxide_core::vfs::VfsError::IoError {
+                    message: "Plugin host state not available".to_string(),
+                });
+            };
             state_guard.vfs_bridge.clone()
         };
         if let Some(vfs_bridge) = vfs_bridge {
@@ -60,18 +153,28 @@ pub fn vfs_write_file(
     });
 
     match result {
-        Ok(metadata) => {
+        Ok(Ok(metadata)) => {
             // Store result in plugin state for retrieval
             let result_json = serde_json::to_string(&metadata)
                 .map_err(|e| wasmtime::Error::msg(format!("failed to serialize result: {}", e)))?;
 
-            let mut state_guard = state.lock().unwrap();
-            state_guard.store_result("vfs_write_file", result_json);
-            Ok(0) // Success
+            if let Some(mut state_guard) = lock_host_state(&state, "storing VFS write result") {
+                state_guard.store_result(FUNCTION_NAME, result_json);
+                Ok(0) // Success
+            } else {
+                Ok(-1)
+            }
+        }
+        Ok(Err(e)) => {
+            if let Some(mut state_guard) = lock_host_state(&state, "storing VFS write error") {
+                state_guard.store_error(FUNCTION_NAME, &e.to_string());
+            }
+            Ok(-1) // Error
         }
         Err(e) => {
-            let mut state_guard = state.lock().unwrap();
-            state_guard.store_error("vfs_write_file", &e.to_string());
+            if let Some(mut state_guard) = lock_host_state(&state, "storing VFS write error") {
+                state_guard.store_error(FUNCTION_NAME, &e);
+            }
             Ok(-1) // Error
         }
     }
@@ -85,7 +188,15 @@ pub fn vfs_read_file(
     request_ptr: i32,
     request_len: i32,
 ) -> wasmtime::Result<i64> {
-    caller.data().lock().unwrap().record_host_call();
+    const FUNCTION_NAME: &str = "vfs_read_file";
+
+    if !begin_vfs_call(
+        caller.data(),
+        FUNCTION_NAME,
+        "recording vfs_read_file host call",
+    ) {
+        return Ok(-1);
+    }
 
     let memory = caller
         .get_export("memory")
@@ -95,29 +206,33 @@ pub fn vfs_read_file(
     let data = memory.data(&caller);
 
     // Read namespace from memory
-    let namespace_bytes = data
-        .get(namespace_ptr as usize..(namespace_ptr + namespace_len) as usize)
-        .ok_or_else(|| wasmtime::Error::msg("failed to read namespace from memory"))?;
+    let namespace_bytes = read_memory_slice(data, namespace_ptr, namespace_len, "namespace")?;
     let namespace = String::from_utf8(namespace_bytes.to_vec())
         .map_err(|e| wasmtime::Error::msg(format!("invalid UTF-8 in namespace: {}", e)))?;
+    let state = caller.data().clone();
+    if !ensure_vfs_capability(&state, FUNCTION_NAME, &VfsOperation::Read, &namespace) {
+        return Ok(-1);
+    }
 
     // Read request from memory
-    let request_bytes = data
-        .get(request_ptr as usize..(request_ptr + request_len) as usize)
-        .ok_or_else(|| wasmtime::Error::msg("failed to read request from memory"))?;
+    let request_bytes = read_memory_slice(data, request_ptr, request_len, "request")?;
     let request_json = String::from_utf8(request_bytes.to_vec())
         .map_err(|e| wasmtime::Error::msg(format!("invalid UTF-8 in request: {}", e)))?;
 
     let request: FileReadRequest = serde_json::from_str(&request_json)
         .map_err(|e| wasmtime::Error::msg(format!("failed to parse request: {}", e)))?;
 
-    let state = caller.data().clone();
-    let rt = tokio::runtime::Handle::current();
-
     // Execute VFS operation
-    let result = rt.block_on(async {
+    let operation_state = state.clone();
+    let result = run_vfs_operation(async move {
         let vfs_bridge = {
-            let state_guard = state.lock().unwrap();
+            let Some(state_guard) =
+                lock_host_state(&operation_state, "reading VFS bridge for read")
+            else {
+                return Err(oxide_core::vfs::VfsError::IoError {
+                    message: "Plugin host state not available".to_string(),
+                });
+            };
             state_guard.vfs_bridge.clone()
         };
         if let Some(vfs_bridge) = vfs_bridge {
@@ -130,18 +245,28 @@ pub fn vfs_read_file(
     });
 
     match result {
-        Ok(response) => {
+        Ok(Ok(response)) => {
             // Store result in plugin state for retrieval
             let result_json = serde_json::to_string(&response)
                 .map_err(|e| wasmtime::Error::msg(format!("failed to serialize result: {}", e)))?;
 
-            let mut state_guard = state.lock().unwrap();
-            state_guard.store_result("vfs_read_file", result_json);
-            Ok(0) // Success
+            if let Some(mut state_guard) = lock_host_state(&state, "storing VFS read result") {
+                state_guard.store_result(FUNCTION_NAME, result_json);
+                Ok(0) // Success
+            } else {
+                Ok(-1)
+            }
+        }
+        Ok(Err(e)) => {
+            if let Some(mut state_guard) = lock_host_state(&state, "storing VFS read error") {
+                state_guard.store_error(FUNCTION_NAME, &e.to_string());
+            }
+            Ok(-1) // Error
         }
         Err(e) => {
-            let mut state_guard = state.lock().unwrap();
-            state_guard.store_error("vfs_read_file", &e.to_string());
+            if let Some(mut state_guard) = lock_host_state(&state, "storing VFS read error") {
+                state_guard.store_error(FUNCTION_NAME, &e);
+            }
             Ok(-1) // Error
         }
     }
@@ -155,7 +280,15 @@ pub fn vfs_delete_file(
     identifier_ptr: i32,
     identifier_len: i32,
 ) -> wasmtime::Result<i64> {
-    caller.data().lock().unwrap().record_host_call();
+    const FUNCTION_NAME: &str = "vfs_delete_file";
+
+    if !begin_vfs_call(
+        caller.data(),
+        FUNCTION_NAME,
+        "recording vfs_delete_file host call",
+    ) {
+        return Ok(-1);
+    }
 
     let memory = caller
         .get_export("memory")
@@ -165,29 +298,33 @@ pub fn vfs_delete_file(
     let data = memory.data(&caller);
 
     // Read namespace from memory
-    let namespace_bytes = data
-        .get(namespace_ptr as usize..(namespace_ptr + namespace_len) as usize)
-        .ok_or_else(|| wasmtime::Error::msg("failed to read namespace from memory"))?;
+    let namespace_bytes = read_memory_slice(data, namespace_ptr, namespace_len, "namespace")?;
     let namespace = String::from_utf8(namespace_bytes.to_vec())
         .map_err(|e| wasmtime::Error::msg(format!("invalid UTF-8 in namespace: {}", e)))?;
+    let state = caller.data().clone();
+    if !ensure_vfs_capability(&state, FUNCTION_NAME, &VfsOperation::Delete, &namespace) {
+        return Ok(-1);
+    }
 
     // Read identifier from memory
-    let identifier_bytes = data
-        .get(identifier_ptr as usize..(identifier_ptr + identifier_len) as usize)
-        .ok_or_else(|| wasmtime::Error::msg("failed to read identifier from memory"))?;
+    let identifier_bytes = read_memory_slice(data, identifier_ptr, identifier_len, "identifier")?;
     let identifier_json = String::from_utf8(identifier_bytes.to_vec())
         .map_err(|e| wasmtime::Error::msg(format!("invalid UTF-8 in identifier: {}", e)))?;
 
     let identifier: FileIdentifier = serde_json::from_str(&identifier_json)
         .map_err(|e| wasmtime::Error::msg(format!("failed to parse identifier: {}", e)))?;
 
-    let state = caller.data().clone();
-    let rt = tokio::runtime::Handle::current();
-
     // Execute VFS operation
-    let result = rt.block_on(async {
+    let operation_state = state.clone();
+    let result = run_vfs_operation(async move {
         let vfs_bridge = {
-            let state_guard = state.lock().unwrap();
+            let Some(state_guard) =
+                lock_host_state(&operation_state, "reading VFS bridge for delete")
+            else {
+                return Err(oxide_core::vfs::VfsError::IoError {
+                    message: "Plugin host state not available".to_string(),
+                });
+            };
             state_guard.vfs_bridge.clone()
         };
         if let Some(vfs_bridge) = vfs_bridge {
@@ -200,14 +337,24 @@ pub fn vfs_delete_file(
     });
 
     match result {
-        Ok(_) => {
-            let mut state_guard = state.lock().unwrap();
-            state_guard.store_result("vfs_delete_file", "true".to_string());
-            Ok(0) // Success
+        Ok(Ok(_)) => {
+            if let Some(mut state_guard) = lock_host_state(&state, "storing VFS delete result") {
+                state_guard.store_result(FUNCTION_NAME, "true".to_string());
+                Ok(0) // Success
+            } else {
+                Ok(-1)
+            }
+        }
+        Ok(Err(e)) => {
+            if let Some(mut state_guard) = lock_host_state(&state, "storing VFS delete error") {
+                state_guard.store_error(FUNCTION_NAME, &e.to_string());
+            }
+            Ok(-1) // Error
         }
         Err(e) => {
-            let mut state_guard = state.lock().unwrap();
-            state_guard.store_error("vfs_delete_file", &e.to_string());
+            if let Some(mut state_guard) = lock_host_state(&state, "storing VFS delete error") {
+                state_guard.store_error(FUNCTION_NAME, &e);
+            }
             Ok(-1) // Error
         }
     }
@@ -221,7 +368,15 @@ pub fn vfs_list_files(
     request_ptr: i32,
     request_len: i32,
 ) -> wasmtime::Result<i64> {
-    caller.data().lock().unwrap().record_host_call();
+    const FUNCTION_NAME: &str = "vfs_list_files";
+
+    if !begin_vfs_call(
+        caller.data(),
+        FUNCTION_NAME,
+        "recording vfs_list_files host call",
+    ) {
+        return Ok(-1);
+    }
 
     let memory = caller
         .get_export("memory")
@@ -231,29 +386,33 @@ pub fn vfs_list_files(
     let data = memory.data(&caller);
 
     // Read namespace from memory
-    let namespace_bytes = data
-        .get(namespace_ptr as usize..(namespace_ptr + namespace_len) as usize)
-        .ok_or_else(|| wasmtime::Error::msg("failed to read namespace from memory"))?;
+    let namespace_bytes = read_memory_slice(data, namespace_ptr, namespace_len, "namespace")?;
     let namespace = String::from_utf8(namespace_bytes.to_vec())
         .map_err(|e| wasmtime::Error::msg(format!("invalid UTF-8 in namespace: {}", e)))?;
+    let state = caller.data().clone();
+    if !ensure_vfs_capability(&state, FUNCTION_NAME, &VfsOperation::List, &namespace) {
+        return Ok(-1);
+    }
 
     // Read request from memory
-    let request_bytes = data
-        .get(request_ptr as usize..(request_ptr + request_len) as usize)
-        .ok_or_else(|| wasmtime::Error::msg("failed to read request from memory"))?;
+    let request_bytes = read_memory_slice(data, request_ptr, request_len, "request")?;
     let request_json = String::from_utf8(request_bytes.to_vec())
         .map_err(|e| wasmtime::Error::msg(format!("invalid UTF-8 in request: {}", e)))?;
 
     let request: FileListRequest = serde_json::from_str(&request_json)
         .map_err(|e| wasmtime::Error::msg(format!("failed to parse request: {}", e)))?;
 
-    let state = caller.data().clone();
-    let rt = tokio::runtime::Handle::current();
-
     // Execute VFS operation
-    let result = rt.block_on(async {
+    let operation_state = state.clone();
+    let result = run_vfs_operation(async move {
         let vfs_bridge = {
-            let state_guard = state.lock().unwrap();
+            let Some(state_guard) =
+                lock_host_state(&operation_state, "reading VFS bridge for list")
+            else {
+                return Err(oxide_core::vfs::VfsError::IoError {
+                    message: "Plugin host state not available".to_string(),
+                });
+            };
             state_guard.vfs_bridge.clone()
         };
         if let Some(vfs_bridge) = vfs_bridge {
@@ -266,18 +425,28 @@ pub fn vfs_list_files(
     });
 
     match result {
-        Ok(response) => {
+        Ok(Ok(response)) => {
             // Store result in plugin state for retrieval
             let result_json = serde_json::to_string(&response)
                 .map_err(|e| wasmtime::Error::msg(format!("failed to serialize result: {}", e)))?;
 
-            let mut state_guard = state.lock().unwrap();
-            state_guard.store_result("vfs_list_files", result_json);
-            Ok(0) // Success
+            if let Some(mut state_guard) = lock_host_state(&state, "storing VFS list result") {
+                state_guard.store_result(FUNCTION_NAME, result_json);
+                Ok(0) // Success
+            } else {
+                Ok(-1)
+            }
+        }
+        Ok(Err(e)) => {
+            if let Some(mut state_guard) = lock_host_state(&state, "storing VFS list error") {
+                state_guard.store_error(FUNCTION_NAME, &e.to_string());
+            }
+            Ok(-1) // Error
         }
         Err(e) => {
-            let mut state_guard = state.lock().unwrap();
-            state_guard.store_error("vfs_list_files", &e.to_string());
+            if let Some(mut state_guard) = lock_host_state(&state, "storing VFS list error") {
+                state_guard.store_error(FUNCTION_NAME, &e);
+            }
             Ok(-1) // Error
         }
     }
@@ -289,7 +458,15 @@ pub fn vfs_get_usage_stats(
     namespace_ptr: i32,
     namespace_len: i32,
 ) -> wasmtime::Result<i64> {
-    caller.data().lock().unwrap().record_host_call();
+    const FUNCTION_NAME: &str = "vfs_get_usage_stats";
+
+    if !begin_vfs_call(
+        caller.data(),
+        FUNCTION_NAME,
+        "recording vfs_get_usage_stats host call",
+    ) {
+        return Ok(-1);
+    }
 
     let memory = caller
         .get_export("memory")
@@ -299,19 +476,25 @@ pub fn vfs_get_usage_stats(
     let data = memory.data(&caller);
 
     // Read namespace from memory
-    let namespace_bytes = data
-        .get(namespace_ptr as usize..(namespace_ptr + namespace_len) as usize)
-        .ok_or_else(|| wasmtime::Error::msg("failed to read namespace from memory"))?;
+    let namespace_bytes = read_memory_slice(data, namespace_ptr, namespace_len, "namespace")?;
     let namespace = String::from_utf8(namespace_bytes.to_vec())
         .map_err(|e| wasmtime::Error::msg(format!("invalid UTF-8 in namespace: {}", e)))?;
-
     let state = caller.data().clone();
-    let rt = tokio::runtime::Handle::current();
+    if !ensure_vfs_capability(&state, FUNCTION_NAME, &VfsOperation::Usage, &namespace) {
+        return Ok(-1);
+    }
 
     // Execute VFS operation
-    let result = rt.block_on(async {
+    let operation_state = state.clone();
+    let result = run_vfs_operation(async move {
         let vfs_bridge = {
-            let state_guard = state.lock().unwrap();
+            let Some(state_guard) =
+                lock_host_state(&operation_state, "reading VFS bridge for usage stats")
+            else {
+                return Err(oxide_core::vfs::VfsError::IoError {
+                    message: "Plugin host state not available".to_string(),
+                });
+            };
             state_guard.vfs_bridge.clone()
         };
         if let Some(vfs_bridge) = vfs_bridge {
@@ -324,18 +507,31 @@ pub fn vfs_get_usage_stats(
     });
 
     match result {
-        Ok(stats) => {
+        Ok(Ok(stats)) => {
             // Store result in plugin state for retrieval
             let result_json = serde_json::to_string(&stats)
                 .map_err(|e| wasmtime::Error::msg(format!("failed to serialize result: {}", e)))?;
 
-            let mut state_guard = state.lock().unwrap();
-            state_guard.store_result("vfs_get_usage_stats", result_json);
-            Ok(0) // Success
+            if let Some(mut state_guard) = lock_host_state(&state, "storing VFS usage stats result")
+            {
+                state_guard.store_result(FUNCTION_NAME, result_json);
+                Ok(0) // Success
+            } else {
+                Ok(-1)
+            }
+        }
+        Ok(Err(e)) => {
+            if let Some(mut state_guard) = lock_host_state(&state, "storing VFS usage stats error")
+            {
+                state_guard.store_error(FUNCTION_NAME, &e.to_string());
+            }
+            Ok(-1) // Error
         }
         Err(e) => {
-            let mut state_guard = state.lock().unwrap();
-            state_guard.store_error("vfs_get_usage_stats", &e.to_string());
+            if let Some(mut state_guard) = lock_host_state(&state, "storing VFS usage stats error")
+            {
+                state_guard.store_error(FUNCTION_NAME, &e);
+            }
             Ok(-1) // Error
         }
     }

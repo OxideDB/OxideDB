@@ -67,7 +67,11 @@ impl Default for AuthSchemaValidatorConfig {
             "role".to_string(),
             FieldDefinition {
                 field_type: FieldType::Select(SelectConfig {
-                    options: vec!["user".to_string(), "admin".to_string()],
+                    options: vec![
+                        "user".to_string(),
+                        "superuser".to_string(),
+                        "admin".to_string(),
+                    ],
                     multiple: false,
                     allow_empty: false,
                 }),

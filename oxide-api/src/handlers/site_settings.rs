@@ -323,15 +323,24 @@ impl SiteSettingsHandlers {
         // Validate email settings if provided
         if let Some(email) = &request.email {
             if email.enabled {
-                if email.smtp_host.is_none() || email.smtp_host.as_ref().unwrap().trim().is_empty()
+                if email
+                    .smtp_host
+                    .as_deref()
+                    .map(str::trim)
+                    .unwrap_or_default()
+                    .is_empty()
                 {
                     return Err(ApiError::bad_request(
                         "SMTP host is required when email is enabled".to_string(),
                     ));
                 }
 
-                if email.from_email.is_none()
-                    || email.from_email.as_ref().unwrap().trim().is_empty()
+                if email
+                    .from_email
+                    .as_deref()
+                    .map(str::trim)
+                    .unwrap_or_default()
+                    .is_empty()
                 {
                     return Err(ApiError::bad_request(
                         "From email is required when email is enabled".to_string(),

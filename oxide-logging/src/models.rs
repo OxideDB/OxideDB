@@ -249,10 +249,9 @@ impl LogEntry {
 
     /// Add performance metric
     pub fn with_metric(mut self, key: impl Into<String>, value: f64) -> Self {
-        if self.metrics.is_none() {
-            self.metrics = Some(HashMap::new());
-        }
-        self.metrics.as_mut().unwrap().insert(key.into(), value);
+        self.metrics
+            .get_or_insert_with(HashMap::new)
+            .insert(key.into(), value);
         self
     }
 }
@@ -421,6 +420,12 @@ pub struct LogFilter {
     pub collection: Option<String>,
     /// Filter by operation
     pub operation: Option<String>,
+    /// Filter by audit actor
+    pub audit_actor: Option<String>,
+    /// Filter by audit target
+    pub audit_target: Option<String>,
+    /// Filter by minimum audit risk score
+    pub min_audit_risk_score: Option<u8>,
     /// Text search in message
     pub message_contains: Option<String>,
     /// Filter by audit event type

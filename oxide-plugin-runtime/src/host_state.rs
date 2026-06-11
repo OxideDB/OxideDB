@@ -6,17 +6,42 @@
 use oxide_core::{
     auth::CrudOperation,
     plugin_api::{HttpRequestContext, RouteRegistration},
-    plugin_security::PluginCapability,
+    plugin_security::{PluginCapability, VfsOperation},
     VfsServiceBridge,
 };
 use oxide_logging::LogServiceBridge;
 use std::{
     collections::HashMap,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, MutexGuard},
 };
+use tracing::error;
 
 /// Type alias for shared host state reference
 pub type HostStateRef = Arc<Mutex<HostState>>;
+
+/// Acquire host state without panicking if a previous plugin call poisoned the lock.
+pub fn lock_host_state<'a>(
+    state: &'a HostStateRef,
+    action: &str,
+) -> Option<MutexGuard<'a, HostState>> {
+    match state.lock() {
+        Ok(guard) => Some(guard),
+        Err(_) => {
+            error!("Plugin host state lock was poisoned while {}", action);
+            None
+        }
+    }
+}
+
+/// Record a host function call, returning false if host state is unavailable.
+pub fn record_host_call(state: &HostStateRef, action: &str) -> bool {
+    let Some(mut guard) = lock_host_state(state, action) else {
+        return false;
+    };
+
+    guard.record_host_call();
+    true
+}
 
 /// Execution context for tracking plugin call stack
 #[derive(Debug, Clone, PartialEq)]
@@ -114,6 +139,10 @@ impl Default for HostState {
 impl HostState {
     /// Check if we're in a context that should allow database operations
     pub fn can_perform_database_operations(&self) -> bool {
+        if self.in_database_operation {
+            return false;
+        }
+
         // If there's an active HTTP request, always allow database operations
         // This covers the case where an HTTP handler triggers events but still needs DB access
         if self.current_http_request.is_some() {
@@ -170,6 +199,12 @@ impl HostState {
     pub fn clear_function_results(&mut self) {
         self.function_results.clear();
         self.function_errors.clear();
+    }
+
+    /// Clear one host function's cached result and error.
+    pub fn clear_function_result(&mut self, function_name: &str) {
+        self.function_results.remove(function_name);
+        self.function_errors.remove(function_name);
     }
 
     /// Increment host function calls for the active plugin execution.
@@ -231,6 +266,19 @@ impl HostState {
                 capabilities
                     .iter()
                     .any(|capability| capability.allows_record_operation(operation, collection))
+            })
+            .unwrap_or(false)
+    }
+
+    /// Check whether the current plugin can perform a VFS operation.
+    pub fn current_plugin_can_access_vfs(&self, operation: &VfsOperation, namespace: &str) -> bool {
+        self.current_plugin
+            .as_ref()
+            .and_then(|plugin_name| self.plugin_capabilities.get(plugin_name))
+            .map(|capabilities| {
+                capabilities
+                    .iter()
+                    .any(|capability| capability.allows_vfs_operation(operation, namespace))
             })
             .unwrap_or(false)
     }
