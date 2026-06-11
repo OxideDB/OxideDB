@@ -7,7 +7,7 @@
 use axum::{
     body::Bytes,
     extract::{Path, State},
-    http::StatusCode,
+    http::{header, HeaderMap, HeaderValue, StatusCode},
     Json,
 };
 use oxide_core::{auth::RefreshClaims, Claims};
@@ -29,12 +29,16 @@ use crate::{
 pub struct LoginRequest {
     pub identifier: String,
     pub credential: String,
+    #[serde(default)]
+    pub cookie_session: bool,
 }
 
 /// Login response
 #[derive(Debug, Serialize)]
 pub struct LoginResponse {
-    pub token: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub token: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub refresh_token: Option<String>,
     pub user_id: String,
     pub email: String,
@@ -110,7 +114,9 @@ pub struct AuthCollectionInfo {
 /// Refresh token request payload
 #[derive(Debug, Deserialize)]
 pub struct RefreshTokenRequest {
-    pub refresh_token: String,
+    pub refresh_token: Option<String>,
+    #[serde(default)]
+    pub cookie_session: bool,
 }
 
 /// Logout request payload
@@ -122,11 +128,16 @@ pub struct LogoutRequest {
 /// Refresh token response
 #[derive(Debug, Serialize)]
 pub struct RefreshTokenResponse {
-    pub access_token: String,
-    pub refresh_token: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub access_token: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub refresh_token: Option<String>,
     pub expires_in: i64,
     pub refresh_expires_in: i64,
 }
+
+pub(crate) const ACCESS_TOKEN_COOKIE: &str = "oxidedb_access_token";
+pub(crate) const REFRESH_TOKEN_COOKIE: &str = "oxidedb_refresh_token";
 
 /// Handlers for authentication operations
 pub struct AuthHandlers;
@@ -181,7 +192,7 @@ impl AuthHandlers {
         }
 
         let response = LoginResponse {
-            token: auth_response.token,
+            token: Some(auth_response.token),
             refresh_token: auth_response.refresh_token.clone(),
             user_id: auth_response.user_id,
             email: identifier.clone(), // For now, using identifier as email
@@ -409,8 +420,8 @@ impl AuthHandlers {
             })?;
 
         let response = RefreshTokenResponse {
-            access_token: token_pair.access_token,
-            refresh_token: token_pair.refresh_token,
+            access_token: Some(token_pair.access_token),
+            refresh_token: Some(token_pair.refresh_token),
             expires_in: token_pair.access_token_expires_in,
             refresh_expires_in: token_pair.refresh_token_expires_in,
         };
@@ -493,6 +504,117 @@ fn hash_refresh_token(token: &str) -> String {
     format!("{:x}", Sha256::digest(token.as_bytes()))
 }
 
+pub(crate) fn extract_cookie_value(headers: &HeaderMap, name: &str) -> Option<String> {
+    let cookie_header = headers.get(header::COOKIE)?.to_str().ok()?;
+
+    cookie_header.split(';').find_map(|part| {
+        let (cookie_name, cookie_value) = part.trim().split_once('=')?;
+        (cookie_name == name).then(|| cookie_value.to_string())
+    })
+}
+
+fn auth_cookie_headers(
+    access_token: &str,
+    refresh_token: Option<&str>,
+    access_max_age_seconds: i64,
+    refresh_max_age_seconds: Option<i64>,
+) -> Result<HeaderMap, ApiError> {
+    let mut headers = HeaderMap::new();
+    append_set_cookie_header(
+        &mut headers,
+        build_auth_cookie(ACCESS_TOKEN_COOKIE, access_token, access_max_age_seconds)?,
+    );
+
+    if let (Some(refresh_token), Some(max_age)) = (refresh_token, refresh_max_age_seconds) {
+        append_set_cookie_header(
+            &mut headers,
+            build_auth_cookie(REFRESH_TOKEN_COOKIE, refresh_token, max_age)?,
+        );
+    }
+
+    Ok(headers)
+}
+
+fn clear_auth_cookie_headers() -> Result<HeaderMap, ApiError> {
+    let mut headers = HeaderMap::new();
+    append_set_cookie_header(
+        &mut headers,
+        build_expired_auth_cookie(ACCESS_TOKEN_COOKIE)?,
+    );
+    append_set_cookie_header(
+        &mut headers,
+        build_expired_auth_cookie(REFRESH_TOKEN_COOKIE)?,
+    );
+    Ok(headers)
+}
+
+fn append_set_cookie_header(headers: &mut HeaderMap, cookie: HeaderValue) {
+    headers.append(header::SET_COOKIE, cookie);
+}
+
+fn build_auth_cookie(
+    name: &str,
+    value: &str,
+    max_age_seconds: i64,
+) -> Result<HeaderValue, ApiError> {
+    cookie_header_value(name, value, Some(max_age_seconds))
+}
+
+fn build_expired_auth_cookie(name: &str) -> Result<HeaderValue, ApiError> {
+    cookie_header_value(name, "", Some(0))
+}
+
+fn cookie_header_value(
+    name: &str,
+    value: &str,
+    max_age_seconds: Option<i64>,
+) -> Result<HeaderValue, ApiError> {
+    let mut cookie = format!(
+        "{name}={value}; Path=/; HttpOnly; SameSite={}",
+        cookie_same_site()
+    );
+
+    if let Some(max_age_seconds) = max_age_seconds {
+        cookie.push_str(&format!("; Max-Age={max_age_seconds}"));
+    }
+
+    if cookie_secure() {
+        cookie.push_str("; Secure");
+    }
+
+    HeaderValue::from_str(&cookie)
+        .map_err(|e| ApiError::internal(format!("Failed to build auth cookie: {}", e)))
+}
+
+fn cookie_same_site() -> &'static str {
+    match std::env::var("OXIDEDB_COOKIE_SAME_SITE")
+        .unwrap_or_else(|_| "Lax".to_string())
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "strict" => "Strict",
+        "none" => "None",
+        _ => "Lax",
+    }
+}
+
+fn cookie_secure() -> bool {
+    if let Ok(value) = std::env::var("OXIDEDB_COOKIE_SECURE") {
+        return matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        );
+    }
+
+    ["OXIDEDB_ENV", "OXIDE_ENV", "APP_ENV", "ENV", "NODE_ENV"]
+        .iter()
+        .any(|name| {
+            std::env::var(name)
+                .map(|value| value.trim().eq_ignore_ascii_case("production"))
+                .unwrap_or(false)
+        })
+}
+
 // HTTP Handler Functions
 
 /// List available auth collections
@@ -512,8 +634,9 @@ pub async fn login_collection(
     State(state): State<AppState>,
     Path(collection): Path<String>,
     Json(request): Json<LoginRequest>,
-) -> Result<Json<ApiResponse<LoginResponse>>, ApiError> {
-    let response = AuthHandlers::login(
+) -> Result<(HeaderMap, Json<ApiResponse<LoginResponse>>), ApiError> {
+    let cookie_session = request.cookie_session;
+    let mut response = AuthHandlers::login(
         state.db,
         state.auth_service,
         collection,
@@ -521,7 +644,23 @@ pub async fn login_collection(
         request.credential,
     )
     .await?;
-    Ok(Json(ApiResponse::success(response)))
+
+    let headers = auth_cookie_headers(
+        response
+            .token
+            .as_deref()
+            .ok_or_else(|| ApiError::internal("Missing access token".to_string()))?,
+        response.refresh_token.as_deref(),
+        response.expires_in,
+        response.refresh_expires_in,
+    )?;
+
+    if cookie_session {
+        response.token = None;
+        response.refresh_token = None;
+    }
+
+    Ok((headers, Json(ApiResponse::success(response))))
 }
 
 /// User registration for specific collection
@@ -570,8 +709,9 @@ pub async fn get_current_user(
 /// POST /auth/logout
 pub async fn logout(
     State(state): State<AppState>,
+    headers: HeaderMap,
     body: Bytes,
-) -> Result<Json<ApiResponse<String>>, ApiError> {
+) -> Result<(HeaderMap, Json<ApiResponse<String>>), ApiError> {
     let request =
         if body.is_empty() {
             None
@@ -581,9 +721,14 @@ pub async fn logout(
             })?)
         };
 
-    let response =
-        AuthHandlers::logout(state.db, request.and_then(|request| request.refresh_token)).await?;
-    Ok(Json(ApiResponse::success(response)))
+    let refresh_token = request
+        .and_then(|request| request.refresh_token)
+        .or_else(|| extract_cookie_value(&headers, REFRESH_TOKEN_COOKIE));
+    let response = AuthHandlers::logout(state.db, refresh_token).await?;
+    Ok((
+        clear_auth_cookie_headers()?,
+        Json(ApiResponse::success(response)),
+    ))
 }
 
 /// Refresh token handler
@@ -591,11 +736,45 @@ pub async fn logout(
 /// POST /auth/refresh
 pub async fn refresh_token(
     State(state): State<AppState>,
-    Json(request): Json<RefreshTokenRequest>,
-) -> Result<Json<ApiResponse<RefreshTokenResponse>>, ApiError> {
-    let response =
-        AuthHandlers::refresh_token(state.db, state.auth_service, request.refresh_token).await?;
-    Ok(Json(ApiResponse::success(response)))
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<(HeaderMap, Json<ApiResponse<RefreshTokenResponse>>), ApiError> {
+    let request = if body.is_empty() {
+        RefreshTokenRequest {
+            refresh_token: None,
+            cookie_session: true,
+        }
+    } else {
+        serde_json::from_slice::<RefreshTokenRequest>(&body)
+            .map_err(|e| ApiError::bad_request(format!("Invalid refresh request body: {}", e)))?
+    };
+
+    let cookie_refresh_token = extract_cookie_value(&headers, REFRESH_TOKEN_COOKIE);
+    let cookie_session = request.cookie_session || cookie_refresh_token.is_some();
+    let refresh_token = request
+        .refresh_token
+        .or(cookie_refresh_token)
+        .ok_or_else(|| ApiError::auth("Missing refresh token".to_string()))?;
+
+    let mut response =
+        AuthHandlers::refresh_token(state.db, state.auth_service, refresh_token).await?;
+
+    let headers = auth_cookie_headers(
+        response
+            .access_token
+            .as_deref()
+            .ok_or_else(|| ApiError::internal("Missing refreshed access token".to_string()))?,
+        response.refresh_token.as_deref(),
+        response.expires_in,
+        Some(response.refresh_expires_in),
+    )?;
+
+    if cookie_session {
+        response.access_token = None;
+        response.refresh_token = None;
+    }
+
+    Ok((headers, Json(ApiResponse::success(response))))
 }
 
 #[cfg(test)]

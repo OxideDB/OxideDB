@@ -26,7 +26,11 @@ use std::time::Instant;
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
-use crate::{errors::ApiError, server::AppState};
+use crate::{
+    errors::ApiError,
+    handlers::auth::{extract_cookie_value, ACCESS_TOKEN_COOKIE},
+    server::AppState,
+};
 
 /// Extension key for storing claims in request extensions
 #[derive(Clone)]
@@ -341,6 +345,11 @@ const PUBLIC_ENDPOINT_PREFIXES: &[&str] = &[
     "/admin",            // Admin UI endpoints should be publicly accessible
 ];
 
+/// Admin API prefixes share the `/admin` URL space with the public SPA assets,
+/// but must still pass through the central auth and policy middleware.
+const PROTECTED_ADMIN_API_PREFIXES: &[&str] =
+    &["/admin/api-keys", "/admin/backups", "/admin/settings"];
+
 /// List of public endpoint patterns that don't require authentication
 const PUBLIC_ENDPOINT_PATTERNS: &[&str] = &[
     "/auth/*/login",    // Collection-specific login endpoints
@@ -349,6 +358,10 @@ const PUBLIC_ENDPOINT_PATTERNS: &[&str] = &[
 
 /// Check if the given path is a public endpoint
 fn is_public_endpoint(path: &str) -> bool {
+    if is_protected_admin_api_endpoint(path) {
+        return false;
+    }
+
     // Check exact matches first
     if PUBLIC_ENDPOINTS.contains(&path) {
         return true;
@@ -387,6 +400,13 @@ fn is_public_endpoint(path: &str) -> bool {
     }
 
     false
+}
+
+fn is_protected_admin_api_endpoint(path: &str) -> bool {
+    PROTECTED_ADMIN_API_PREFIXES.iter().any(|prefix| {
+        path.strip_prefix(prefix)
+            .is_some_and(|suffix| suffix.is_empty() || suffix.starts_with('/'))
+    })
 }
 
 /// Authentication and authorization middleware
@@ -511,16 +531,17 @@ fn headers_to_json(headers: &HeaderMap) -> serde_json::Value {
 
 /// Extract user claims from authorization header
 pub fn extract_user_claims(headers: &HeaderMap, auth_service: &Arc<AuthService>) -> Option<Claims> {
-    let auth_header = headers
+    let bearer_token = headers
         .get("authorization")
         .or_else(|| headers.get("Authorization"))
-        .and_then(|h| h.to_str().ok())?;
+        .and_then(|h| h.to_str().ok())
+        .map(|auth_header| {
+            auth_header
+                .strip_prefix("Bearer ")
+                .unwrap_or(auth_header)
+                .to_string()
+        });
 
-    let token = if let Some(stripped) = auth_header.strip_prefix("Bearer ") {
-        stripped
-    } else {
-        auth_header
-    };
-
-    auth_service.verify_token(token).ok()
+    let token = bearer_token.or_else(|| extract_cookie_value(headers, ACCESS_TOKEN_COOKIE))?;
+    auth_service.verify_token(&token).ok()
 }

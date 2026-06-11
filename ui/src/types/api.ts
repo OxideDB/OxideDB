@@ -84,7 +84,7 @@ export interface CollectionPermissions {
 
 // Additional types that are not auto-generated from Rust
 export interface AuthResponse {
-  token: string;
+  token?: string;
   refresh_token?: string;
   user_id: string;
   email: string;
@@ -145,7 +145,6 @@ export interface ApiKeyRuleInfo {
   operation_type: ApiKeyOperationType;
   operation: CrudOperation | AuthOperation;
   rule: string;
-  exact_key?: string | null;
   key_hash?: string | null;
   key_preview?: string | null;
   hashed: boolean;
@@ -384,6 +383,7 @@ export interface SecurityAuditEvent {
 
 export interface LogMetrics {
   total_entries: number;
+  entries_24h: number;
   entries_by_level: Record<LogLevel, number>;
   audit_events_by_type: Record<AuditEventType, number>;
   storage_size_bytes: number;

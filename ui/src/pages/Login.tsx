@@ -7,7 +7,7 @@ import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { useAuth } from '../contexts/AuthContext';
+import { useAuth } from '../hooks/useAuth';
 // import { apiService } from '../services/api';
 
 const Login: React.FC = () => {
@@ -207,21 +207,6 @@ const Login: React.FC = () => {
                 {loading ? 'Signing in...' : 'Sign In'}
               </Button>
             </form>
-
-            {/* Demo Credentials */}
-            <div className="mt-6 p-4 bg-muted rounded-lg">
-              <h4 className="text-sm font-medium text-muted-foreground mb-2">
-                Demo Credentials
-              </h4>
-              <div className="text-xs text-muted-foreground space-y-1">
-                <div>
-                  <strong>Superusers Collection:</strong> admin@example.com / secure_password_123
-                </div>
-                <div>
-                  <strong>Users Collection:</strong> user@example.com / user_password_456
-                </div>
-              </div>
-            </div>
           </CardContent>
         </Card>
 

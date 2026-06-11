@@ -1,7 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   AlertTriangle,
-  Copy,
   KeyRound,
   RefreshCw,
   Save,
@@ -413,15 +412,6 @@ const ApiKeys: React.FC = () => {
                       </TableCell>
                       <TableCell>
                         <div className="flex justify-end gap-2">
-                          <Button
-                            variant="outline"
-                            size="icon"
-                            disabled={!rule.exact_key}
-                            onClick={() => rule.exact_key && copyHeader(rule.exact_key)}
-                            title={rule.exact_key ? 'Copy x-api-key header' : 'Stored keys are not recoverable'}
-                          >
-                            <Copy className="h-4 w-4" />
-                          </Button>
                           <Button
                             variant="outline"
                             size="icon"

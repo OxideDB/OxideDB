@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
@@ -55,11 +55,7 @@ const RelationshipField: React.FC<RelationshipFieldProps> = ({
   const [loading, setLoading] = useState(false);
   const [fetchError, setFetchError] = useState<string | null>(null);
 
-  useEffect(() => {
-    fetchRecords();
-  }, [relationshipConfig.target_collection]);
-
-  const fetchRecords = async () => {
+  const fetchRecords = useCallback(async () => {
     try {
       setLoading(true);
       setFetchError(null);
@@ -71,7 +67,11 @@ const RelationshipField: React.FC<RelationshipFieldProps> = ({
     } finally {
       setLoading(false);
     }
-  };
+  }, [relationshipConfig.target_collection]);
+
+  useEffect(() => {
+    fetchRecords();
+  }, [fetchRecords]);
 
   const getDisplayValue = (record: DbRecord): string => {
     if (relationshipConfig.display_field && record.data[relationshipConfig.display_field]) {

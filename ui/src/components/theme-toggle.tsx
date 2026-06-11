@@ -8,7 +8,7 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog"
-import { useTheme } from "./theme-provider"
+import { useTheme } from "./use-theme"
 
 export function ThemeToggle() {
   const { theme, setTheme } = useTheme()

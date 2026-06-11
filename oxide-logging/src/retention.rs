@@ -8,11 +8,16 @@
 
 use crate::{
     error::{LoggingError, LoggingResult},
+    models::{LogEntry, SecurityAuditEvent},
     storage::SqliteLogStorage,
 };
 use chrono::{DateTime, Duration, Utc};
+#[cfg(feature = "compression")]
+use flate2::{write::GzEncoder, Compression};
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::fs::File;
+use std::io::{BufWriter, Write};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tracing::{debug, info, warn};
 
@@ -137,7 +142,10 @@ impl RetentionService {
             Utc::now() - Duration::days(self.policy.standard_retention_days as i64);
         match self
             .storage
-            .cleanup_old_entries(self.policy.standard_retention_days)
+            .cleanup_old_log_entries(
+                self.policy.standard_retention_days,
+                self.policy.error_retention_days,
+            )
             .await
         {
             Ok(deleted) => {
@@ -181,7 +189,7 @@ impl RetentionService {
     }
 
     /// Archive old logs to compressed files
-    async fn archive_old_logs(&self, _result: &mut CleanupResult) -> LoggingResult<()> {
+    async fn archive_old_logs(&self, result: &mut CleanupResult) -> LoggingResult<()> {
         let archive_dir = self
             .policy
             .archive_directory
@@ -193,31 +201,50 @@ impl RetentionService {
             std::fs::create_dir_all(archive_dir).map_err(LoggingError::from)?;
         }
 
-        // For now, this is a placeholder for archive functionality
-        // In a full implementation, you would:
-        // 1. Query logs older than archive threshold
-        // 2. Export to compressed format (e.g., gzip JSON)
-        // 3. Verify archive integrity
-        // 4. Delete original logs if delete_after_archive is true
+        let (log_entries, audit_events) = self
+            .storage
+            .export_cleanup_candidates(
+                self.policy.standard_retention_days,
+                self.policy.error_retention_days,
+                self.policy.audit_retention_days,
+            )
+            .await?;
+        let archived_count = log_entries.len() + audit_events.len();
 
-        debug!("Archive functionality not yet implemented");
+        if archived_count == 0 {
+            debug!("No old logs matched archive retention thresholds");
+            return Ok(());
+        }
+
+        let archive_path = self.archive_file_path(archive_dir);
+        self.write_archive_file(&archive_path, &log_entries, &audit_events)?;
+
+        result.archives_created += 1;
+        info!(
+            "Archived {} log/audit records to {}",
+            archived_count,
+            archive_path.display()
+        );
         Ok(())
     }
 
     /// Clean up audit events with their specific retention period
     async fn cleanup_audit_events(&self) -> LoggingResult<u64> {
-        // This would require a specific method in storage for cleaning audit events
-        // For now, we'll use the same retention period
-        // In a full implementation, you'd have separate cleanup methods
-        Ok(0)
+        self.storage
+            .cleanup_old_audit_events(self.policy.audit_retention_days)
+            .await
     }
 
     /// Check available disk space
     async fn check_disk_space(&self) -> LoggingResult<u64> {
-        // This is a simplified implementation
-        // In a full implementation, you would use system calls to check disk space
-        // For now, we'll return a large number to avoid warnings
-        Ok(10_000_000_000) // 10GB
+        let path = self
+            .policy
+            .archive_directory
+            .as_deref()
+            .or_else(|| Path::new(self.storage.db_path()).parent())
+            .unwrap_or_else(|| Path::new("."));
+
+        fs2::available_space(path).map_err(LoggingError::from)
     }
 
     /// Get retention statistics
@@ -235,9 +262,13 @@ impl RetentionService {
 
     /// Estimate how many entries would be cleaned up
     async fn estimate_cleanup_candidates(&self) -> LoggingResult<u64> {
-        // This would require additional query methods in storage
-        // For now, return 0
-        Ok(0)
+        self.storage
+            .count_cleanup_candidates(
+                self.policy.standard_retention_days,
+                self.policy.error_retention_days,
+                self.policy.audit_retention_days,
+            )
+            .await
     }
 
     /// Update retention policy
@@ -249,6 +280,39 @@ impl RetentionService {
     /// Get current retention policy
     pub fn get_policy(&self) -> &RetentionPolicy {
         &self.policy
+    }
+
+    fn archive_file_path(&self, archive_dir: &Path) -> PathBuf {
+        let extension = if cfg!(feature = "compression") && self.policy.enable_compression {
+            "ndjson.gz"
+        } else {
+            "ndjson"
+        };
+        archive_dir.join(format!(
+            "oxidedb-logs-{}.{}",
+            Utc::now().format("%Y%m%dT%H%M%SZ"),
+            extension
+        ))
+    }
+
+    fn write_archive_file(
+        &self,
+        archive_path: &Path,
+        log_entries: &[LogEntry],
+        audit_events: &[SecurityAuditEvent],
+    ) -> LoggingResult<()> {
+        let file = File::create(archive_path)?;
+
+        #[cfg(feature = "compression")]
+        {
+            if self.policy.enable_compression {
+                let writer = BufWriter::new(GzEncoder::new(file, Compression::default()));
+                return write_archive_records(writer, log_entries, audit_events);
+            }
+        }
+
+        let writer = BufWriter::new(file);
+        write_archive_records(writer, log_entries, audit_events)
     }
 
     /// Validate retention policy
@@ -284,6 +348,50 @@ impl RetentionService {
 
         Ok(())
     }
+}
+
+#[derive(Serialize)]
+struct ArchiveManifest {
+    archive_format: &'static str,
+    generated_at: DateTime<Utc>,
+    log_entry_count: usize,
+    audit_event_count: usize,
+}
+
+#[derive(Serialize)]
+#[serde(tag = "kind", content = "record")]
+enum ArchiveRecord<'a> {
+    LogEntry(&'a LogEntry),
+    AuditEvent(&'a SecurityAuditEvent),
+}
+
+fn write_archive_records<W: Write>(
+    mut writer: W,
+    log_entries: &[LogEntry],
+    audit_events: &[SecurityAuditEvent],
+) -> LoggingResult<()> {
+    let manifest = ArchiveManifest {
+        archive_format: "oxidedb-log-archive-v1",
+        generated_at: Utc::now(),
+        log_entry_count: log_entries.len(),
+        audit_event_count: audit_events.len(),
+    };
+
+    serde_json::to_writer(&mut writer, &manifest)?;
+    writer.write_all(b"\n")?;
+
+    for entry in log_entries {
+        serde_json::to_writer(&mut writer, &ArchiveRecord::LogEntry(entry))?;
+        writer.write_all(b"\n")?;
+    }
+
+    for event in audit_events {
+        serde_json::to_writer(&mut writer, &ArchiveRecord::AuditEvent(event))?;
+        writer.write_all(b"\n")?;
+    }
+
+    writer.flush()?;
+    Ok(())
 }
 
 /// Statistics about log retention

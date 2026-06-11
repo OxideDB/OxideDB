@@ -50,6 +50,9 @@ metrics = { version = "0.21", optional = true }
 # Compression for log archival
 flate2 = { version = "1.0", optional = true }
 
+# Filesystem space checks for retention health
+fs2 = "0.4"
+
 [features]
 default = ["simd-json", "metrics", "compression"]
 compression = ["flate2"] 

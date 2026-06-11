@@ -119,6 +119,8 @@ pub struct PluginPackage {
     pub wasm_data: Vec<u8>,
     /// Digital signature data (if present)
     pub signature_data: Option<Vec<u8>>,
+    /// Canonical bytes covered by the detached package signature
+    pub signature_payload: Vec<u8>,
     /// Package hash for integrity verification
     pub package_hash: String,
     /// Size of the original package

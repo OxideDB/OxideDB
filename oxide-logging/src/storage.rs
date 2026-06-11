@@ -78,6 +78,11 @@ impl SqliteLogStorage {
         Ok(storage)
     }
 
+    /// Return the configured SQLite database path.
+    pub fn db_path(&self) -> &str {
+        &self.db_path
+    }
+
     /// Initialize database schema and indexes
     async fn initialize_schema(&self) -> LoggingResult<()> {
         tracing::info!("Starting schema initialization...");
@@ -735,7 +740,7 @@ impl SqliteLogStorage {
                     )
                     .unwrap_or(0);
 
-                let total_count_24h: u64 = conn
+                let entries_24h: u64 = conn
                     .query_row(
                         "SELECT COUNT(*) FROM log_entries WHERE timestamp >= ?",
                         params![twenty_four_hours_ago],
@@ -743,14 +748,15 @@ impl SqliteLogStorage {
                     )
                     .unwrap_or(0);
 
-                let error_rate_24h = if total_count_24h > 0 {
-                    (error_count as f64 / total_count_24h as f64) * 100.0
+                let error_rate_24h = if entries_24h > 0 {
+                    (error_count as f64 / entries_24h as f64) * 100.0
                 } else {
                     0.0
                 };
 
                 Ok(LogMetrics {
                     total_entries,
+                    entries_24h,
                     entries_by_level,
                     audit_events_by_type,
                     storage_size_bytes,
@@ -767,34 +773,161 @@ impl SqliteLogStorage {
 
     /// Delete old log entries based on retention policy
     pub async fn cleanup_old_entries(&self, retention_days: u32) -> LoggingResult<u64> {
+        let log_deleted = self
+            .cleanup_old_log_entries(retention_days, retention_days)
+            .await?;
+        let audit_deleted = self.cleanup_old_audit_events(retention_days).await?;
+        Ok(log_deleted + audit_deleted)
+    }
+
+    /// Delete old application log entries while allowing errors to retain longer.
+    pub async fn cleanup_old_log_entries(
+        &self,
+        standard_retention_days: u32,
+        error_retention_days: u32,
+    ) -> LoggingResult<u64> {
         let conn = self.connection.lock().await;
 
-        let cutoff_timestamp = Utc::now().timestamp() - (retention_days as i64 * 24 * 60 * 60);
+        let standard_cutoff =
+            Utc::now().timestamp() - (standard_retention_days as i64 * 24 * 60 * 60);
+        let error_cutoff = Utc::now().timestamp() - (error_retention_days as i64 * 24 * 60 * 60);
 
         let deleted_count = conn
             .call(move |conn| {
-                let tx = conn.transaction()?;
-
-                // Delete old log entries
-                let log_deleted = tx.execute(
-                    "DELETE FROM log_entries WHERE timestamp < ?",
-                    params![cutoff_timestamp],
+                let deleted = conn.execute(
+                    "DELETE FROM log_entries
+                     WHERE (level = ? AND timestamp < ?)
+                        OR (level != ? AND timestamp < ?)",
+                    params![
+                        LogLevel::Error as i32,
+                        error_cutoff,
+                        LogLevel::Error as i32,
+                        standard_cutoff
+                    ],
                 )?;
 
-                // Delete old audit events
-                let audit_deleted = tx.execute(
-                    "DELETE FROM audit_events WHERE timestamp < ?",
-                    params![cutoff_timestamp],
-                )?;
-
-                tx.commit()?;
-
-                Ok((log_deleted + audit_deleted) as u64)
+                Ok(deleted as u64)
             })
             .await?;
 
-        info!("Cleaned up {} old log entries", deleted_count);
+        info!("Cleaned up {} old application log entries", deleted_count);
         Ok(deleted_count)
+    }
+
+    /// Delete old audit events based on audit retention policy.
+    pub async fn cleanup_old_audit_events(&self, audit_retention_days: u32) -> LoggingResult<u64> {
+        let conn = self.connection.lock().await;
+
+        let audit_cutoff = Utc::now().timestamp() - (audit_retention_days as i64 * 24 * 60 * 60);
+
+        let deleted_count = conn
+            .call(move |conn| {
+                let deleted = conn.execute(
+                    "DELETE FROM audit_events WHERE timestamp < ?",
+                    params![audit_cutoff],
+                )?;
+
+                Ok(deleted as u64)
+            })
+            .await?;
+
+        info!("Cleaned up {} old audit events", deleted_count);
+        Ok(deleted_count)
+    }
+
+    /// Count entries that would be removed by the configured retention windows.
+    pub async fn count_cleanup_candidates(
+        &self,
+        standard_retention_days: u32,
+        error_retention_days: u32,
+        audit_retention_days: u32,
+    ) -> LoggingResult<u64> {
+        let conn = self.connection.lock().await;
+
+        let standard_cutoff =
+            Utc::now().timestamp() - (standard_retention_days as i64 * 24 * 60 * 60);
+        let error_cutoff = Utc::now().timestamp() - (error_retention_days as i64 * 24 * 60 * 60);
+        let audit_cutoff = Utc::now().timestamp() - (audit_retention_days as i64 * 24 * 60 * 60);
+
+        let candidate_count = conn
+            .call(move |conn| {
+                let log_candidates: u64 = conn.query_row(
+                    "SELECT COUNT(*) FROM log_entries
+                     WHERE (level = ? AND timestamp < ?)
+                        OR (level != ? AND timestamp < ?)",
+                    params![
+                        LogLevel::Error as i32,
+                        error_cutoff,
+                        LogLevel::Error as i32,
+                        standard_cutoff
+                    ],
+                    |row| Ok(row.get::<_, i64>(0)? as u64),
+                )?;
+
+                let audit_candidates: u64 = conn.query_row(
+                    "SELECT COUNT(*) FROM audit_events WHERE timestamp < ?",
+                    params![audit_cutoff],
+                    |row| Ok(row.get::<_, i64>(0)? as u64),
+                )?;
+
+                Ok(log_candidates + audit_candidates)
+            })
+            .await?;
+
+        Ok(candidate_count)
+    }
+
+    /// Export entries that are eligible for cleanup under the retention windows.
+    pub async fn export_cleanup_candidates(
+        &self,
+        standard_retention_days: u32,
+        error_retention_days: u32,
+        audit_retention_days: u32,
+    ) -> LoggingResult<(Vec<LogEntry>, Vec<SecurityAuditEvent>)> {
+        let conn = self.connection.lock().await;
+
+        let standard_cutoff =
+            Utc::now().timestamp() - (standard_retention_days as i64 * 24 * 60 * 60);
+        let error_cutoff = Utc::now().timestamp() - (error_retention_days as i64 * 24 * 60 * 60);
+        let audit_cutoff = Utc::now().timestamp() - (audit_retention_days as i64 * 24 * 60 * 60);
+
+        let exported = conn
+            .call(move |conn| {
+                let mut log_stmt = conn.prepare(
+                    "SELECT * FROM log_entries
+                     WHERE (level = ? AND timestamp < ?)
+                        OR (level != ? AND timestamp < ?)
+                     ORDER BY timestamp ASC",
+                )?;
+                let log_rows = log_stmt.query_map(
+                    params![
+                        LogLevel::Error as i32,
+                        error_cutoff,
+                        LogLevel::Error as i32,
+                        standard_cutoff
+                    ],
+                    parse_log_entry_row,
+                )?;
+                let mut log_entries = Vec::new();
+                for row in log_rows {
+                    log_entries.push(row?);
+                }
+
+                let mut audit_stmt = conn.prepare(
+                    "SELECT * FROM audit_events WHERE timestamp < ? ORDER BY timestamp ASC",
+                )?;
+                let audit_rows =
+                    audit_stmt.query_map(params![audit_cutoff], parse_audit_event_row)?;
+                let mut audit_events = Vec::new();
+                for row in audit_rows {
+                    audit_events.push(row?);
+                }
+
+                Ok((log_entries, audit_events))
+            })
+            .await?;
+
+        Ok(exported)
     }
 }
 

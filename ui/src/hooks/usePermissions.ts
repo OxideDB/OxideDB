@@ -73,7 +73,7 @@ export const usePermissions = (collection: string | undefined): UsePermissionsRe
     if (collection) {
       fetchPermissions();
     }
-  }, [fetchPermissions]);
+  }, [collection, fetchPermissions]);
 
   return {
     permissions,

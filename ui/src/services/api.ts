@@ -100,8 +100,8 @@ interface PaginatedResponse<T> {
 
 // Refresh token response type
 interface RefreshTokenResponse {
-  access_token: string;
-  refresh_token: string;
+  access_token?: string;
+  refresh_token?: string;
   expires_in: number;
   refresh_expires_in: number;
 }
@@ -134,8 +134,9 @@ class ApiService {
   private baseUrl: string;
   private token: string | null = null;
   private refreshToken: string | null = null;
+  private cookieSessionActive: boolean = false;
   private isRefreshing: boolean = false;
-  private refreshPromise: Promise<string> | null = null;
+  private refreshPromise: Promise<string | null> | null = null;
 
   constructor(baseUrl?: string) {
     // Auto-detect base URL based on environment
@@ -149,9 +150,14 @@ class ApiService {
       this.baseUrl = 'http://localhost:8080';
     }
     
-    // Load tokens from storage with fallback to sessionStorage
-    this.token = localStorage.getItem('auth_token') || sessionStorage.getItem('auth_token');
-    this.refreshToken = localStorage.getItem('refresh_token') || sessionStorage.getItem('refresh_token');
+    this.clearPersistedAuthTokens();
+  }
+
+  private clearPersistedAuthTokens() {
+    localStorage.removeItem('auth_token');
+    localStorage.removeItem('refresh_token');
+    sessionStorage.removeItem('auth_token');
+    sessionStorage.removeItem('refresh_token');
   }
 
   private async request<T>(
@@ -172,18 +178,24 @@ class ApiService {
     let response = await fetch(url, {
       ...options,
       headers,
+      credentials: 'include',
     });
 
-    // If we get a 401 and have a refresh token, try to refresh
-    if (response.status === 401 && this.refreshToken && !this.isRefreshing) {
+    // If we get a 401, try cookie/bearer refresh once before failing.
+    if (response.status === 401 && endpoint !== '/auth/refresh' && !this.isRefreshing) {
       try {
         const newAccessToken = await this.performTokenRefresh();
         
         // Retry the original request with the new token
-        headers['Authorization'] = `Bearer ${newAccessToken}`;
+        if (newAccessToken) {
+          headers['Authorization'] = `Bearer ${newAccessToken}`;
+        } else {
+          delete headers.Authorization;
+        }
         response = await fetch(url, {
           ...options,
           headers,
+          credentials: 'include',
         });
       } catch (refreshError) {
         console.error('Token refresh failed:', refreshError);
@@ -228,7 +240,7 @@ class ApiService {
     }
   }
 
-  private async performTokenRefresh(): Promise<string> {
+  private async performTokenRefresh(): Promise<string | null> {
     // If already refreshing, wait for the existing refresh
     if (this.isRefreshing && this.refreshPromise) {
       return this.refreshPromise;
@@ -246,17 +258,17 @@ class ApiService {
     }
   }
 
-  private async doTokenRefresh(): Promise<string> {
-    if (!this.refreshToken) {
-      throw new Error('No refresh token available');
-    }
-
+  private async doTokenRefresh(): Promise<string | null> {
     const response = await fetch(`${this.baseUrl}/auth/refresh`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ refresh_token: this.refreshToken }),
+      credentials: 'include',
+      body: JSON.stringify({
+        refresh_token: this.refreshToken || undefined,
+        cookie_session: true,
+      }),
     });
 
     if (!response.ok) {
@@ -265,12 +277,10 @@ class ApiService {
 
     const data: ApiResponse<RefreshTokenResponse> = await response.json();
     
-    // Update stored tokens
-    this.token = data.data.access_token;
-    this.refreshToken = data.data.refresh_token;
-    
-    localStorage.setItem('auth_token', this.token);
-    localStorage.setItem('refresh_token', this.refreshToken);
+    // Cookie sessions intentionally omit token material from the JSON body.
+    this.token = data.data.access_token || null;
+    this.refreshToken = data.data.refresh_token || null;
+    this.cookieSessionActive = true;
 
     return this.token;
   }
@@ -301,31 +311,27 @@ class ApiService {
   // Auth methods
   setTokens(accessToken: string, refreshToken?: string) {
     this.token = accessToken;
-    localStorage.setItem('auth_token', accessToken);
-    sessionStorage.setItem('auth_token', accessToken);
+    this.cookieSessionActive = true;
+    this.clearPersistedAuthTokens();
     
     if (refreshToken) {
       this.refreshToken = refreshToken;
-      localStorage.setItem('refresh_token', refreshToken);
-      sessionStorage.setItem('refresh_token', refreshToken);
     }
   }
 
   clearTokens() {
     this.token = null;
     this.refreshToken = null;
-    localStorage.removeItem('auth_token');
-    localStorage.removeItem('refresh_token');
-    sessionStorage.removeItem('auth_token');
-    sessionStorage.removeItem('refresh_token');
+    this.cookieSessionActive = false;
+    this.clearPersistedAuthTokens();
   }
 
   isAuthenticated(): boolean {
-    return !!this.token;
+    return this.cookieSessionActive || !!this.token;
   }
 
   hasRefreshToken(): boolean {
-    return !!this.refreshToken;
+    return this.cookieSessionActive || !!this.refreshToken;
   }
 
   // Get available auth collections
@@ -338,10 +344,17 @@ class ApiService {
     const response = await this.post<ApiResponse<AuthResponse>>(`/auth/${encodeURIComponent(collection)}/login`, {
       identifier,
       credential,
+      cookie_session: true,
     });
     
-    // Store the tokens automatically
-    this.setTokens(response.data.token, response.data.refresh_token || undefined);
+    if (response.data.token) {
+      this.setTokens(response.data.token, response.data.refresh_token || undefined);
+    } else {
+      this.token = null;
+      this.refreshToken = null;
+      this.cookieSessionActive = true;
+      this.clearPersistedAuthTokens();
+    }
     return response.data;
   }
 
@@ -355,10 +368,7 @@ class ApiService {
 
   async logout(): Promise<void> {
     try {
-      await this.post<void>(
-        '/auth/logout',
-        this.refreshToken ? { refresh_token: this.refreshToken } : undefined
-      );
+      await this.post<void>('/auth/logout');
     } finally {
       // Always clear tokens, even if logout request fails
       this.clearTokens();
@@ -368,7 +378,8 @@ class ApiService {
   async validateToken(): Promise<boolean> {
     try {
       if (!this.token) {
-        return false;
+        await this.getCurrentUser();
+        return true;
       }
       
       const response = await this.post<ApiResponse<TokenValidationResponse>>('/auth/validate', {
@@ -393,6 +404,7 @@ class ApiService {
       expires_at: number;
       custom_claims?: unknown;
     }>>('/auth/me');
+    this.cookieSessionActive = true;
     
     // Map the backend response to frontend User interface
     return {
@@ -406,10 +418,6 @@ class ApiService {
   // Manual token refresh (can be called by components)
   async refreshTokens(): Promise<boolean> {
     try {
-      if (!this.refreshToken) {
-        return false;
-      }
-      
       await this.performTokenRefresh();
       return true;
     } catch {
@@ -598,6 +606,23 @@ class ApiService {
     return response.data;
   }
 
+  async downloadBackup(options?: BackupQueryOptions): Promise<Blob> {
+    const response = await fetch(
+      `${this.baseUrl}/admin/backups/export/stream${this.buildBackupQuery(options)}`,
+      {
+        method: 'GET',
+        headers: this.token ? { 'Authorization': `Bearer ${this.token}` } : {},
+        credentials: 'include',
+      }
+    );
+
+    if (!response.ok) {
+      throw new Error(await this.fetchErrorMessage(response));
+    }
+
+    return response.blob();
+  }
+
   async restoreBackup(request: BackupRestoreRequest): Promise<BackupRestoreResponse> {
     const response = await this.post<ApiResponse<BackupRestoreResponse>>(
       '/admin/backups/restore',
@@ -752,6 +777,7 @@ class ApiService {
     const response = await fetch(`${this.baseUrl}/plugins/analyze`, {
       method: 'POST',
       headers: this.token ? { 'Authorization': `Bearer ${this.token}` } : {},
+      credentials: 'include',
       body: formData
     });
 
@@ -782,6 +808,7 @@ class ApiService {
     const response = await fetch(`${this.baseUrl}/plugins`, {
       method: 'POST',
       headers: this.token ? { 'Authorization': `Bearer ${this.token}` } : {},
+      credentials: 'include',
       body: formData
     });
 
@@ -852,6 +879,7 @@ class ApiService {
       };
 
       xhr.open('POST', `${this.baseUrl}/collections/${encodeURIComponent(collection)}/files`);
+      xhr.withCredentials = true;
       if (this.token) {
         xhr.setRequestHeader('Authorization', `Bearer ${this.token}`);
       }
@@ -867,6 +895,7 @@ class ApiService {
       `${this.baseUrl}/collections/${encodeURIComponent(collection)}/files/${encodeURIComponent(fileId)}`,
       {
         headers: this.token ? { 'Authorization': `Bearer ${this.token}` } : {},
+        credentials: 'include',
       }
     );
 

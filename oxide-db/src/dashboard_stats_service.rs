@@ -14,8 +14,7 @@ use tracing::{debug, warn};
 use crate::Db;
 use oxide_core::{
     ActivityEntry, ApiStats, AppError, AuthService, CollectionType, DashboardStats,
-    DashboardStatsService, EndpointStats, HealthStatus, SystemHealth, SystemStats, UserActivity,
-    UserStats,
+    DashboardStatsService, HealthStatus, SystemHealth, SystemStats, UserActivity, UserStats,
 };
 
 /// Dashboard statistics service that aggregates data from multiple sources
@@ -513,68 +512,19 @@ impl Default for LoggingStatsBridge {
 impl LoggingStatsProvider for LoggingStatsBridge {
     async fn get_api_stats(&self) -> Result<ApiStats, AppError> {
         if let Some(ref logging_service) = self.logging_service {
-            // Get real API statistics from logging data
+            // Logging exposes aggregate request-adjacent activity metrics. It
+            // does not currently expose per-route telemetry, so endpoint stats
+            // remain empty instead of synthesized.
             match logging_service.get_dashboard_metrics().await {
                 Ok(dashboard_metrics) => {
                     let log_metrics = &dashboard_metrics.log_metrics;
 
-                    // Calculate API stats from log data
-                    let total_requests_24h = log_metrics.total_entries;
-                    // For a more accurate calculation, we'd need to filter by HTTP request logs
-                    let requests_24h = total_requests_24h as u32;
-                    let requests_7d = (total_requests_24h as f64 * 7.0) as u32; // Estimate based on daily average
-
-                    // Calculate error rate from log levels
-                    let error_count = log_metrics
-                        .entries_by_level
-                        .get(&oxide_logging::models::LogLevel::Error)
-                        .unwrap_or(&0);
-                    let error_rate = if total_requests_24h > 0 {
-                        (*error_count as f64 / total_requests_24h as f64) * 100.0
-                    } else {
-                        0.0
-                    };
-
-                    // Generate realistic API endpoint stats from log data
-                    let top_endpoints = vec![
-                        EndpointStats {
-                            path: "/api/collections".to_string(),
-                            method: "GET".to_string(),
-                            request_count: (requests_24h / 4) as u64, // 25% of traffic
-                            avg_response_time_ms: 85.2,
-                        },
-                        EndpointStats {
-                            path: "/api/records".to_string(),
-                            method: "POST".to_string(),
-                            request_count: (requests_24h / 5) as u64, // 20% of traffic
-                            avg_response_time_ms: 234.1,
-                        },
-                        EndpointStats {
-                            path: "/api/auth/login".to_string(),
-                            method: "POST".to_string(),
-                            request_count: (requests_24h / 10) as u64, // 10% of traffic
-                            avg_response_time_ms: 432.8,
-                        },
-                        EndpointStats {
-                            path: "/api/records/{id}".to_string(),
-                            method: "GET".to_string(),
-                            request_count: (requests_24h / 8) as u64, // 12.5% of traffic
-                            avg_response_time_ms: 78.3,
-                        },
-                        EndpointStats {
-                            path: "/api/dashboard/stats".to_string(),
-                            method: "GET".to_string(),
-                            request_count: (requests_24h / 20) as u64, // 5% of traffic
-                            avg_response_time_ms: 156.7,
-                        },
-                    ];
-
                     Ok(ApiStats {
-                        requests_24h: requests_24h as u64,
-                        requests_7d: requests_7d as u64,
+                        requests_24h: log_metrics.entries_24h,
+                        requests_7d: (log_metrics.avg_entries_per_day * 7.0).round() as u64,
                         avg_response_time_ms: dashboard_metrics.health_indicators.avg_query_time_ms,
-                        error_rate_percent: error_rate,
-                        top_endpoints,
+                        error_rate_percent: log_metrics.error_rate_24h,
+                        top_endpoints: vec![],
                     })
                 }
                 Err(e) => {

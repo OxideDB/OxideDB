@@ -1,30 +1,8 @@
-import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import type { ReactNode } from 'react';
 import { apiService } from '../services/api';
+import { AuthContext, type AuthContextType } from './auth-context';
 import type { User } from '../types/api';
-
-interface AuthContextType {
-  user: User | null;
-  isAuthenticated: boolean;
-  isLoading: boolean;
-  hasRefreshToken: boolean;
-  authCollections: { name: string; identifier_field: string; registration_enabled: boolean; email_verification_required: boolean }[];
-  login: (collection: string, identifier: string, credential: string) => Promise<void>;
-  logout: () => Promise<void>;
-  refreshUser: () => Promise<void>;
-  refreshTokens: () => Promise<boolean>;
-  loadAuthCollections: () => Promise<void>;
-}
-
-const AuthContext = createContext<AuthContextType | undefined>(undefined);
-
-export const useAuth = () => {
-  const context = useContext(AuthContext);
-  if (context === undefined) {
-    throw new Error('useAuth must be used within an AuthProvider');
-  }
-  return context;
-};
 
 interface AuthProviderProps {
   children: ReactNode;
@@ -34,7 +12,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
   const [user, setUser] = useState<User | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [authCollections, setAuthCollections] = useState<{ name: string; identifier_field: string; registration_enabled: boolean; email_verification_required: boolean }[]>([]);
-  const [collectionsLoading, setCollectionsLoading] = useState(false);
+  const collectionsLoadingRef = useRef(false);
   const refreshIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
   const isAuthenticated = !!user && apiService.isAuthenticated();
@@ -68,9 +46,9 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
   // Load auth collections - memoized to prevent continuous re-renders
   const loadAuthCollections = useCallback(async () => {
     // Prevent multiple simultaneous calls
-    if (collectionsLoading) return;
+    if (collectionsLoadingRef.current) return;
     
-    setCollectionsLoading(true);
+    collectionsLoadingRef.current = true;
     try {
       const collectionsData = await apiService.getAuthCollections();
       setAuthCollections(collectionsData.collections);
@@ -78,9 +56,9 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
       console.error('Failed to load auth collections:', error);
       setAuthCollections([]);
     } finally {
-      setCollectionsLoading(false);
+      collectionsLoadingRef.current = false;
     }
-  }, [collectionsLoading]);
+  }, []);
 
   // Check if user is already authenticated on app start
   useEffect(() => {
@@ -89,36 +67,11 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
         // Load auth collections first
         await loadAuthCollections();
         
-        // Check if we have any token stored
-        if (apiService.isAuthenticated()) {
-          // Try to get user data directly first (this will trigger automatic refresh if needed)
-          try {
-            const userData = await apiService.getCurrentUser();
-            setUser(userData);
-          } catch (userError) {
-            console.error('Failed to get user data:', userError);
-            
-            // If getting user data failed, try refresh token if available
-            if (apiService.hasRefreshToken()) {
-              try {
-                const refreshSuccess = await apiService.refreshTokens();
-                if (refreshSuccess) {
-                  // Try getting user data again after refresh
-                  const userData = await apiService.getCurrentUser();
-                  setUser(userData);
-                } else {
-                  console.warn('Token refresh failed during initialization');
-                  apiService.clearTokens();
-                }
-              } catch (refreshError) {
-                console.error('Failed to refresh tokens on startup:', refreshError);
-                apiService.clearTokens();
-              }
-            } else {
-              console.warn('No refresh token available, clearing session');
-              apiService.clearTokens();
-            }
-          }
+        try {
+          const userData = await apiService.getCurrentUser();
+          setUser(userData);
+        } catch {
+          apiService.clearTokens();
         }
       } catch (error) {
         console.error('Auth initialization failed:', error);
@@ -130,7 +83,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     };
 
     initializeAuth();
-  }, []); // Remove loadAuthCollections from dependencies since it's called directly
+  }, [loadAuthCollections]);
 
   const login = async (collection: string, identifier: string, credential: string): Promise<void> => {
     const authResponse = await apiService.login(collection, identifier, credential);
@@ -164,10 +117,8 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
 
   const refreshUser = async (): Promise<void> => {
     try {
-      if (apiService.isAuthenticated()) {
-        const userData = await apiService.getCurrentUser();
-        setUser(userData);
-      }
+      const userData = await apiService.getCurrentUser();
+      setUser(userData);
     } catch (error) {
       console.error('Failed to refresh user:', error);
       setUser(null);

@@ -215,6 +215,50 @@ Before loading plugins in production:
 4. **Security Testing**: Test plugin behavior under various security scenarios
 5. **Trust Verification**: Verify plugin source and integrity
 
+### Plugin Package Signing
+
+Production deployments should require signed plugin ZIP packages and configure trusted Ed25519 public keys.
+
+Create a signed package with the CLI:
+
+```bash
+oxidedb plugins sign path/to/plugin.zip --key-file path/to/ed25519.key --output path/to/plugin-signed.zip
+```
+
+The signing key can also be supplied with `--private-key` or `OXIDEDB_PLUGIN_SIGNING_KEY`. Key material may be a 32-byte Ed25519 seed or 64-byte Ed25519 keypair encoded as base64 or hex, with optional `ed25519:`, `base64:`, or `hex:` prefixes.
+
+The command writes a detached `plugin.sig` entry into the output ZIP and prints the base64 Ed25519 public key. Configure that public key on servers:
+
+```bash
+OXIDEDB_PLUGIN_TRUSTED_KEYS="<base64-public-key>"
+# or
+OXIDEDB_PLUGIN_TRUSTED_KEYS_FILE=/etc/oxidedb/plugin-trusted-keys.txt
+```
+
+When `OXIDEDB_PLUGIN_REQUIRE_SIGNATURES=true`, unsigned packages and packages signed by untrusted keys are rejected. If a package contains signature data but no trusted keys are configured, verification fails closed.
+
+### Commercial License Verification
+
+Professional and Enterprise editions require a signed license document. The license key may be raw JSON or base64-encoded JSON with this shape:
+
+```json
+{
+  "algorithm": "ed25519",
+  "payload": "<base64-license-claims-json>",
+  "signature": "<base64-ed25519-signature>"
+}
+```
+
+The signed payload must include `edition` and `expires_at`, and may bind the license to an `installation_id`. Configure the trusted Ed25519 public key with:
+
+```bash
+OXIDEDB_LICENSE_PUBLIC_KEY="<base64-public-key>"
+# or
+OXIDEDB_LICENSE_PUBLIC_KEY_FILE=/etc/oxidedb/license-public-key.txt
+```
+
+Commercial license health checks fail closed when no trusted public key is configured, the signature is invalid, the license is expired, or the edition/installation claims do not match the configured instance.
+
 ## Integration with Existing Systems
 
 The security system integrates with OxideDB's existing permission system:

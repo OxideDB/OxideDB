@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { ChevronLeft, Save, Code, FileText, Plus, Settings } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -31,13 +31,7 @@ const EditRecord: React.FC = () => {
   // Field customization hook
   const fieldCustomization = useFieldCustomization(collection || '', schema);
 
-  useEffect(() => {
-    if (collection) {
-      fetchData();
-    }
-  }, [collection, recordId]);
-
-  const fetchData = async () => {
+  const fetchData = useCallback(async () => {
     if (!collection) return;
 
     try {
@@ -67,7 +61,13 @@ const EditRecord: React.FC = () => {
     } finally {
       setLoading(false);
     }
-  };
+  }, [collection, isCreateMode, recordId]);
+
+  useEffect(() => {
+    if (collection) {
+      fetchData();
+    }
+  }, [collection, fetchData]);
 
   const handleSchemaFormSave = async (data: Record<string, unknown>) => {
     if (!collection) return;

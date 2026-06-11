@@ -25,8 +25,13 @@ ts-rs = { version = "10.1", features = ["serde-compat"] }
 include_dir = "0.7"
 mime_guess = "2.0"
 async-trait = "0.1"
+async-stream = "0.3"
+bytes = "1"
 chrono = { version = "0.4", features = ["serde"] }
+futures-util = "0.3"
 uuid = { version = "1.0", features = ["v4", "serde"] }
 sha2 = "0.10"
 zip = "2.1"
 toml = "0.8"
+base64 = "0.21"
+ed25519-dalek = "2"

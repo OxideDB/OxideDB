@@ -5,12 +5,13 @@
 //! the server implementation for better maintainability.
 
 use axum::{
+    http::{header, HeaderName, HeaderValue, Method},
     routing::{delete, get, post},
     Router,
 };
 use std::path::PathBuf;
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use crate::{
     handlers::{
@@ -23,7 +24,7 @@ use crate::{
             get_current_user, list_auth_collections, login_collection, logout, refresh_token,
             register_collection, validate_token,
         },
-        backups::{export_backup, get_backup_manifest, restore_backup},
+        backups::{export_backup, export_backup_stream, get_backup_manifest, restore_backup},
         collections::{
             collection_schema, collection_stats, create_collection, delete_collection,
             list_collections, update_collection_schema,
@@ -95,7 +96,7 @@ impl Default for RouteConfig {
             enable_admin: true,
             admin_mode: AdminUiMode::Embedded,
             admin_path: "/admin".to_string(),
-            enable_cors: true,
+            enable_cors: false,
             enable_tracing: true,
         }
     }
@@ -130,7 +131,7 @@ impl RouteConfig {
             enable_admin: true,
             admin_mode: AdminUiMode::External(admin_path),
             admin_path: url_prefix,
-            enable_cors: true,
+            enable_cors: false,
             enable_tracing: true,
         }
     }
@@ -558,6 +559,13 @@ fn get_static_endpoints(config: &RouteConfig) -> Vec<RegisteredEndpoint> {
             "Export a JSON database snapshot",
         ),
         (
+            "GET",
+            "/admin/backups/export/stream",
+            "backups::export_backup_stream",
+            true,
+            "Stream a JSON database snapshot",
+        ),
+        (
             "POST",
             "/admin/backups/restore",
             "backups::restore_backup",
@@ -921,6 +929,13 @@ fn get_static_endpoints(config: &RouteConfig) -> Vec<RegisteredEndpoint> {
         ),
         (
             "GET",
+            "/collections/:collection/files/:file_id/metadata",
+            "vfs::get_file_metadata",
+            true,
+            "Get file metadata from collection",
+        ),
+        (
+            "GET",
             "/collections/:collection/files/:file_id",
             "vfs::download_file",
             true,
@@ -1139,6 +1154,7 @@ fn backup_routes() -> Router<AppState> {
     Router::new()
         .route("/admin/backups/manifest", get(get_backup_manifest))
         .route("/admin/backups/export", get(export_backup))
+        .route("/admin/backups/export/stream", get(export_backup_stream))
         .route("/admin/backups/restore", post(restore_backup))
 }
 
@@ -1268,6 +1284,10 @@ fn vfs_routes() -> Router<AppState> {
             axum::routing::get(vfs::download_file),
         )
         .route(
+            "/collections/:collection/files/:file_id/metadata",
+            axum::routing::get(vfs::get_file_metadata),
+        )
+        .route(
             "/collections/:collection/files/:file_id",
             axum::routing::delete(vfs::delete_file),
         )
@@ -1314,6 +1334,64 @@ fn admin_routes(mode: AdminUiMode, path_prefix: String) -> Router<AppState> {
     }
 }
 
+fn configured_cors_layer() -> CorsLayer {
+    CorsLayer::new()
+        .allow_origin(cors_allowed_origins())
+        .allow_methods([
+            Method::GET,
+            Method::POST,
+            Method::PUT,
+            Method::DELETE,
+            Method::OPTIONS,
+        ])
+        .allow_headers([
+            header::CONTENT_TYPE,
+            header::AUTHORIZATION,
+            header::ACCEPT,
+            HeaderName::from_static("x-api-key"),
+            HeaderName::from_static("x-requested-with"),
+        ])
+        .allow_credentials(true)
+}
+
+fn cors_allowed_origins() -> Vec<HeaderValue> {
+    let configured_origins = std::env::var("OXIDEDB_CORS_ALLOWED_ORIGINS")
+        .ok()
+        .map(|value| parse_cors_origins(&value))
+        .unwrap_or_default();
+
+    if !configured_origins.is_empty() {
+        return configured_origins;
+    }
+
+    warn!(
+        "CORS enabled without OXIDEDB_CORS_ALLOWED_ORIGINS; allowing localhost development origins only"
+    );
+    parse_cors_origins(
+        "http://localhost:5173,http://127.0.0.1:5173,http://localhost:3000,http://127.0.0.1:3000",
+    )
+}
+
+fn parse_cors_origins(value: &str) -> Vec<HeaderValue> {
+    value
+        .split(',')
+        .filter_map(|origin| {
+            let origin = origin.trim();
+            if origin.is_empty() {
+                return None;
+            }
+
+            match HeaderValue::from_str(origin) {
+                Ok(value) => Some(value),
+                Err(error) => {
+                    warn!("Ignoring invalid CORS origin '{}': {}", origin, error);
+                    None
+                }
+            }
+        })
+        .collect()
+}
+
 /// Build the unlayered route tree. Authenticated app builders must wrap this
 /// with the state-aware auth middleware before serving protected API routes.
 fn build_route_tree(config: RouteConfig) -> Router<AppState> {
@@ -1358,7 +1436,7 @@ pub fn build_router_with_config_and_middleware(config: RouteConfig, state: AppSt
     }
 
     if config.enable_cors {
-        router = router.layer(CorsLayer::permissive());
+        router = router.layer(configured_cors_layer());
     }
 
     router.with_state(state)

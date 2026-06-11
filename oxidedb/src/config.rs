@@ -351,6 +351,8 @@ pub enum Commands {
     RegisterSuperuser(RegisterSuperuserArgs),
     /// Manage plugins (list, install, enable, disable, uninstall)
     ManagePlugins(ManagePluginsArgs),
+    /// Issue signed commercial license documents
+    License(LicenseArgs),
 }
 
 #[derive(Parser)]
@@ -403,8 +405,8 @@ pub struct StartArgs {
     #[arg(long, default_value = "true")]
     pub enable_request_logging: bool,
 
-    /// Enable CORS (Cross-Origin Resource Sharing)
-    #[arg(long, default_value = "true")]
+    /// Enable CORS (Cross-Origin Resource Sharing). Set OXIDEDB_CORS_ALLOWED_ORIGINS to allow non-localhost origins.
+    #[arg(long, default_value = "false")]
     pub enable_cors: bool,
 
     /// Enable logging system
@@ -437,6 +439,63 @@ pub struct RegisterSuperuserArgs {
     /// Log level for the operation
     #[arg(long, value_enum, default_value = "info")]
     pub log_level: LogLevel,
+}
+
+/// License management command arguments
+#[derive(Parser)]
+pub struct LicenseArgs {
+    /// Log level for the operation
+    #[arg(long, value_enum, default_value = "info")]
+    pub log_level: LogLevel,
+
+    #[command(subcommand)]
+    pub command: LicenseSubcommands,
+}
+
+/// License management subcommands
+#[derive(Subcommand)]
+pub enum LicenseSubcommands {
+    /// Issue a signed commercial license document
+    Issue(IssueLicenseArgs),
+}
+
+/// Arguments for issuing a signed license
+#[derive(Parser)]
+pub struct IssueLicenseArgs {
+    /// Licensed edition
+    #[arg(long, value_enum)]
+    pub edition: LicenseEdition,
+
+    /// Installation ID this license is bound to
+    #[arg(long)]
+    pub installation_id: Option<String>,
+
+    /// License expiration as a Unix timestamp in seconds
+    #[arg(long)]
+    pub expires_at: i64,
+
+    /// Earliest valid time as a Unix timestamp in seconds
+    #[arg(long)]
+    pub not_before: Option<i64>,
+
+    /// Ed25519 private key material as base64, hex, or prefixed key text
+    #[arg(long)]
+    pub private_key: Option<String>,
+
+    /// File containing Ed25519 private key material
+    #[arg(long)]
+    pub key_file: Option<PathBuf>,
+
+    /// Write the license document to this file instead of stdout
+    #[arg(long)]
+    pub output: Option<PathBuf>,
+}
+
+/// Commercial editions that require signed licenses
+#[derive(Debug, Clone, ValueEnum)]
+pub enum LicenseEdition {
+    Professional,
+    Enterprise,
 }
 
 /// Plugin management command arguments
@@ -479,6 +538,8 @@ pub enum PluginSubcommands {
     Show(PluginNameArgs),
     /// Analyze a plugin package without installing
     Analyze(AnalyzePluginArgs),
+    /// Sign a plugin package with an Ed25519 private key
+    Sign(SignPluginArgs),
 }
 
 /// Arguments for plugin installation
@@ -515,6 +576,30 @@ pub struct AnalyzePluginArgs {
     /// Path to the plugin ZIP package
     #[arg(value_name = "PACKAGE_PATH")]
     pub package_path: PathBuf,
+}
+
+/// Arguments for plugin package signing
+#[derive(Parser)]
+pub struct SignPluginArgs {
+    /// Path to the plugin ZIP package
+    #[arg(value_name = "PACKAGE_PATH")]
+    pub package_path: PathBuf,
+
+    /// Signing private key material (32-byte seed or 64-byte keypair; base64 or hex)
+    #[arg(long)]
+    pub private_key: Option<String>,
+
+    /// File containing signing private key material
+    #[arg(long)]
+    pub key_file: Option<PathBuf>,
+
+    /// Output path for the signed package
+    #[arg(long)]
+    pub output: Option<PathBuf>,
+
+    /// Overwrite the output package if it already exists
+    #[arg(long)]
+    pub force: bool,
 }
 
 /// Plugin trust level for CLI

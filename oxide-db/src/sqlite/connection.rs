@@ -2,12 +2,15 @@
 
 use super::schema_adapter::{quote_identifier, SqliteSchemaAdapter};
 use crate::db::SchemaAdapter;
-use chrono::Utc;
-use oxide_core::{event::types::RecordId, AppError, AuthService, EventBus, FieldType};
+use chrono::{Datelike, TimeZone, Utc};
+use oxide_core::{
+    event::types::RecordId, AppError, AuthService, EventBus, FieldType, UserActivity, UserStats,
+};
 use rusqlite::Connection;
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 use tokio::task::spawn_blocking;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 /// SQLite implementation of the Db trait
@@ -20,6 +23,7 @@ pub struct SqliteDb {
     pub(super) event_bus: Arc<dyn EventBus>,
     pub(super) auth_service: Arc<AuthService>,
     pub(super) schema_adapter: SqliteSchemaAdapter,
+    database_path: String,
 }
 
 impl SqliteDb {
@@ -42,6 +46,7 @@ impl SqliteDb {
             event_bus,
             auth_service,
             schema_adapter: SqliteSchemaAdapter::new(),
+            database_path: database_path.to_string(),
         })
     }
 
@@ -580,13 +585,7 @@ impl SqliteDb {
         let storage_usage = self.get_storage_usage().await?;
         let recent_activity = self.get_recent_dashboard_activities(10).await?;
 
-        // Return empty stats until proper tracking systems are implemented
-        let user_stats = oxide_core::UserStats {
-            total_users: 0,
-            active_24h: 0,
-            active_7d: 0,
-            top_active_users: vec![],
-        };
+        let user_stats = self.get_user_statistics().await?;
 
         let api_stats = oxide_core::ApiStats {
             requests_24h: 0,
@@ -643,21 +642,225 @@ impl SqliteDb {
             }
         }
 
-        // Return empty trends until historical tracking is implemented
+        let month_start = current_month_start_timestamp();
+        let previous_month_start = previous_month_start_timestamp();
+        let collections_this_month = self.count_collections_created_since(month_start).await?;
+        let records_this_month = self.count_records_created_since(month_start).await?;
+        let records_previous_month = self
+            .count_records_created_between(previous_month_start, month_start)
+            .await?;
+        let records_growth_percent = growth_percent(records_this_month, records_previous_month);
+        let new_users_count = self.count_auth_records_created_since(month_start).await?;
+        let active_users = self
+            .count_active_dashboard_users(hours_ago_rfc3339(24))
+            .await?;
+
         let trends = oxide_core::GrowthTrends {
-            collections_this_month: 0,
-            records_growth_percent: 0.0,
-            new_users_count: 0,
+            collections_this_month: collections_this_month as i32,
+            records_growth_percent,
+            new_users_count: new_users_count as u32,
             api_growth_percent: 0.0,
         };
 
         Ok(oxide_core::SystemStats {
             total_collections,
             total_records,
-            active_users: 0,
+            active_users: active_users as u32,
             api_requests_24h: 0,
             trends,
         })
+    }
+
+    async fn get_user_statistics(&self) -> Result<UserStats, AppError> {
+        let auth_collections = self.list_auth_collections().await?;
+        let mut total_users = 0u64;
+
+        for collection in &auth_collections {
+            total_users += self.count_records(&collection.name).await.unwrap_or(0) as u64;
+        }
+
+        let active_24h = self
+            .count_active_dashboard_users(hours_ago_rfc3339(24))
+            .await?;
+        let active_7d = self
+            .count_active_dashboard_users(hours_ago_rfc3339(24 * 7))
+            .await?;
+        let top_active_users = self
+            .get_top_dashboard_users(hours_ago_rfc3339(24 * 7), 5)
+            .await?;
+
+        Ok(UserStats {
+            total_users: total_users as u32,
+            active_24h: active_24h as u32,
+            active_7d: active_7d as u32,
+            top_active_users,
+        })
+    }
+
+    async fn count_collections_created_since(&self, since: i64) -> Result<u64, AppError> {
+        let connection = Arc::clone(&self.connection);
+        spawn_blocking(move || {
+            let conn = connection
+                .lock()
+                .map_err(|e| AppError::internal(format!("Failed to lock connection: {}", e)))?;
+            let count = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM collections WHERE created_at >= ?1",
+                    [since],
+                    |row| row.get::<_, i64>(0),
+                )
+                .map_err(|e| AppError::database(format!("Failed to count collections: {}", e)))?;
+
+            Ok::<u64, AppError>(count as u64)
+        })
+        .await
+        .map_err(|e| AppError::internal(format!("Task join error: {}", e)))?
+    }
+
+    async fn count_auth_records_created_since(&self, since: i64) -> Result<u64, AppError> {
+        let auth_collections = self.list_auth_collections().await?;
+        let mut total = 0u64;
+
+        for collection in auth_collections {
+            total += self
+                .count_collection_records_created_between(&collection.name, since, None)
+                .await?;
+        }
+
+        Ok(total)
+    }
+
+    async fn count_records_created_since(&self, since: i64) -> Result<u64, AppError> {
+        let collections = self.list_collections().await?;
+        let mut total = 0u64;
+
+        for collection in collections {
+            total += self
+                .count_collection_records_created_between(&collection.name, since, None)
+                .await?;
+        }
+
+        Ok(total)
+    }
+
+    async fn count_records_created_between(&self, start: i64, end: i64) -> Result<u64, AppError> {
+        let collections = self.list_collections().await?;
+        let mut total = 0u64;
+
+        for collection in collections {
+            total += self
+                .count_collection_records_created_between(&collection.name, start, Some(end))
+                .await?;
+        }
+
+        Ok(total)
+    }
+
+    async fn count_collection_records_created_between(
+        &self,
+        collection: &str,
+        start: i64,
+        end: Option<i64>,
+    ) -> Result<u64, AppError> {
+        let connection = Arc::clone(&self.connection);
+        let table_name = self.schema_adapter.get_table_name(collection);
+
+        spawn_blocking(move || {
+            let conn = connection
+                .lock()
+                .map_err(|e| AppError::internal(format!("Failed to lock connection: {}", e)))?;
+            let sql = if end.is_some() {
+                format!(
+                    "SELECT COUNT(*) FROM {} WHERE created_at >= ?1 AND created_at < ?2",
+                    quote_identifier(&table_name)
+                )
+            } else {
+                format!(
+                    "SELECT COUNT(*) FROM {} WHERE created_at >= ?1",
+                    quote_identifier(&table_name)
+                )
+            };
+
+            let count = if let Some(end) = end {
+                conn.query_row(&sql, (start, end), |row| row.get::<_, i64>(0))
+            } else {
+                conn.query_row(&sql, [start], |row| row.get::<_, i64>(0))
+            }
+            .map_err(|e| AppError::database(format!("Failed to count records: {}", e)))?;
+
+            Ok::<u64, AppError>(count as u64)
+        })
+        .await
+        .map_err(|e| AppError::internal(format!("Task join error: {}", e)))?
+    }
+
+    async fn count_active_dashboard_users(&self, since: String) -> Result<u64, AppError> {
+        let connection = Arc::clone(&self.connection);
+
+        spawn_blocking(move || {
+            let conn = connection
+                .lock()
+                .map_err(|e| AppError::internal(format!("Failed to lock connection: {}", e)))?;
+            ensure_dashboard_activities_table(&conn)?;
+            let count = conn
+                .query_row(
+                    "SELECT COUNT(DISTINCT user_name)
+                     FROM dashboard_activities
+                     WHERE timestamp >= ?1 AND user_name != ''",
+                    [since],
+                    |row| row.get::<_, i64>(0),
+                )
+                .map_err(|e| {
+                    AppError::database(format!("Failed to count active dashboard users: {}", e))
+                })?;
+
+            Ok::<u64, AppError>(count as u64)
+        })
+        .await
+        .map_err(|e| AppError::internal(format!("Task join error: {}", e)))?
+    }
+
+    async fn get_top_dashboard_users(
+        &self,
+        since: String,
+        limit: usize,
+    ) -> Result<Vec<UserActivity>, AppError> {
+        let connection = Arc::clone(&self.connection);
+
+        spawn_blocking(move || {
+            let conn = connection
+                .lock()
+                .map_err(|e| AppError::internal(format!("Failed to lock connection: {}", e)))?;
+            ensure_dashboard_activities_table(&conn)?;
+
+            let mut stmt = conn
+                .prepare(
+                    "SELECT user_name, COUNT(*) AS action_count, MAX(timestamp) AS last_activity
+                     FROM dashboard_activities
+                     WHERE timestamp >= ?1 AND user_name != ''
+                     GROUP BY user_name
+                     ORDER BY action_count DESC, last_activity DESC
+                     LIMIT ?2",
+                )
+                .map_err(|e| AppError::database(format!("Failed to prepare statement: {}", e)))?;
+
+            let users = stmt
+                .query_map((since, limit as i64), |row| {
+                    let last_activity: String = row.get(2)?;
+                    Ok(UserActivity {
+                        username: row.get(0)?,
+                        action_count: row.get::<_, i64>(1)? as u32,
+                        last_activity,
+                    })
+                })
+                .map_err(|e| AppError::database(format!("Failed to query users: {}", e)))?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| AppError::database(format!("Failed to collect users: {}", e)))?;
+
+            Ok::<Vec<UserActivity>, AppError>(users)
+        })
+        .await
+        .map_err(|e| AppError::internal(format!("Task join error: {}", e)))?
     }
 
     /// Get statistics for all collections
@@ -743,6 +946,7 @@ impl SqliteDb {
         debug!("Collecting storage usage information");
 
         let connection = Arc::clone(&self.connection);
+        let database_path = self.database_path.clone();
 
         let database_size_bytes = spawn_blocking(move || {
             let conn = connection
@@ -767,12 +971,17 @@ impl SqliteDb {
         .await
         .map_err(|e| AppError::internal(format!("Task join error: {}", e)))??;
 
-        // Return only database size until proper filesystem tracking is implemented
-        let total_bytes = database_size_bytes; // Only count database size for now
-        let logs_size_bytes = 0; // No logs tracking yet
-        let vfs_size_bytes = 0; // No VFS tracking yet
+        let logs_size_bytes = 0;
+        let vfs_size_bytes = 0;
         let used_bytes = database_size_bytes;
-        let usage_percent = if total_bytes > 0 { 100.0 } else { 0.0 };
+        let total_bytes = database_storage_capacity_bytes(&database_path)
+            .await
+            .unwrap_or(database_size_bytes);
+        let usage_percent = if total_bytes > 0 {
+            (used_bytes as f64 / total_bytes as f64) * 100.0
+        } else {
+            0.0
+        };
 
         Ok(oxide_core::StorageUsage {
             used_bytes,
@@ -968,6 +1177,91 @@ impl SqliteDb {
         // Return empty activities if none exist in the database
 
         Ok(activities)
+    }
+}
+
+fn ensure_dashboard_activities_table(conn: &Connection) -> Result<(), AppError> {
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS dashboard_activities (
+            id TEXT PRIMARY KEY,
+            timestamp TEXT NOT NULL,
+            activity_type TEXT NOT NULL,
+            user_name TEXT NOT NULL,
+            description TEXT NOT NULL,
+            collection TEXT,
+            metadata TEXT
+        )",
+        [],
+    )
+    .map_err(|e| AppError::database(format!("Failed to create activities table: {}", e)))?;
+    Ok(())
+}
+
+async fn database_storage_capacity_bytes(database_path: &str) -> Option<u64> {
+    if database_path == ":memory:" {
+        return None;
+    }
+
+    let database_path = database_path.to_string();
+    spawn_blocking(move || {
+        let path = Path::new(&database_path);
+        let capacity_path = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+
+        match fs2::total_space(capacity_path) {
+            Ok(total) => Some(total),
+            Err(error) => {
+                warn!(
+                    "Failed to read filesystem capacity for '{}': {}",
+                    capacity_path.display(),
+                    error
+                );
+                None
+            }
+        }
+    })
+    .await
+    .ok()
+    .flatten()
+}
+
+fn hours_ago_rfc3339(hours: i64) -> String {
+    (Utc::now() - chrono::Duration::hours(hours)).to_rfc3339()
+}
+
+fn current_month_start_timestamp() -> i64 {
+    let now = Utc::now();
+    Utc.with_ymd_and_hms(now.year(), now.month(), 1, 0, 0, 0)
+        .single()
+        .map(|dt| dt.timestamp())
+        .unwrap_or_else(|| now.timestamp())
+}
+
+fn previous_month_start_timestamp() -> i64 {
+    let now = Utc::now();
+    let (year, month) = if now.month() == 1 {
+        (now.year() - 1, 12)
+    } else {
+        (now.year(), now.month() - 1)
+    };
+
+    Utc.with_ymd_and_hms(year, month, 1, 0, 0, 0)
+        .single()
+        .map(|dt| dt.timestamp())
+        .unwrap_or_else(|| now.timestamp())
+}
+
+fn growth_percent(current: u64, previous: u64) -> f64 {
+    if previous == 0 {
+        if current > 0 {
+            100.0
+        } else {
+            0.0
+        }
+    } else {
+        ((current as f64 - previous as f64) / previous as f64) * 100.0
     }
 }
 

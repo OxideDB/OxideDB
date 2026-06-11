@@ -184,14 +184,11 @@ const Backups: React.FC = () => {
   const downloadBackup = async () => {
     try {
       setExporting(true);
-      const snapshot = await apiService.exportBackup(backupOptions);
-      const blob = new Blob([JSON.stringify(snapshot, null, 2)], {
-        type: 'application/json',
-      });
+      const blob = await apiService.downloadBackup(backupOptions);
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = url;
-      link.download = backupFileName(snapshot.generated_at);
+      link.download = backupFileName(new Date().toISOString());
       document.body.appendChild(link);
       link.click();
       link.remove();
@@ -199,7 +196,9 @@ const Backups: React.FC = () => {
 
       toast({
         title: 'Backup exported',
-        description: `${snapshot.total_collections} collections and ${snapshot.total_records.toLocaleString()} records downloaded.`,
+        description: manifest
+          ? `${manifest.included_collections} collections and ${manifest.total_records.toLocaleString()} records downloaded.`
+          : `Backup downloaded (${formatSize(blob.size / 1024)}).`,
       });
     } catch (err) {
       toast({

@@ -48,7 +48,6 @@ pub struct ApiKeyRuleInfo {
     pub operation_type: ApiKeyOperationType,
     pub operation: String,
     pub rule: String,
-    pub exact_key: Option<String>,
     pub key_hash: Option<String>,
     pub key_preview: Option<String>,
     pub hashed: bool,
@@ -208,7 +207,7 @@ impl ApiKeyHandlers {
             .map(|rule| rule.collection.clone())
             .collect::<HashSet<_>>()
             .len();
-        let exact_key_rules = rules.iter().filter(|rule| rule.exact_key.is_some()).count();
+        let exact_key_rules = rules.iter().filter(|rule| rule.legacy_plaintext).count();
         let hashed_key_rules = rules.iter().filter(|rule| rule.hashed).count();
         let wildcard_key_rules = rules
             .len()
@@ -427,11 +426,11 @@ fn build_rule_info(
     operation: String,
     rule: String,
 ) -> ApiKeyRuleInfo {
-    let exact_key = extract_exact_key(&rule);
+    let legacy_plaintext_key = extract_exact_key(&rule);
     let key_hash = extract_key_hash(&rule);
     let hashed = key_hash.is_some();
-    let legacy_plaintext = exact_key.is_some();
-    let key_preview = exact_key
+    let legacy_plaintext = legacy_plaintext_key.is_some();
+    let key_preview = legacy_plaintext_key
         .as_deref()
         .map(mask_key)
         .or_else(|| key_hash.as_deref().map(mask_hash));
@@ -442,7 +441,6 @@ fn build_rule_info(
         operation_type,
         operation,
         rule,
-        exact_key,
         key_hash,
         key_preview,
         hashed,
@@ -570,7 +568,6 @@ mod tests {
 
         assert!(info.hashed);
         assert!(!info.legacy_plaintext);
-        assert!(info.exact_key.is_none());
         assert_eq!(info.key_hash.as_deref(), Some(key_hash.as_str()));
         assert!(!info.rule.contains(key));
     }
@@ -589,7 +586,7 @@ mod tests {
 
         assert!(!info.hashed);
         assert!(info.legacy_plaintext);
-        assert_eq!(info.exact_key.as_deref(), Some("legacy-secret"));
         assert!(info.key_hash.is_none());
+        assert_eq!(info.key_preview.as_deref(), Some("legacy...cret"));
     }
 }

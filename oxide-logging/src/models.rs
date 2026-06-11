@@ -432,6 +432,8 @@ pub struct LogFilter {
 pub struct LogMetrics {
     /// Total number of log entries
     pub total_entries: u64,
+    /// Number of log entries in the last 24 hours
+    pub entries_24h: u64,
     /// Number of entries by level
     pub entries_by_level: HashMap<LogLevel, u64>,
     /// Number of audit events by type

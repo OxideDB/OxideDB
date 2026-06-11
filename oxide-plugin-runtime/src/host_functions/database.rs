@@ -12,9 +12,13 @@ use oxide_core::auth::CrudOperation;
 use oxide_core::event::types::{RecordData, RecordId};
 use oxide_core::plugin_api::{host_functions, PluginError};
 use oxide_db::{db::ListParams, Db};
-use std::sync::{Arc, Mutex};
+use std::future::Future;
+use std::sync::{Arc, Mutex, OnceLock};
+use tokio::runtime::RuntimeFlavor;
 use tracing::{debug, error, info};
 use wasmtime::{Caller, Linker};
+
+static DATABASE_HOST_RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
 
 /// Define database-related host functions in the linker.
 ///
@@ -188,6 +192,29 @@ fn ensure_database_capability(
     false
 }
 
+fn run_database_operation<F, T>(operation: F) -> std::thread::Result<T>
+where
+    F: Future<Output = T> + Send + 'static,
+    T: Send + 'static,
+{
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) if handle.runtime_flavor() == RuntimeFlavor::MultiThread => {
+            Ok(tokio::task::block_in_place(|| handle.block_on(operation)))
+        }
+        _ => std::thread::spawn(move || database_host_runtime().block_on(operation)).join(),
+    }
+}
+
+fn database_host_runtime() -> &'static tokio::runtime::Runtime {
+    DATABASE_HOST_RUNTIME.get_or_init(|| {
+        tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .thread_name("oxide-plugin-db-host")
+            .build()
+            .expect("failed to initialize plugin database host runtime")
+    })
+}
+
 /// Handle create_record host function call.
 fn handle_create_record(
     caller: &mut Caller<'_, Arc<Mutex<HostState>>>,
@@ -258,24 +285,11 @@ fn handle_create_record(
         return -1;
     }
 
-    // Use the same pattern as read_records - spawn thread with new runtime
     let collection_clone = collection.clone();
-    let result = std::thread::spawn(move || {
-        // Try to get current runtime handle, or create a new one
-        match tokio::runtime::Handle::try_current() {
-            Ok(_handle) => {
-                // We have an active runtime, use it
-                let rt = tokio::runtime::Runtime::new().unwrap();
-                rt.block_on(async { db.create_record(&collection_clone, record_data).await })
-            }
-            Err(_) => {
-                // No active runtime, create a new one
-                let rt = tokio::runtime::Runtime::new().unwrap();
-                rt.block_on(async { db.create_record(&collection_clone, record_data).await })
-            }
-        }
-    })
-    .join();
+    let result =
+        run_database_operation(
+            async move { db.create_record(&collection_clone, record_data).await },
+        );
 
     // Mark that we're exiting the database operation
     {
@@ -387,24 +401,11 @@ fn handle_read_records(
         ListParams::default()
     };
 
-    // Use tokio::task::spawn_blocking with proper runtime coordination
     let collection_clone = collection.clone();
-    let result = std::thread::spawn(move || {
-        // Try to get current runtime handle, or create a new one
-        match tokio::runtime::Handle::try_current() {
-            Ok(_handle) => {
-                // We have an active runtime, use it
-                let rt = tokio::runtime::Runtime::new().unwrap();
-                rt.block_on(async { db.list_records(&collection_clone, list_params).await })
-            }
-            Err(_) => {
-                // No active runtime, create a new one
-                let rt = tokio::runtime::Runtime::new().unwrap();
-                rt.block_on(async { db.list_records(&collection_clone, list_params).await })
-            }
-        }
-    })
-    .join();
+    let result =
+        run_database_operation(
+            async move { db.list_records(&collection_clone, list_params).await },
+        );
 
     match result {
         Ok(Ok(records)) => {
@@ -540,39 +541,16 @@ fn handle_update_record(
         return -1;
     }
 
-    // Use the same pattern as read_records - spawn thread with new runtime
     let collection_clone = collection.clone();
     let record_id_clone = record_id.clone();
-    let result = std::thread::spawn(move || {
-        // Try to get current runtime handle, or create a new one
-        match tokio::runtime::Handle::try_current() {
-            Ok(_handle) => {
-                // We have an active runtime, use it
-                let rt = tokio::runtime::Runtime::new().unwrap();
-                rt.block_on(async {
-                    db.update_record(
-                        &collection_clone,
-                        &RecordId::from(record_id_clone),
-                        record_data,
-                    )
-                    .await
-                })
-            }
-            Err(_) => {
-                // No active runtime, create a new one
-                let rt = tokio::runtime::Runtime::new().unwrap();
-                rt.block_on(async {
-                    db.update_record(
-                        &collection_clone,
-                        &RecordId::from(record_id_clone),
-                        record_data,
-                    )
-                    .await
-                })
-            }
-        }
-    })
-    .join();
+    let result = run_database_operation(async move {
+        db.update_record(
+            &collection_clone,
+            &RecordId::from(record_id_clone),
+            record_data,
+        )
+        .await
+    });
 
     // Mark that we're exiting the database operation
     {
@@ -688,31 +666,12 @@ fn handle_delete_record(
         return -1;
     }
 
-    // Use the same pattern as read_records - spawn thread with new runtime
     let collection_clone = collection.clone();
     let record_id_clone = record_id.clone();
-    let result = std::thread::spawn(move || {
-        // Try to get current runtime handle, or create a new one
-        match tokio::runtime::Handle::try_current() {
-            Ok(_handle) => {
-                // We have an active runtime, use it
-                let rt = tokio::runtime::Runtime::new().unwrap();
-                rt.block_on(async {
-                    db.delete_record(&collection_clone, &RecordId::from(record_id_clone))
-                        .await
-                })
-            }
-            Err(_) => {
-                // No active runtime, create a new one
-                let rt = tokio::runtime::Runtime::new().unwrap();
-                rt.block_on(async {
-                    db.delete_record(&collection_clone, &RecordId::from(record_id_clone))
-                        .await
-                })
-            }
-        }
-    })
-    .join();
+    let result = run_database_operation(async move {
+        db.delete_record(&collection_clone, &RecordId::from(record_id_clone))
+            .await
+    });
 
     // Mark that we're exiting the database operation
     {

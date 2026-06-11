@@ -408,6 +408,56 @@ pub async fn download_file(
         .map_err(|e| ApiError::internal(format!("Failed to create response: {}", e)))
 }
 
+/// Get file metadata without downloading content
+pub async fn get_file_metadata(
+    State(state): State<AppState>,
+    _auth: AuthenticatedUser,
+    Path((collection, file_id)): Path<(String, String)>,
+) -> AppResult<impl IntoResponse> {
+    debug!(
+        "📁 File metadata request: {} from collection: {}",
+        file_id, collection
+    );
+
+    let vfs_service = state
+        .vfs_service
+        .as_ref()
+        .ok_or_else(|| ApiError::internal("VFS service not available".to_string()))?;
+
+    ensure_namespace_exists(vfs_service.as_ref(), &collection)
+        .await
+        .map_err(|e| {
+            error!(
+                "Failed to ensure VFS namespace exists for collection '{}': {:?}",
+                collection, e
+            );
+            ApiError::internal("Failed to access collection file storage".to_string())
+        })?;
+
+    let namespace = collection;
+    let read_request = FileReadRequest {
+        identifier: FileIdentifier::Id(file_id),
+        include_content: false,
+    };
+
+    let file_response = vfs_service
+        .read_file(&namespace, read_request)
+        .await
+        .map_err(|e| {
+            error!("Failed to read file metadata from VFS: {:?}", e);
+            match e {
+                VfsError::FileNotFound { .. } => ApiError::not_found("File not found".to_string()),
+                VfsError::AccessDenied { .. } => {
+                    ApiError::forbidden("Permission denied".to_string())
+                }
+                VfsError::IoError { .. } => ApiError::internal("Storage error".to_string()),
+                _ => ApiError::internal("File metadata lookup failed".to_string()),
+            }
+        })?;
+
+    Ok(ApiResponse::success(file_response.metadata))
+}
+
 /// List files in a collection's VFS namespace
 pub async fn list_files(
     State(state): State<AppState>,

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { Alert, AlertDescription } from '../components/ui/alert';
 import { Button } from '../components/ui/button';
 import PageTabs, { TabsTrigger, TabsContent } from '@/components/PageTabs';
@@ -19,6 +19,21 @@ import type {
   LogEntry, SecurityAuditEvent, DashboardMetrics, LogQueryParams, AuditQueryParams,
   RetentionStats, LoggingHealthResponse
 } from '../types/api';
+
+// Map frontend audit event types to backend format
+const mapAuditEventType = (frontendType: string): string => {
+  const mapping: Record<string, string> = {
+    'Authentication': 'authentication',
+    'Authorization': 'authorization',
+    'DataAccess': 'data_access',
+    'DataModification': 'data_modification',
+    'ConfigurationChange': 'configuration_change',
+    'SecurityViolation': 'security_violation',
+    'PluginEvent': 'plugin_event',
+    'SystemEvent': 'system_event'
+  };
+  return mapping[frontendType] || frontendType;
+};
 
 const Logs: React.FC = () => {
   // State for dashboard metrics
@@ -64,26 +79,98 @@ const Logs: React.FC = () => {
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedCorrelationId, setSelectedCorrelationId] = useState<string>('');
 
-  // Map frontend audit event types to backend format
-  const mapAuditEventType = (frontendType: string): string => {
-    const mapping: Record<string, string> = {
-      'Authentication': 'authentication',
-      'Authorization': 'authorization',
-      'DataAccess': 'data_access',
-      'DataModification': 'data_modification',
-      'ConfigurationChange': 'configuration_change',
-      'SecurityViolation': 'security_violation',
-      'PluginEvent': 'plugin_event',
-      'SystemEvent': 'system_event'
-    };
-    return mapping[frontendType] || frontendType;
-  };
+  const loadDashboardData = useCallback(async () => {
+    try {
+      setLoading(true);
+      const [metrics, retention, health] = await Promise.all([
+        apiService.getDashboardMetrics(),
+        apiService.getRetentionStats(),
+        apiService.getLoggingHealth()
+      ]);
+      setDashboardMetrics(metrics);
+      setRetentionStats(retention);
+      setLoggingHealth(health);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to load dashboard data');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  const loadRecentLogs = useCallback(async () => {
+    try {
+      const recent = await apiService.getRecentLogs(10);
+      setRecentLogs(recent);
+    } catch (err) {
+      console.error('Failed to load recent logs:', err);
+    }
+  }, []);
+
+  const loadRetentionStats = useCallback(async () => {
+    try {
+      setLoading(true);
+      const stats = await apiService.getRetentionStats();
+      setRetentionStats(stats);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to load retention stats');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  const loadLogs = useCallback(async () => {
+    try {
+      setLoading(true);
+      const filters = {
+        ...logFilters,
+        search: searchTerm || undefined,
+        offset: logsPagination.offset,
+        limit: logsPagination.limit
+      };
+      const response = await apiService.getLogs(filters);
+      setLogs(response.data);
+      setLogsPagination({
+        offset: response.pagination.offset,
+        limit: response.pagination.limit,
+        total: response.pagination.total || 0,
+        hasMore: response.pagination.has_more
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to load logs');
+    } finally {
+      setLoading(false);
+    }
+  }, [logFilters, logsPagination.limit, logsPagination.offset, searchTerm]);
+
+  const loadAuditEvents = useCallback(async () => {
+    try {
+      setLoading(true);
+      const filters = {
+        ...auditFilters,
+        event_type: auditFilters.event_type ? mapAuditEventType(auditFilters.event_type) : undefined,
+        offset: auditPagination.offset,
+        limit: auditPagination.limit
+      };
+      const response = await apiService.getAuditEvents(filters);
+      setAuditEvents(response.data);
+      setAuditPagination({
+        offset: response.pagination.offset,
+        limit: response.pagination.limit,
+        total: response.pagination.total || 0,
+        hasMore: response.pagination.has_more
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to load audit events');
+    } finally {
+      setLoading(false);
+    }
+  }, [auditFilters, auditPagination.limit, auditPagination.offset]);
 
   // Load initial data
   useEffect(() => {
     loadDashboardData();
     loadRecentLogs();
-  }, []);
+  }, [loadDashboardData, loadRecentLogs]);
 
   // Load data when tab changes
   useEffect(() => {
@@ -110,94 +197,17 @@ const Logs: React.FC = () => {
         }
         break;
     }
-  }, [activeTab]);
-
-  const loadDashboardData = async () => {
-    try {
-      setLoading(true);
-      const [metrics, retention, health] = await Promise.all([
-        apiService.getDashboardMetrics(),
-        apiService.getRetentionStats(),
-        apiService.getLoggingHealth()
-      ]);
-      setDashboardMetrics(metrics);
-      setRetentionStats(retention);
-      setLoggingHealth(health);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load dashboard data');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const loadRecentLogs = async () => {
-    try {
-      const recent = await apiService.getRecentLogs(10);
-      setRecentLogs(recent);
-    } catch (err) {
-      console.error('Failed to load recent logs:', err);
-    }
-  };
-
-  const loadRetentionStats = async () => {
-    try {
-      setLoading(true);
-      const stats = await apiService.getRetentionStats();
-      setRetentionStats(stats);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load retention stats');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const loadLogs = async () => {
-    try {
-      setLoading(true);
-      const filters = {
-        ...logFilters,
-        search: searchTerm || undefined,
-        offset: logsPagination.offset,
-        limit: logsPagination.limit
-      };
-      const response = await apiService.getLogs(filters);
-      setLogs(response.data);
-      setLogsPagination({
-        offset: response.pagination.offset,
-        limit: response.pagination.limit,
-        total: response.pagination.total || 0,
-        hasMore: response.pagination.has_more
-      });
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load logs');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const loadAuditEvents = async () => {
-    try {
-      setLoading(true);
-      const filters = {
-        ...auditFilters,
-        event_type: auditFilters.event_type ? mapAuditEventType(auditFilters.event_type) : undefined,
-        offset: auditPagination.offset,
-        limit: auditPagination.limit
-      };
-      const response = await apiService.getAuditEvents(filters);
-      setAuditEvents(response.data);
-      setAuditPagination({
-        offset: response.pagination.offset,
-        limit: response.pagination.limit,
-        total: response.pagination.total || 0,
-        hasMore: response.pagination.has_more
-      });
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load audit events');
-    } finally {
-      setLoading(false);
-    }
-  };
+  }, [
+    activeTab,
+    auditEvents.length,
+    loadAuditEvents,
+    loadDashboardData,
+    loadLogs,
+    loadRecentLogs,
+    loadRetentionStats,
+    logs.length,
+    retentionStats,
+  ]);
 
   const searchByCorrelation = async () => {
     if (!selectedCorrelationId.trim()) return;
@@ -300,13 +310,13 @@ const Logs: React.FC = () => {
     if (activeTab === 'logs' && !selectedCorrelationId) {
       loadLogs();
     }
-  }, [logsPagination.offset, logsPagination.limit]);
+  }, [activeTab, loadLogs, logsPagination.offset, logsPagination.limit, selectedCorrelationId]);
 
   useEffect(() => {
     if (activeTab === 'audit') {
       loadAuditEvents();
     }
-  }, [auditPagination.offset, auditPagination.limit]);
+  }, [activeTab, auditPagination.offset, auditPagination.limit, loadAuditEvents]);
 
   if (error && activeTab === 'dashboard') {
     return (

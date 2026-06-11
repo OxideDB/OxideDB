@@ -4,7 +4,13 @@ use axum::{
     extract::{Multipart, State},
     Json,
 };
+use base64::{
+    engine::general_purpose::{STANDARD, URL_SAFE, URL_SAFE_NO_PAD},
+    Engine as _,
+};
+use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use std::collections::HashMap;
+use std::convert::TryInto;
 use std::io::{Cursor, Read};
 use std::path::{Component, Path, PathBuf};
 use tracing::{debug, error, info, warn};
@@ -19,6 +25,10 @@ use super::{
 };
 use crate::{errors::ApiError, responses::ApiResponse, server::AppState};
 use oxide_core::plugin_security::{PluginCapability, PluginTrustLevel, ResourceLimits};
+
+const TRUSTED_PLUGIN_KEYS_ENV: &str = "OXIDEDB_PLUGIN_TRUSTED_KEYS";
+const TRUSTED_PLUGIN_KEYS_FILE_ENV: &str = "OXIDEDB_PLUGIN_TRUSTED_KEYS_FILE";
+const SIGNATURE_PAYLOAD_MAGIC: &[u8] = b"OxideDB plugin package signature v1\n";
 
 /// Register/Install a new plugin from a ZIP package
 pub async fn register_plugin(
@@ -407,7 +417,7 @@ pub fn extract_plugin_package(package_data: &[u8]) -> Result<PluginPackage, ApiE
         .ok_or_else(|| ApiError::bad_request("Missing plugin.toml manifest file".to_string()))?;
 
     // Parse manifest
-    let manifest_str = String::from_utf8(manifest_data)
+    let manifest_str = String::from_utf8(manifest_data.clone())
         .map_err(|e| ApiError::bad_request(format!("Invalid UTF-8 in plugin.toml: {}", e)))?;
 
     let manifest: PluginManifest = toml::from_str(&manifest_str)
@@ -425,6 +435,8 @@ pub fn extract_plugin_package(package_data: &[u8]) -> Result<PluginPackage, ApiE
             manifest.plugin.wasm_file, available_wasm_files
         ))
     })?;
+    let signature_payload =
+        build_signature_payload(&manifest_data, declared_wasm_name.as_bytes(), &wasm_data);
 
     // Validate plugin name format
     if !is_valid_plugin_name(&manifest.plugin.name) {
@@ -453,10 +465,32 @@ pub fn extract_plugin_package(package_data: &[u8]) -> Result<PluginPackage, ApiE
         manifest,
         wasm_data,
         signature_data,
+        signature_payload,
         package_hash,
         package_size: package_data.len() as u64,
         extraction_path: temp_dir,
     })
+}
+
+fn build_signature_payload(manifest_data: &[u8], wasm_path: &[u8], wasm_data: &[u8]) -> Vec<u8> {
+    let mut payload = Vec::with_capacity(
+        SIGNATURE_PAYLOAD_MAGIC.len()
+            + std::mem::size_of::<u64>() * 3
+            + manifest_data.len()
+            + wasm_path.len()
+            + wasm_data.len(),
+    );
+
+    payload.extend_from_slice(SIGNATURE_PAYLOAD_MAGIC);
+    append_len_prefixed_bytes(&mut payload, manifest_data);
+    append_len_prefixed_bytes(&mut payload, wasm_path);
+    append_len_prefixed_bytes(&mut payload, wasm_data);
+    payload
+}
+
+fn append_len_prefixed_bytes(payload: &mut Vec<u8>, bytes: &[u8]) {
+    payload.extend_from_slice(&(bytes.len() as u64).to_be_bytes());
+    payload.extend_from_slice(bytes);
 }
 
 fn sanitize_zip_entry_path(file_name: &str) -> Result<Option<PathBuf>, ApiError> {
@@ -506,7 +540,7 @@ fn normalized_relative_path(path: &Path) -> String {
 /// Verify digital signature of the plugin package
 pub async fn verify_plugin_signature(package: &PluginPackage) -> Result<bool, ApiError> {
     // If no signature present, return false (unsigned)
-    let _signature_data = match &package.signature_data {
+    let signature_data = match &package.signature_data {
         Some(data) => data,
         None => {
             debug!(
@@ -517,12 +551,198 @@ pub async fn verify_plugin_signature(package: &PluginPackage) -> Result<bool, Ap
         }
     };
 
-    warn!(
-        "Digital signature present but no trusted verification backend is configured for plugin: {}",
-        package.manifest.plugin.name
-    );
+    let trusted_keys = load_trusted_plugin_keys()?;
+    if trusted_keys.is_empty() {
+        warn!(
+            "Digital signature present but no trusted Ed25519 public keys are configured for plugin: {}",
+            package.manifest.plugin.name
+        );
+        return Ok(false);
+    }
 
-    Ok(false)
+    let signature = decode_plugin_signature(signature_data)?;
+    let verified = verify_detached_ed25519_signature(package, &signature, &trusted_keys);
+
+    if verified {
+        info!(
+            "Verified Ed25519 package signature for plugin '{}'",
+            package.manifest.plugin.name
+        );
+    } else {
+        warn!(
+            "Plugin package signature did not match any configured trusted key: {}",
+            package.manifest.plugin.name
+        );
+    }
+
+    Ok(verified)
+}
+
+struct TrustedPluginKey {
+    verifying_key: VerifyingKey,
+}
+
+impl TrustedPluginKey {
+    fn new(verifying_key: VerifyingKey) -> Self {
+        Self { verifying_key }
+    }
+}
+
+fn load_trusted_plugin_keys() -> Result<Vec<TrustedPluginKey>, ApiError> {
+    let mut key_material = Vec::new();
+
+    if let Ok(value) = std::env::var(TRUSTED_PLUGIN_KEYS_ENV) {
+        key_material.extend(split_trusted_key_material(&value));
+    }
+
+    if let Ok(path) = std::env::var(TRUSTED_PLUGIN_KEYS_FILE_ENV) {
+        let contents = std::fs::read_to_string(&path).map_err(|e| {
+            ApiError::internal(format!(
+                "Failed to read trusted plugin key file '{}': {}",
+                path, e
+            ))
+        })?;
+        key_material.extend(split_trusted_key_material(&contents));
+    }
+
+    let mut trusted_keys = Vec::new();
+    for material in key_material {
+        let key_bytes = decode_key_material(&material)
+            .map_err(|e| ApiError::internal(format!("Invalid trusted plugin public key: {}", e)))?;
+        let key_bytes: [u8; 32] = key_bytes.try_into().map_err(|bytes: Vec<u8>| {
+            ApiError::internal(format!(
+                "Invalid trusted plugin public key length: expected 32 bytes, got {}",
+                bytes.len()
+            ))
+        })?;
+        let verifying_key = VerifyingKey::from_bytes(&key_bytes)
+            .map_err(|e| ApiError::internal(format!("Invalid trusted plugin public key: {}", e)))?;
+        trusted_keys.push(TrustedPluginKey::new(verifying_key));
+    }
+
+    Ok(trusted_keys)
+}
+
+fn split_trusted_key_material(value: &str) -> Vec<String> {
+    value
+        .split(['\n', '\r', ',', ';'])
+        .map(str::trim)
+        .filter(|part| !part.is_empty() && !part.starts_with('#'))
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
+fn verify_detached_ed25519_signature(
+    package: &PluginPackage,
+    signature_bytes: &[u8; 64],
+    trusted_keys: &[TrustedPluginKey],
+) -> bool {
+    let signature = Signature::from_bytes(signature_bytes);
+
+    trusted_keys.iter().any(|key| {
+        key.verifying_key
+            .verify(&package.signature_payload, &signature)
+            .is_ok()
+    })
+}
+
+fn decode_plugin_signature(signature_data: &[u8]) -> Result<[u8; 64], ApiError> {
+    if signature_data.len() == 64 {
+        return signature_data
+            .try_into()
+            .map_err(|_| ApiError::bad_request("Invalid Ed25519 signature length".to_string()));
+    }
+
+    let signature_text = std::str::from_utf8(signature_data).map_err(|_| {
+        ApiError::bad_request(
+            "Plugin signature must be raw Ed25519 bytes or UTF-8 encoded key material".to_string(),
+        )
+    })?;
+    let signature_material = extract_signature_material(signature_text)?;
+    let signature_bytes = decode_key_material(&signature_material)
+        .map_err(|e| ApiError::bad_request(format!("Invalid plugin signature encoding: {}", e)))?;
+
+    signature_bytes.try_into().map_err(|bytes: Vec<u8>| {
+        ApiError::bad_request(format!(
+            "Invalid Ed25519 signature length: expected 64 bytes, got {}",
+            bytes.len()
+        ))
+    })
+}
+
+fn extract_signature_material(signature_text: &str) -> Result<String, ApiError> {
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(signature_text) {
+        if let Some(signature) = value.get("signature").and_then(|value| value.as_str()) {
+            return Ok(signature.trim().to_string());
+        }
+    }
+
+    for line in signature_text.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+
+        if let Some((name, value)) = trimmed.split_once('=') {
+            let name = name.trim().to_ascii_lowercase();
+            if matches!(name.as_str(), "signature" | "sig" | "ed25519") {
+                return Ok(value.trim().to_string());
+            }
+        } else {
+            return Ok(trimmed.to_string());
+        }
+    }
+
+    Err(ApiError::bad_request(
+        "Plugin signature file does not contain signature material".to_string(),
+    ))
+}
+
+fn decode_key_material(material: &str) -> Result<Vec<u8>, String> {
+    let mut material = material.trim().trim_matches('"').trim_matches('\'');
+
+    for prefix in ["ed25519:", "base64:", "hex:"] {
+        if let Some(stripped) = material.strip_prefix(prefix) {
+            material = stripped.trim();
+            break;
+        }
+    }
+
+    if material.len().is_multiple_of(2) && material.chars().all(|ch| ch.is_ascii_hexdigit()) {
+        return decode_hex_material(material);
+    }
+
+    STANDARD
+        .decode(material)
+        .or_else(|_| URL_SAFE.decode(material))
+        .or_else(|_| URL_SAFE_NO_PAD.decode(material))
+        .map_err(|e| e.to_string())
+}
+
+fn decode_hex_material(material: &str) -> Result<Vec<u8>, String> {
+    let mut bytes = Vec::with_capacity(material.len() / 2);
+    let mut chars = material.as_bytes().chunks_exact(2);
+
+    for pair in &mut chars {
+        let high = hex_value(pair[0])?;
+        let low = hex_value(pair[1])?;
+        bytes.push((high << 4) | low);
+    }
+
+    if !chars.remainder().is_empty() {
+        return Err("hex input must contain an even number of digits".to_string());
+    }
+
+    Ok(bytes)
+}
+
+fn hex_value(byte: u8) -> Result<u8, String> {
+    match byte {
+        b'0'..=b'9' => Ok(byte - b'0'),
+        b'a'..=b'f' => Ok(byte - b'a' + 10),
+        b'A'..=b'F' => Ok(byte - b'A' + 10),
+        _ => Err("hex input contains a non-hex digit".to_string()),
+    }
 }
 
 fn enforce_plugin_signature_policy(
@@ -576,6 +796,7 @@ fn is_valid_version(version: &str) -> bool {
 mod tests {
     use super::*;
     use axum::http::StatusCode;
+    use ed25519_dalek::{Signer, SigningKey};
 
     #[test]
     fn signature_policy_fails_closed_when_required() {
@@ -588,5 +809,87 @@ mod tests {
     fn signature_policy_allows_verified_or_optional_signatures() {
         assert!(enforce_plugin_signature_policy("plugin", true, true).is_ok());
         assert!(enforce_plugin_signature_policy("plugin", false, false).is_ok());
+    }
+
+    fn test_plugin_package() -> PluginPackage {
+        let manifest_data = br#"
+[plugin]
+name = "signed_plugin"
+version = "1.0.0"
+description = "Test plugin"
+author = "Test Author"
+build_timestamp = "2026-01-01T00:00:00Z"
+wasm_file = "plugin.wasm"
+
+[security]
+required_capabilities = ["LogInfo"]
+recommended_trust_level = "Untrusted"
+"#;
+        let wasm_data = b"\0asmtest plugin bytes".to_vec();
+
+        PluginPackage {
+            manifest: PluginManifest {
+                plugin: PluginMetadata {
+                    name: "signed_plugin".to_string(),
+                    version: "1.0.0".to_string(),
+                    description: "Test plugin".to_string(),
+                    author: "Test Author".to_string(),
+                    homepage: None,
+                    license: None,
+                    min_oxide_version: None,
+                    keywords: None,
+                    categories: None,
+                    changelog: None,
+                    build_timestamp: "2026-01-01T00:00:00Z".to_string(),
+                    wasm_file: "plugin.wasm".to_string(),
+                },
+                security: PluginSecurity {
+                    required_capabilities: vec!["LogInfo".to_string()],
+                    recommended_trust_level: "Untrusted".to_string(),
+                    signature: None,
+                    certificate_chain: None,
+                    security_contact: None,
+                    security_advisories: None,
+                    audit_info: None,
+                },
+                dependencies: None,
+                config: None,
+            },
+            wasm_data: wasm_data.clone(),
+            signature_data: None,
+            signature_payload: build_signature_payload(manifest_data, b"plugin.wasm", &wasm_data),
+            package_hash: "hash".to_string(),
+            package_size: 128,
+            extraction_path: PathBuf::from("test"),
+        }
+    }
+
+    #[test]
+    fn ed25519_signature_verifies_against_trusted_key() {
+        let package = test_plugin_package();
+        let signing_key = SigningKey::from_bytes(&[7; 32]);
+        let signature = signing_key.sign(&package.signature_payload);
+        let trusted_key = TrustedPluginKey::new(signing_key.verifying_key());
+
+        assert!(verify_detached_ed25519_signature(
+            &package,
+            &signature.to_bytes(),
+            &[trusted_key]
+        ));
+    }
+
+    #[test]
+    fn ed25519_signature_rejects_tampered_payload() {
+        let mut package = test_plugin_package();
+        let signing_key = SigningKey::from_bytes(&[7; 32]);
+        let signature = signing_key.sign(&package.signature_payload);
+        package.signature_payload.push(b'!');
+        let trusted_key = TrustedPluginKey::new(signing_key.verifying_key());
+
+        assert!(!verify_detached_ed25519_signature(
+            &package,
+            &signature.to_bytes(),
+            &[trusted_key]
+        ));
     }
 }

@@ -326,9 +326,10 @@ impl LogApiService {
     /// Get logging metrics for dashboard
     pub async fn get_dashboard_metrics(&self) -> LoggingResult<DashboardMetrics> {
         let log_metrics = self.log_service.get_metrics().await?;
+        let current_error_rate = log_metrics.error_rate_24h;
+        let ingestion_rate = log_metrics.entries_24h as f64 / (24.0 * 60.0);
+        let active_users = log_metrics.top_users.len() as u64;
 
-        // For now, return basic metrics
-        // In a full implementation, you would calculate trends and detailed statistics
         Ok(DashboardMetrics {
             log_metrics,
             error_trends: Vec::new(),
@@ -336,11 +337,11 @@ impl LogApiService {
             user_activity: Vec::new(),
             collection_stats: Vec::new(),
             health_indicators: HealthIndicators {
-                current_error_rate: 0.0,
-                ingestion_rate: 0.0,
+                current_error_rate,
+                ingestion_rate,
                 storage_utilization: 0.0,
                 avg_query_time_ms: 0.0,
-                active_users: 0,
+                active_users,
             },
         })
     }

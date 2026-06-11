@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { ArrowLeft, Save, Database, Settings, Shield, ChevronDown, ChevronRight } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -43,6 +43,7 @@ const EditCollection: React.FC = () => {
   
   // Use the field management hook
   const fieldManagement = useFieldManagement();
+  const { setFieldsFromSchema } = fieldManagement;
   
   // Auth collection configuration
   const [authConfig, setAuthConfig] = useState<AuthCollectionConfig>({
@@ -56,30 +57,16 @@ const EditCollection: React.FC = () => {
   });
   const [newClaimField, setNewClaimField] = useState('');
 
-  useEffect(() => {
-    if (collection) {
-      fetchSchema();
-    }
-    loadCollections();
-  }, [collection]);
-
-  // Auto-expand auth configuration for auth collections
-  useEffect(() => {
-    if (schema?.collection_type === 'auth' && !showAdvanced) {
-      setShowAdvanced(true);
-    }
-  }, [schema?.collection_type]);
-
-  const loadCollections = async () => {
+  const loadCollections = useCallback(async () => {
     try {
       const collections = await apiService.getCollections();
       setCollections(collections);
     } catch (err) {
       console.error('Failed to load collections:', err);
     }
-  };
+  }, []);
 
-  const fetchSchema = async () => {
+  const fetchSchema = useCallback(async () => {
     if (!collection) return;
 
     try {
@@ -91,7 +78,7 @@ const EditCollection: React.FC = () => {
       const formFields = convertSchemaFieldsToFormData(schemaData.fields);
       
       // Initialize field management with existing fields
-      fieldManagement.setFieldsFromSchema(formFields);
+      setFieldsFromSchema(formFields);
       
       // Extract auth config if this is an auth collection
       const schemaWithAuthConfig = schemaData as CollectionSchemaWithAuthConfig;
@@ -112,7 +99,21 @@ const EditCollection: React.FC = () => {
     } finally {
       setLoading(false);
     }
-  };
+  }, [collection, setFieldsFromSchema]);
+
+  useEffect(() => {
+    if (collection) {
+      fetchSchema();
+    }
+    loadCollections();
+  }, [collection, fetchSchema, loadCollections]);
+
+  // Auto-expand auth configuration for auth collections
+  useEffect(() => {
+    if (schema?.collection_type === 'auth' && !showAdvanced) {
+      setShowAdvanced(true);
+    }
+  }, [schema?.collection_type, showAdvanced]);
 
   // Auth config helper functions
   const addCustomClaimField = () => {

@@ -5,14 +5,19 @@
 //! SQLite and future database backends.
 
 use axum::{
+    body::Body,
     extract::{Query, State},
-    Json,
+    http::{header, HeaderMap, HeaderValue, StatusCode},
+    response::Response,
+    BoxError, Json,
 };
+use bytes::Bytes;
+use futures_util::TryStreamExt;
 use oxide_core::{AppError, CollectionSchema, CollectionType};
 use oxide_db::{db::ListParams, Db, Record};
 use serde::{Deserialize, Serialize};
 use std::{collections::HashSet, sync::Arc};
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use crate::{
     errors::ApiError, extractors::AuthenticatedUser, responses::ApiResponse, server::AppState,
@@ -20,12 +25,16 @@ use crate::{
 
 const BACKUP_FORMAT_VERSION: u32 = 1;
 const EXPORT_PAGE_SIZE: usize = 500;
+const DEFAULT_EXPORT_RECORD_LIMIT: usize = 100_000;
+const EXPORT_RECORD_LIMIT_ENV: &str = "OXIDEDB_BACKUP_MAX_EXPORT_RECORDS";
+const STREAM_EXPORT_FILE_PREFIX: &str = "oxidedb-backup";
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct BackupQuery {
     #[serde(default)]
     pub include_system: bool,
     pub collections: Option<String>,
+    pub max_records: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -109,6 +118,13 @@ pub struct BackupRestoreResponse {
     pub warnings: Vec<String>,
 }
 
+struct BackupExportPlan {
+    generated_at: String,
+    include_system: bool,
+    collections: Vec<(CollectionSchema, usize)>,
+    total_records: usize,
+}
+
 pub struct BackupHandlers;
 
 impl BackupHandlers {
@@ -172,19 +188,14 @@ impl BackupHandlers {
     ) -> Result<BackupExportResponse, ApiError> {
         debug!("Exporting backup snapshot");
 
-        let selected_collections = parse_collection_filter(&query.collections);
-        let mut schemas = db.list_collections().await?;
-        schemas.sort_by(|a, b| a.name.cmp(&b.name));
+        let plan = build_backup_export_plan(Arc::clone(&db), query).await?;
 
-        let mut collections = Vec::new();
+        let mut collections = Vec::with_capacity(plan.collections.len());
         let mut total_records = 0;
 
-        for schema in schemas {
-            if !should_include_collection(&schema, query.include_system, &selected_collections) {
-                continue;
-            }
-
-            let records = export_collection_records(Arc::clone(&db), &schema.name).await?;
+        for (schema, record_count) in plan.collections {
+            let records =
+                export_collection_records(Arc::clone(&db), &schema.name, record_count).await?;
             total_records += records.len();
             collections.push(BackupCollectionExport {
                 schema,
@@ -201,8 +212,8 @@ impl BackupHandlers {
 
         Ok(BackupExportResponse {
             format_version: BACKUP_FORMAT_VERSION,
-            generated_at: chrono::Utc::now().to_rfc3339(),
-            include_system: query.include_system,
+            generated_at: plan.generated_at,
+            include_system: plan.include_system,
             total_collections: collections.len(),
             total_records,
             collections,
@@ -448,6 +459,38 @@ pub async fn export_backup(
     Ok(Json(ApiResponse::success(response)))
 }
 
+pub async fn export_backup_stream(
+    authenticated_user: AuthenticatedUser,
+    State(state): State<AppState>,
+    Query(query): Query<BackupQuery>,
+) -> Result<Response<Body>, ApiError> {
+    ensure_superuser(&authenticated_user, "stream export backups")?;
+
+    let plan = build_backup_export_plan(Arc::clone(&state.db), query).await?;
+    let filename = backup_stream_filename(&plan.generated_at);
+    let body = stream_backup_json_body(state.db, plan);
+
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/json; charset=utf-8"),
+    );
+    headers.insert(
+        header::CONTENT_DISPOSITION,
+        HeaderValue::from_str(&format!("attachment; filename=\"{}\"", filename))
+            .map_err(|e| ApiError::internal(format!("Invalid backup filename header: {}", e)))?,
+    );
+
+    Response::builder()
+        .status(StatusCode::OK)
+        .body(body)
+        .map(|mut response| {
+            *response.headers_mut() = headers;
+            response
+        })
+        .map_err(|e| ApiError::internal(format!("Failed to build backup stream response: {}", e)))
+}
+
 pub async fn restore_backup(
     authenticated_user: AuthenticatedUser,
     State(state): State<AppState>,
@@ -459,11 +502,139 @@ pub async fn restore_backup(
     Ok(Json(ApiResponse::success(response)))
 }
 
+async fn build_backup_export_plan(
+    db: Arc<dyn Db>,
+    query: BackupQuery,
+) -> Result<BackupExportPlan, ApiError> {
+    let selected_collections = parse_collection_filter(&query.collections);
+    let mut schemas = db.list_collections().await?;
+    schemas.sort_by(|a, b| a.name.cmp(&b.name));
+
+    let record_limit = backup_export_record_limit(query.max_records);
+    let mut collections = Vec::new();
+    let mut total_records = 0usize;
+
+    for schema in schemas {
+        if !should_include_collection(&schema, query.include_system, &selected_collections) {
+            continue;
+        }
+
+        let record_count = db.count_records(&schema.name).await?;
+        total_records = total_records.checked_add(record_count).ok_or_else(|| {
+            ApiError::bad_request("Backup export record count overflowed".to_string())
+        })?;
+        ensure_export_record_limit(record_limit, total_records, &schema.name)?;
+        collections.push((schema, record_count));
+    }
+
+    Ok(BackupExportPlan {
+        generated_at: chrono::Utc::now().to_rfc3339(),
+        include_system: query.include_system,
+        collections,
+        total_records,
+    })
+}
+
+fn stream_backup_json_body(db: Arc<dyn Db>, plan: BackupExportPlan) -> Body {
+    let stream = async_stream::try_stream! {
+        let mut header = serde_json::to_vec(&serde_json::json!({
+            "format_version": BACKUP_FORMAT_VERSION,
+            "generated_at": plan.generated_at,
+            "include_system": plan.include_system,
+            "total_collections": plan.collections.len(),
+            "total_records": plan.total_records,
+        }))
+        .map_err(|e| ApiError::internal(format!("Failed to encode backup stream header: {}", e)))?;
+        match header.pop() {
+            Some(b'}') => {}
+            _ => Err(ApiError::internal("Failed to prepare backup stream header".to_string()))?,
+        }
+        header.extend_from_slice(b",\"collections\":[");
+        yield Bytes::from(header);
+
+        for (collection_index, (schema, expected_records)) in plan.collections.into_iter().enumerate() {
+            if collection_index > 0 {
+                yield Bytes::from_static(b",");
+            }
+
+            let collection_name = schema.name.clone();
+            yield Bytes::from_static(b"{\"schema\":");
+            yield backup_json_chunk(&schema)?;
+            yield Bytes::from_static(b",\"records\":[");
+
+            let mut offset = 0usize;
+            let mut records_written = 0usize;
+            let mut first_record = true;
+
+            loop {
+                let batch = db
+                    .list_records(
+                        &collection_name,
+                        ListParams {
+                            limit: Some(EXPORT_PAGE_SIZE),
+                            offset: Some(offset),
+                            ..Default::default()
+                        },
+                    )
+                    .await?;
+
+                let batch_len = batch.len();
+                if records_written.saturating_add(batch_len) > expected_records {
+                    Err::<(), ApiError>(ApiError::bad_request(format!(
+                        "Collection '{}' changed during backup export; retry the export",
+                        collection_name
+                    )))?;
+                }
+
+                for record in batch {
+                    if !first_record {
+                        yield Bytes::from_static(b",");
+                    }
+                    first_record = false;
+                    yield backup_json_chunk(&record)?;
+                    records_written += 1;
+                }
+
+                if batch_len < EXPORT_PAGE_SIZE {
+                    break;
+                }
+
+                offset += EXPORT_PAGE_SIZE;
+            }
+
+            yield Bytes::from_static(b"],\"record_count\":");
+            yield Bytes::from(records_written.to_string());
+            yield Bytes::from_static(b"}");
+        }
+
+        yield Bytes::from_static(b"]}");
+    };
+
+    Body::from_stream(stream.map_err(|error: ApiError| -> BoxError { Box::new(error) }))
+}
+
+fn backup_json_chunk<T: Serialize>(value: &T) -> Result<Bytes, ApiError> {
+    serde_json::to_vec(value)
+        .map(Bytes::from)
+        .map_err(|e| ApiError::internal(format!("Failed to encode backup stream: {}", e)))
+}
+
+fn backup_stream_filename(generated_at: &str) -> String {
+    let stamp = generated_at
+        .chars()
+        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '-' })
+        .collect::<String>()
+        .trim_matches('-')
+        .to_string();
+    format!("{}-{}.json", STREAM_EXPORT_FILE_PREFIX, stamp)
+}
+
 async fn export_collection_records(
     db: Arc<dyn Db>,
     collection: &str,
+    expected_records: usize,
 ) -> Result<Vec<Record>, ApiError> {
-    let mut records = Vec::new();
+    let mut records = Vec::with_capacity(expected_records);
     let mut offset = 0;
 
     loop {
@@ -479,6 +650,13 @@ async fn export_collection_records(
             .await?;
 
         let batch_len = batch.len();
+        if records.len().saturating_add(batch_len) > expected_records {
+            return Err(ApiError::bad_request(format!(
+                "Collection '{}' changed during backup export; retry the export",
+                collection
+            )));
+        }
+
         records.extend(batch);
 
         if batch_len < EXPORT_PAGE_SIZE {
@@ -489,6 +667,53 @@ async fn export_collection_records(
     }
 
     Ok(records)
+}
+
+fn backup_export_record_limit(query_limit: Option<usize>) -> Option<usize> {
+    let server_limit = match std::env::var(EXPORT_RECORD_LIMIT_ENV) {
+        Ok(value) => {
+            let trimmed = value.trim();
+            if trimmed == "0" || trimmed.eq_ignore_ascii_case("none") {
+                None
+            } else {
+                match trimmed.parse::<usize>() {
+                    Ok(limit) => Some(limit),
+                    Err(error) => {
+                        warn!(
+                            "Ignoring invalid {} value '{}': {}",
+                            EXPORT_RECORD_LIMIT_ENV, value, error
+                        );
+                        Some(DEFAULT_EXPORT_RECORD_LIMIT)
+                    }
+                }
+            }
+        }
+        Err(_) => Some(DEFAULT_EXPORT_RECORD_LIMIT),
+    };
+
+    match (server_limit, query_limit) {
+        (Some(server_limit), Some(query_limit)) => Some(server_limit.min(query_limit)),
+        (Some(server_limit), None) => Some(server_limit),
+        (None, Some(query_limit)) => Some(query_limit),
+        (None, None) => None,
+    }
+}
+
+fn ensure_export_record_limit(
+    record_limit: Option<usize>,
+    planned_records: usize,
+    collection_name: &str,
+) -> Result<(), ApiError> {
+    if let Some(record_limit) = record_limit {
+        if planned_records > record_limit {
+            return Err(ApiError::bad_request(format!(
+                "Backup export would include more than {} records after collection '{}'. Narrow the collection filter or raise {}.",
+                record_limit, collection_name, EXPORT_RECORD_LIMIT_ENV
+            )));
+        }
+    }
+
+    Ok(())
 }
 
 fn ensure_superuser(authenticated_user: &AuthenticatedUser, action: &str) -> Result<(), ApiError> {
@@ -629,6 +854,7 @@ mod tests {
             BackupQuery {
                 include_system: false,
                 collections: Some("articles".to_string()),
+                max_records: None,
             },
         )
         .await
@@ -672,5 +898,31 @@ mod tests {
         assert_eq!(restored.created_at, original.created_at);
         assert_eq!(restored.updated_at, original.updated_at);
         assert_eq!(restored.data, original.data);
+    }
+
+    #[tokio::test]
+    async fn export_rejects_snapshots_above_requested_record_limit() {
+        let db = test_db();
+        db.initialize().await.unwrap();
+
+        let mut schema = CollectionSchema::new("articles".to_string(), CollectionType::Base);
+        schema.add_field("title".to_string(), FieldDefinition::new(FieldType::Text));
+        db.create_collection(schema).await.unwrap();
+        db.create_record("articles", serde_json::json!({ "title": "One" }))
+            .await
+            .unwrap();
+
+        let error = BackupHandlers::export(
+            Arc::clone(&db),
+            BackupQuery {
+                include_system: false,
+                collections: Some("articles".to_string()),
+                max_records: Some(0),
+            },
+        )
+        .await
+        .unwrap_err();
+
+        assert!(error.to_string().contains("Backup export would include"));
     }
 }
