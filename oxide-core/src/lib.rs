@@ -82,9 +82,10 @@ pub use site_settings::{
     SystemInfoSettings, SystemInfoUpdateRequest, UpdateSiteSettingsRequest,
 };
 pub use vfs::{
-    FileId, FileIdentifier, FileListRequest, FileListResponse, FileMetadata, FileReadRequest,
-    FileReadResponse, FileWriteRequest, NoOpVfs, VfsBackupConfig, VfsError, VfsNamespace,
-    VfsNamespaceConfig, VfsPath, VfsResult, VfsServiceBridge, VfsUsageStats, VirtualFileSystem,
+    FileId, FileIdentifier, FileListRequest, FileListResponse, FileMetadata, FileMoveRequest,
+    FileReadRequest, FileReadResponse, FileWriteRequest, NoOpVfs, VfsBackupConfig, VfsError,
+    VfsNamespace, VfsNamespaceConfig, VfsPath, VfsResult, VfsServiceBridge, VfsUsageStats,
+    VirtualFileSystem,
 };
 
 // Re-export the main hook registration function

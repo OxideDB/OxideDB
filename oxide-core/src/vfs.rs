@@ -166,6 +166,17 @@ pub struct FileWriteRequest {
     pub overwrite: bool,
 }
 
+/// Request to move or rename an existing file without rewriting its content
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileMoveRequest {
+    /// Existing file identifier, either by path or file ID
+    pub identifier: FileIdentifier,
+    /// New virtual path for the file
+    pub new_path: VfsPath,
+    /// Whether to replace an existing file at the destination path
+    pub overwrite: bool,
+}
+
 /// Request to read a file
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileReadRequest {
@@ -253,6 +264,13 @@ pub trait VirtualFileSystem: Send + Sync {
         request: FileWriteRequest,
     ) -> VfsResult<FileMetadata>;
 
+    /// Move or rename a file within a namespace
+    async fn move_file(
+        &self,
+        namespace: &VfsNamespace,
+        request: FileMoveRequest,
+    ) -> VfsResult<FileMetadata>;
+
     /// Read a file from the VFS
     async fn read_file(
         &self,
@@ -319,6 +337,16 @@ impl VirtualFileSystem for NoOpVfs {
         &self,
         _namespace: &VfsNamespace,
         _request: FileWriteRequest,
+    ) -> VfsResult<FileMetadata> {
+        Err(VfsError::IoError {
+            message: "VFS not enabled".to_string(),
+        })
+    }
+
+    async fn move_file(
+        &self,
+        _namespace: &VfsNamespace,
+        _request: FileMoveRequest,
     ) -> VfsResult<FileMetadata> {
         Err(VfsError::IoError {
             message: "VFS not enabled".to_string(),

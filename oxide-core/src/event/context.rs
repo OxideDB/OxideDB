@@ -296,6 +296,44 @@ impl BeforeEventContext {
             should_persist: false,
         }
     }
+
+    /// Create a new VFS file move context
+    pub fn new_vfs_move(
+        namespace: String,
+        file_id: String,
+        old_path: String,
+        new_path: String,
+        overwrite: bool,
+    ) -> Self {
+        let file_data = serde_json::json!({
+            "file_id": file_id,
+            "old_path": old_path.clone(),
+            "new_path": new_path.clone(),
+            "overwrite": overwrite
+        });
+
+        Self {
+            event_id: Uuid::new_v4().to_string(),
+            timestamp: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64,
+            priority: EventPriority::Normal,
+            collection: format!("vfs:{}", namespace),
+            data: file_data,
+            metadata: serde_json::json!({
+                "namespace": namespace,
+                "operation": "move"
+            }),
+            record_id: Some(file_id),
+            old_data: Some(serde_json::json!({
+                "path": old_path
+            })),
+            request_context: RequestContext::anonymous(),
+            tags: HashMap::new(),
+            should_persist: false,
+        }
+    }
 }
 
 /// After event context for read-only event notifications
@@ -434,6 +472,16 @@ pub enum AfterEventContext {
         content_hash: String,
         request_context: RequestContext,
     },
+    FileMoved {
+        event_id: String,
+        timestamp: u64,
+        namespace: String,
+        file_id: String,
+        old_path: String,
+        new_path: String,
+        overwritten_file_id: Option<String>,
+        request_context: RequestContext,
+    },
     FileRead {
         event_id: String,
         timestamp: u64,
@@ -484,6 +532,7 @@ impl AfterEventContext {
             AfterEventContext::PluginError { event_id, .. } => event_id,
             AfterEventContext::ApiRequestProcessed { event_id, .. } => event_id,
             AfterEventContext::FileWritten { event_id, .. } => event_id,
+            AfterEventContext::FileMoved { event_id, .. } => event_id,
             AfterEventContext::FileRead { event_id, .. } => event_id,
             AfterEventContext::FileDeleted { event_id, .. } => event_id,
             AfterEventContext::ErrorOccurred { event_id, .. } => event_id,
@@ -511,6 +560,7 @@ impl AfterEventContext {
             AfterEventContext::PluginError { timestamp, .. } => *timestamp,
             AfterEventContext::ApiRequestProcessed { timestamp, .. } => *timestamp,
             AfterEventContext::FileWritten { timestamp, .. } => *timestamp,
+            AfterEventContext::FileMoved { timestamp, .. } => *timestamp,
             AfterEventContext::FileRead { timestamp, .. } => *timestamp,
             AfterEventContext::FileDeleted { timestamp, .. } => *timestamp,
             AfterEventContext::ErrorOccurred { timestamp, .. } => *timestamp,
@@ -630,6 +680,30 @@ impl AfterEventContext {
             size,
             mime_type,
             content_hash,
+            request_context,
+        }
+    }
+
+    /// Create a new FileMoved event
+    pub fn file_moved(
+        namespace: String,
+        file_id: String,
+        old_path: String,
+        new_path: String,
+        overwritten_file_id: Option<String>,
+        request_context: RequestContext,
+    ) -> Self {
+        AfterEventContext::FileMoved {
+            event_id: Uuid::new_v4().to_string(),
+            timestamp: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64,
+            namespace,
+            file_id,
+            old_path,
+            new_path,
+            overwritten_file_id,
             request_context,
         }
     }

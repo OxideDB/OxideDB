@@ -5,7 +5,7 @@ import type {
   LogQueryParams, AuditQueryParams, LogResponse, LogEntry, SecurityAuditEvent,
   DashboardMetrics, RetentionStats, CreateLogRequest, CreateAuditRequest,
   CreateLogResponse, LoggingHealthResponse,
-  DashboardStats, SystemStats, FileMetadata, FileListRequest,
+  DashboardStats, SystemStats, FileMetadata, FileListRequest, FileMoveRequest,
   FileListResponse, VfsUsageStats,
   SiteSettings, SiteSettingsResponse, UpdateSiteSettingsRequest, SettingsHealthStatus,
   ApiKeyRulesResponse, UpsertApiKeyRuleRequest, UpsertApiKeyRuleResponse,
@@ -300,6 +300,13 @@ class ApiService {
   async put<T>(endpoint: string, data?: unknown): Promise<T> {
     return this.request<T>(endpoint, {
       method: 'PUT',
+      body: data ? JSON.stringify(data) : undefined,
+    });
+  }
+
+  async patch<T>(endpoint: string, data?: unknown): Promise<T> {
+    return this.request<T>(endpoint, {
+      method: 'PATCH',
       body: data ? JSON.stringify(data) : undefined,
     });
   }
@@ -935,6 +942,17 @@ class ApiService {
    */
   async deleteFile(collection: string, fileId: string): Promise<void> {
     await this.delete(`/collections/${encodeURIComponent(collection)}/files/${encodeURIComponent(fileId)}`);
+  }
+
+  /**
+   * Move or rename a file within a collection
+   */
+  async moveFile(collection: string, fileId: string, request: FileMoveRequest): Promise<FileMetadata> {
+    const response = await this.patch<ApiResponse<FileMetadata>>(
+      `/collections/${encodeURIComponent(collection)}/files/${encodeURIComponent(fileId)}`,
+      request
+    );
+    return response.data;
   }
 
   /**

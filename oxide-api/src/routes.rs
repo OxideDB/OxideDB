@@ -6,7 +6,7 @@
 
 use axum::{
     http::{header, HeaderName, HeaderValue, Method},
-    routing::{delete, get, post},
+    routing::{delete, get, patch, post},
     Router,
 };
 use std::path::PathBuf;
@@ -942,6 +942,13 @@ fn get_static_endpoints(config: &RouteConfig) -> Vec<RegisteredEndpoint> {
             "Download file from collection",
         ),
         (
+            "PATCH",
+            "/collections/:collection/files/:file_id",
+            "vfs::move_file",
+            true,
+            "Move or rename file in collection",
+        ),
+        (
             "DELETE",
             "/collections/:collection/files/:file_id",
             "vfs::delete_file",
@@ -1282,6 +1289,10 @@ fn vfs_routes() -> Router<AppState> {
         .route(
             "/collections/:collection/files/:file_id",
             axum::routing::get(vfs::download_file),
+        )
+        .route(
+            "/collections/:collection/files/:file_id",
+            patch(vfs::move_file),
         )
         .route(
             "/collections/:collection/files/:file_id/metadata",

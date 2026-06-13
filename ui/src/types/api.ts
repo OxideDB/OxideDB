@@ -751,6 +751,11 @@ export interface FileWriteRequest {
   overwrite: boolean;
 }
 
+export interface FileMoveRequest {
+  path: string;
+  overwrite?: boolean;
+}
+
 export interface FileReadResponse {
   metadata: FileMetadata;
   content?: ArrayBuffer;

@@ -319,6 +319,67 @@ impl FileSystemStorage {
         Ok(())
     }
 
+    /// Move or rename a file by updating metadata indexes without rewriting content.
+    pub async fn move_file(
+        &self,
+        namespace: &VfsNamespace,
+        identifier: &FileIdentifier,
+        new_path: String,
+        overwrite: bool,
+    ) -> VfsResult<(FileMetadata, Option<FileMetadata>)> {
+        let mut metadata = self
+            .metadata_store
+            .get_metadata(namespace, identifier)
+            .await?;
+
+        if metadata.path == new_path {
+            return Ok((metadata, None));
+        }
+
+        let destination = match self
+            .metadata_store
+            .get_metadata(namespace, &FileIdentifier::Path(new_path.clone()))
+            .await
+        {
+            Ok(existing) if existing.id == metadata.id => return Ok((metadata, None)),
+            Ok(existing) if overwrite => Some(existing),
+            Ok(_) => {
+                return Err(VfsError::FileAlreadyExists { path: new_path });
+            }
+            Err(VfsError::FileNotFound { .. }) => None,
+            Err(e) => return Err(e),
+        };
+
+        if let Some(existing) = &destination {
+            self.metadata_store
+                .delete_metadata(namespace, &FileIdentifier::Id(existing.id.clone()))
+                .await?;
+            self.remove_content_if_unreferenced(&existing.content_hash)
+                .await?;
+        }
+
+        metadata.name = Path::new(&new_path)
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
+        metadata.path = new_path;
+        metadata.modified_at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        self.metadata_store
+            .store_metadata(namespace, &metadata)
+            .await?;
+
+        debug!(
+            "Moved file {} to {} in namespace {}",
+            metadata.id, metadata.path, namespace
+        );
+        Ok((metadata, destination))
+    }
+
     /// List files in a namespace with optional filtering (now powered by LMDB)
     #[allow(clippy::too_many_arguments)]
     #[instrument(skip(self))]

@@ -27,6 +27,7 @@ pub enum BeforeEventType {
     UserAuth,
     ApiRequest,
     FileWrite,
+    FileMove,
     FileRead,
     FileDelete,
 }
@@ -45,6 +46,7 @@ impl BeforeEventType {
             BeforeEventType::UserAuth => "BeforeUserAuth",
             BeforeEventType::ApiRequest => "BeforeApiRequest",
             BeforeEventType::FileWrite => "BeforeFileWrite",
+            BeforeEventType::FileMove => "BeforeFileMove",
             BeforeEventType::FileRead => "BeforeFileRead",
             BeforeEventType::FileDelete => "BeforeFileDelete",
         }
@@ -133,6 +135,14 @@ impl BeforeEventType {
                 is_system_critical: false,
                 recommended_timeout_ms: 2000,
             },
+            BeforeEventType::FileMove => EventTypeMetadata {
+                name: self.name(),
+                description: "Fired before a file is moved within VFS, can prevent the move",
+                category: EventCategory::DataOperation,
+                can_modify_data: false,
+                is_system_critical: false,
+                recommended_timeout_ms: 1000,
+            },
             BeforeEventType::FileRead => EventTypeMetadata {
                 name: self.name(),
                 description: "Fired before a file is read from VFS, can filter access",
@@ -165,6 +175,7 @@ impl BeforeEventType {
             BeforeEventType::UserAuth,
             BeforeEventType::ApiRequest,
             BeforeEventType::FileWrite,
+            BeforeEventType::FileMove,
             BeforeEventType::FileRead,
             BeforeEventType::FileDelete,
         ]
@@ -192,6 +203,7 @@ pub enum AfterEventType {
     PluginError,
     ApiRequestProcessed,
     FileWritten,
+    FileMoved,
     FileRead,
     FileDeleted,
     ErrorOccurred,
@@ -219,6 +231,7 @@ impl AfterEventType {
             AfterEventType::PluginError => "OnPluginError",
             AfterEventType::ApiRequestProcessed => "AfterApiRequest",
             AfterEventType::FileWritten => "AfterFileWrite",
+            AfterEventType::FileMoved => "AfterFileMove",
             AfterEventType::FileRead => "AfterFileRead",
             AfterEventType::FileDeleted => "AfterFileDelete",
             AfterEventType::ErrorOccurred => "OnError",
@@ -372,6 +385,14 @@ impl AfterEventType {
                 is_system_critical: false,
                 recommended_timeout_ms: 1000,
             },
+            AfterEventType::FileMoved => EventTypeMetadata {
+                name: self.name(),
+                description: "Fired after a file is successfully moved within VFS",
+                category: EventCategory::DataOperation,
+                can_modify_data: false,
+                is_system_critical: false,
+                recommended_timeout_ms: 1000,
+            },
             AfterEventType::FileRead => EventTypeMetadata {
                 name: self.name(),
                 description: "Fired after a file is successfully read from VFS",
@@ -420,6 +441,7 @@ impl AfterEventType {
             AfterEventType::PluginError,
             AfterEventType::ApiRequestProcessed,
             AfterEventType::FileWritten,
+            AfterEventType::FileMoved,
             AfterEventType::FileRead,
             AfterEventType::FileDeleted,
             AfterEventType::ErrorOccurred,

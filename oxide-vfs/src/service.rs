@@ -10,9 +10,9 @@ use crate::utils::{detect_mime_type, generate_file_id, normalize_path, validate_
 use oxide_core::event::RequestContext;
 use oxide_core::{
     AfterEventContext, AfterEventType, BeforeEventContext, BeforeEventType, EventBus,
-    FileIdentifier, FileListRequest, FileListResponse, FileMetadata, FileReadRequest,
-    FileReadResponse, FileWriteRequest, VfsError, VfsNamespace, VfsNamespaceConfig, VfsResult,
-    VfsUsageStats, VirtualFileSystem,
+    FileIdentifier, FileListRequest, FileListResponse, FileMetadata, FileMoveRequest,
+    FileReadRequest, FileReadResponse, FileWriteRequest, VfsError, VfsNamespace,
+    VfsNamespaceConfig, VfsResult, VfsUsageStats, VirtualFileSystem,
 };
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -26,6 +26,7 @@ use tracing::{debug, error, info, instrument, warn};
 pub struct VfsMetrics {
     pub total_reads: u64,
     pub total_writes: u64,
+    pub total_moves: u64,
     pub total_deletes: u64,
     pub bytes_written: u64,
     pub bytes_read: u64,
@@ -422,6 +423,117 @@ impl VirtualFileSystem for VfsService {
             stored_metadata.id, stored_metadata.path
         );
         Ok(stored_metadata)
+    }
+
+    #[instrument(skip(self), fields(identifier = ?request.identifier, new_path = %request.new_path))]
+    async fn move_file(
+        &self,
+        namespace: &VfsNamespace,
+        request: FileMoveRequest,
+    ) -> VfsResult<FileMetadata> {
+        let identifier = self.normalize_identifier(request.identifier)?;
+        let new_path = self.normalize_file_path(&request.new_path)?;
+        let overwrite = request.overwrite;
+
+        let source_metadata = self
+            .storage
+            .get_file_metadata(namespace, &identifier)
+            .await?;
+
+        if source_metadata.path == new_path {
+            return Ok(source_metadata);
+        }
+
+        let destination_metadata = match self
+            .storage
+            .get_file_metadata(namespace, &FileIdentifier::Path(new_path.clone()))
+            .await
+        {
+            Ok(existing) if existing.id == source_metadata.id => return Ok(source_metadata),
+            Ok(existing) if overwrite => Some(existing),
+            Ok(_) => {
+                return Err(VfsError::FileAlreadyExists { path: new_path });
+            }
+            Err(VfsError::FileNotFound { .. }) => None,
+            Err(e) => return Err(e),
+        };
+
+        let mut before_context = BeforeEventContext::new_vfs_move(
+            namespace.clone(),
+            source_metadata.id.clone(),
+            source_metadata.path.clone(),
+            new_path.clone(),
+            overwrite,
+        );
+
+        if let Some(event_bus) = &self.event_bus {
+            match event_bus
+                .dispatch_before(BeforeEventType::FileMove, &mut before_context)
+                .await
+            {
+                Ok(results) => {
+                    for result in results {
+                        if !result.success && !result.skipped {
+                            error!(
+                                "VFS before file move handler failed: {}",
+                                result.error.unwrap_or_else(|| "Unknown error".to_string())
+                            );
+                            return Err(VfsError::AccessDenied {
+                                path: "Event handler rejected move operation".to_string(),
+                            });
+                        }
+                    }
+                    debug!("VFS before file move event dispatched successfully");
+                }
+                Err(e) => {
+                    error!("Failed to dispatch VFS before file move event: {}", e);
+                    return Err(VfsError::AccessDenied {
+                        path: format!("Event dispatch failed: {}", e),
+                    });
+                }
+            }
+        }
+
+        let old_path = source_metadata.path.clone();
+        let (moved_metadata, overwritten_metadata) = self
+            .storage
+            .move_file(namespace, &identifier, new_path, overwrite)
+            .await?;
+
+        self.update_metrics(|metrics| {
+            metrics.total_moves += 1;
+        })
+        .await;
+
+        let overwritten_file_id = overwritten_metadata
+            .or(destination_metadata)
+            .map(|metadata| metadata.id);
+        let after_context = AfterEventContext::file_moved(
+            namespace.clone(),
+            moved_metadata.id.clone(),
+            old_path,
+            moved_metadata.path.clone(),
+            overwritten_file_id,
+            RequestContext::anonymous(),
+        );
+
+        if let Some(event_bus) = &self.event_bus {
+            if let Err(e) = event_bus
+                .dispatch_after(AfterEventType::FileMoved, &after_context)
+                .await
+            {
+                warn!(
+                    "Failed to dispatch VFS after file move event (non-critical): {}",
+                    e
+                );
+            }
+        }
+
+        debug!(
+            "Successfully moved file: {} ({})",
+            moved_metadata.id, moved_metadata.path
+        );
+        Ok(moved_metadata)
     }
 
     #[instrument(skip(self), fields(identifier = ?request.identifier))]
@@ -1148,5 +1260,167 @@ mod tests {
 
         let stats = service.get_usage_stats(&namespace).await.unwrap();
         assert_eq!(stats.directory_count, 4);
+    }
+
+    #[tokio::test]
+    async fn test_move_file_preserves_identity_and_content() {
+        let (service, _temp_dir) = create_test_service().await;
+        let namespace = "test".to_string();
+
+        service
+            .create_namespace(VfsNamespaceConfig {
+                namespace: namespace.clone(),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        let original = service
+            .write_file(
+                &namespace,
+                FileWriteRequest {
+                    path: "uploads/report.txt".to_string(),
+                    content: b"quarterly results".to_vec(),
+                    mime_type: Some("text/plain".to_string()),
+                    custom_metadata: None,
+                    tags: Some(vec!["finance".to_string()]),
+                    overwrite: false,
+                },
+            )
+            .await
+            .unwrap();
+
+        let moved = service
+            .move_file(
+                &namespace,
+                FileMoveRequest {
+                    identifier: FileIdentifier::Id(original.id.clone()),
+                    new_path: "archive/2026/report.txt".to_string(),
+                    overwrite: false,
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(moved.id, original.id);
+        assert_eq!(moved.content_hash, original.content_hash);
+        assert_eq!(moved.name, "report.txt");
+        assert_eq!(moved.path, "archive/2026/report.txt");
+        assert_eq!(moved.tags, vec!["finance".to_string()]);
+
+        let read_moved = service
+            .read_file(
+                &namespace,
+                FileReadRequest {
+                    identifier: FileIdentifier::Path("archive/2026/report.txt".to_string()),
+                    include_content: true,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(read_moved.content.unwrap(), b"quarterly results".to_vec());
+
+        let old_path_lookup = service
+            .read_file(
+                &namespace,
+                FileReadRequest {
+                    identifier: FileIdentifier::Path("uploads/report.txt".to_string()),
+                    include_content: false,
+                },
+            )
+            .await;
+        assert!(matches!(
+            old_path_lookup,
+            Err(VfsError::FileNotFound { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_move_file_rejects_conflict_unless_overwrite_is_set() {
+        let (service, _temp_dir) = create_test_service().await;
+        let namespace = "test".to_string();
+
+        service
+            .create_namespace(VfsNamespaceConfig {
+                namespace: namespace.clone(),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        let source = service
+            .write_file(
+                &namespace,
+                FileWriteRequest {
+                    path: "drafts/source.txt".to_string(),
+                    content: b"source".to_vec(),
+                    mime_type: Some("text/plain".to_string()),
+                    custom_metadata: None,
+                    tags: None,
+                    overwrite: false,
+                },
+            )
+            .await
+            .unwrap();
+
+        let destination = service
+            .write_file(
+                &namespace,
+                FileWriteRequest {
+                    path: "published/source.txt".to_string(),
+                    content: b"destination".to_vec(),
+                    mime_type: Some("text/plain".to_string()),
+                    custom_metadata: None,
+                    tags: None,
+                    overwrite: false,
+                },
+            )
+            .await
+            .unwrap();
+
+        let conflict = service
+            .move_file(
+                &namespace,
+                FileMoveRequest {
+                    identifier: FileIdentifier::Id(source.id.clone()),
+                    new_path: "published/source.txt".to_string(),
+                    overwrite: false,
+                },
+            )
+            .await;
+        assert!(matches!(conflict, Err(VfsError::FileAlreadyExists { .. })));
+
+        let moved = service
+            .move_file(
+                &namespace,
+                FileMoveRequest {
+                    identifier: FileIdentifier::Id(source.id.clone()),
+                    new_path: "published/source.txt".to_string(),
+                    overwrite: true,
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(moved.id, source.id);
+        assert_eq!(moved.path, "published/source.txt");
+
+        let replaced_lookup = service
+            .read_file(
+                &namespace,
+                FileReadRequest {
+                    identifier: FileIdentifier::Id(destination.id),
+                    include_content: false,
+                },
+            )
+            .await;
+        assert!(matches!(
+            replaced_lookup,
+            Err(VfsError::FileNotFound { .. })
+        ));
+
+        let stats = service.get_usage_stats(&namespace).await.unwrap();
+        assert_eq!(stats.file_count, 1);
+        assert_eq!(stats.storage_used, source.size);
     }
 }

@@ -63,6 +63,14 @@ impl VirtualFileSystem for VfsServiceWrapper {
         self.inner.write_file(namespace, request).await
     }
 
+    async fn move_file(
+        &self,
+        namespace: &oxide_core::VfsNamespace,
+        request: oxide_core::FileMoveRequest,
+    ) -> oxide_core::VfsResult<oxide_core::FileMetadata> {
+        self.inner.move_file(namespace, request).await
+    }
+
     async fn read_file(
         &self,
         namespace: &oxide_core::VfsNamespace,

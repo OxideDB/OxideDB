@@ -266,6 +266,38 @@ impl DashboardActivityListener {
                     })),
                 })
             }
+            AfterEventContext::FileMoved {
+                namespace,
+                file_id,
+                old_path,
+                new_path,
+                overwritten_file_id,
+                request_context,
+                ..
+            } => {
+                let user = request_context
+                    .user_id
+                    .clone()
+                    .unwrap_or_else(|| "system".to_string());
+                Some(ActivityEntry {
+                    timestamp,
+                    activity_type: ActivityType::Other("file_moved".to_string()),
+                    user,
+                    description: format!(
+                        "Moved file '{}' to '{}' in namespace '{}'",
+                        old_path, new_path, namespace
+                    ),
+                    collection: None,
+                    metadata: Some(serde_json::json!({
+                        "file_id": file_id,
+                        "old_path": old_path,
+                        "new_path": new_path,
+                        "namespace": namespace,
+                        "overwritten_file_id": overwritten_file_id,
+                        "operation": "file_move"
+                    })),
+                })
+            }
             AfterEventContext::ErrorOccurred {
                 error_type,
                 message,

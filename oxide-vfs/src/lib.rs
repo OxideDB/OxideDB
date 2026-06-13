@@ -60,9 +60,9 @@ pub use utils::*;
 
 // Re-export oxide-core VFS types for convenience
 pub use oxide_core::{
-    FileIdentifier, FileListRequest, FileListResponse, FileMetadata, FileReadRequest,
-    FileReadResponse, FileWriteRequest, VfsError, VfsNamespace, VfsNamespaceConfig, VfsResult,
-    VfsUsageStats, VirtualFileSystem,
+    FileIdentifier, FileListRequest, FileListResponse, FileMetadata, FileMoveRequest,
+    FileReadRequest, FileReadResponse, FileWriteRequest, VfsError, VfsNamespace,
+    VfsNamespaceConfig, VfsResult, VfsUsageStats, VirtualFileSystem,
 };
 
 /// VFS version information

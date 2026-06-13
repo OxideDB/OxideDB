@@ -4,7 +4,7 @@
 //! It supports secure file upload, download, and management within collection namespaces.
 
 use axum::{
-    extract::{Multipart, Path, Query, State},
+    extract::{Json, Multipart, Path, Query, State},
     http::{header, StatusCode},
     response::{IntoResponse, Response},
 };
@@ -18,7 +18,7 @@ use crate::{
 };
 
 use oxide_core::{
-    FileIdentifier, FileListRequest, FileReadRequest, FileWriteRequest, VfsError,
+    FileIdentifier, FileListRequest, FileMoveRequest, FileReadRequest, FileWriteRequest, VfsError,
     VfsNamespaceConfig, VfsUsageStats,
 };
 
@@ -34,6 +34,15 @@ pub struct FileUploadResponse {
     pub mime_type: String,
     pub size: u64,
     pub content_hash: String,
+}
+
+/// File move request payload
+#[derive(Debug, Deserialize)]
+pub struct MoveFilePayload {
+    /// Destination path inside the collection namespace
+    pub path: String,
+    /// Whether to replace an existing file at the destination path
+    pub overwrite: Option<bool>,
 }
 
 /// File list query parameters
@@ -521,6 +530,68 @@ pub async fn get_file_metadata(
         })?;
 
     Ok(ApiResponse::success(file_response.metadata))
+}
+
+/// Move or rename a file in the VFS
+pub async fn move_file(
+    State(state): State<AppState>,
+    _auth: AuthenticatedUser,
+    Path((collection, file_id)): Path<(String, String)>,
+    Json(payload): Json<MoveFilePayload>,
+) -> AppResult<impl IntoResponse> {
+    debug!(
+        "📁 Move file request: {} from collection: {}",
+        file_id, collection
+    );
+
+    let vfs_service = state
+        .vfs_service
+        .as_ref()
+        .ok_or_else(|| ApiError::internal("VFS service not available".to_string()))?;
+
+    ensure_namespace_exists(vfs_service.as_ref(), &collection)
+        .await
+        .map_err(|e| {
+            error!(
+                "Failed to ensure VFS namespace exists for collection '{}': {:?}",
+                collection, e
+            );
+            ApiError::internal("Failed to access collection file storage".to_string())
+        })?;
+
+    let move_request = FileMoveRequest {
+        identifier: FileIdentifier::Id(file_id.clone()),
+        new_path: payload.path,
+        overwrite: payload.overwrite.unwrap_or(false),
+    };
+
+    let metadata = vfs_service
+        .move_file(&collection, move_request)
+        .await
+        .map_err(|e| {
+            error!("Failed to move file in VFS: {:?}", e);
+            match e {
+                VfsError::InvalidPath { .. } => {
+                    ApiError::bad_request("Invalid destination file path".to_string())
+                }
+                VfsError::FileNotFound { .. } => ApiError::not_found("File not found".to_string()),
+                VfsError::FileAlreadyExists { .. } => ApiError::conflict(
+                    "File already exists at destination path; set overwrite=true to replace it"
+                        .to_string(),
+                ),
+                VfsError::AccessDenied { .. } => {
+                    ApiError::forbidden("Permission denied".to_string())
+                }
+                VfsError::IoError { .. } => ApiError::internal("Storage error".to_string()),
+                _ => ApiError::internal("File move failed".to_string()),
+            }
+        })?;
+
+    info!(
+        "📁 File moved successfully: {} -> {}",
+        file_id, metadata.path
+    );
+    Ok(ApiResponse::success(metadata))
 }
 
 /// List files in a collection's VFS namespace
