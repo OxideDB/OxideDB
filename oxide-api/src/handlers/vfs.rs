@@ -9,7 +9,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::{debug, error, info, warn};
 
@@ -64,6 +64,45 @@ pub struct VfsUsageSummaryResponse {
     pub directory_count: usize,
     pub last_updated: u64,
     pub namespaces: Vec<VfsUsageStats>,
+}
+
+fn parse_bool_form_value(field_name: &str, value: &str) -> AppResult<bool> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "true" | "1" | "yes" | "on" => Ok(true),
+        "false" | "0" | "no" | "off" => Ok(false),
+        _ => Err(ApiError::bad_request(format!(
+            "Invalid boolean value for '{}'",
+            field_name
+        ))),
+    }
+}
+
+fn parse_tags_form_value(value: &str) -> AppResult<Vec<String>> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    if trimmed.starts_with('[') {
+        return serde_json::from_str::<Vec<String>>(trimmed)
+            .map_err(|e| ApiError::bad_request(format!("Invalid tags JSON array: {}", e)));
+    }
+
+    Ok(trimmed
+        .split(',')
+        .map(str::trim)
+        .filter(|tag| !tag.is_empty())
+        .map(ToString::to_string)
+        .collect())
+}
+
+fn parse_custom_metadata_form_value(value: &str) -> AppResult<HashMap<String, String>> {
+    serde_json::from_str::<HashMap<String, String>>(value).map_err(|e| {
+        ApiError::bad_request(format!(
+            "custom_metadata must be a JSON object with string values: {}",
+            e
+        ))
+    })
 }
 
 /// Ensure a VFS namespace exists for the given collection
@@ -220,6 +259,9 @@ pub async fn upload_file(
     let mut file_name: Option<String> = None;
     let mut mime_type: Option<String> = None;
     let mut custom_path: Option<String> = None;
+    let mut overwrite = false;
+    let mut custom_metadata: Option<HashMap<String, String>> = None;
+    let mut tags: Option<Vec<String>> = None;
 
     // Process multipart form data
     while let Some(field) = multipart
@@ -248,6 +290,24 @@ pub async fn upload_file(
                 custom_path = Some(field.text().await.map_err(|e| {
                     ApiError::bad_request(format!("Failed to read path field: {}", e))
                 })?);
+            }
+            "overwrite" => {
+                let value = field.text().await.map_err(|e| {
+                    ApiError::bad_request(format!("Failed to read overwrite field: {}", e))
+                })?;
+                overwrite = parse_bool_form_value("overwrite", &value)?;
+            }
+            "tags" => {
+                let value = field.text().await.map_err(|e| {
+                    ApiError::bad_request(format!("Failed to read tags field: {}", e))
+                })?;
+                tags = Some(parse_tags_form_value(&value)?);
+            }
+            "custom_metadata" | "metadata" => {
+                let value = field.text().await.map_err(|e| {
+                    ApiError::bad_request(format!("Failed to read custom_metadata field: {}", e))
+                })?;
+                custom_metadata = Some(parse_custom_metadata_form_value(&value)?);
             }
             "collection" => {
                 // Already have collection from path, but allow override
@@ -292,9 +352,9 @@ pub async fn upload_file(
         path: file_path.clone(),
         content: file_data,
         mime_type: Some(mime_type.clone()),
-        custom_metadata: Some(std::collections::HashMap::new()),
-        tags: None,
-        overwrite: false,
+        custom_metadata,
+        tags,
+        overwrite,
     };
 
     // Write file to VFS
@@ -307,6 +367,11 @@ pub async fn upload_file(
                 VfsError::InvalidPath { .. } => {
                     ApiError::bad_request("Invalid file path".to_string())
                 }
+                VfsError::FileAlreadyExists { .. } => ApiError::conflict(
+                    "File already exists at this path; set overwrite=true to replace it"
+                        .to_string(),
+                ),
+                VfsError::QuotaExceeded { .. } => ApiError::PayloadTooLarge,
                 VfsError::AccessDenied { .. } => {
                     ApiError::forbidden("Permission denied".to_string())
                 }

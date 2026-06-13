@@ -30,18 +30,43 @@ pub fn decompress_content(compressed: &[u8]) -> Result<Vec<u8>, std::io::Error> 
 
 /// Validate file path for security (prevent directory traversal)
 pub fn validate_path(path: &str) -> bool {
-    // Check for directory traversal attempts
-    if path.contains("..") || path.contains("\\") || path.starts_with('/') {
+    if path.starts_with('/') {
         return false;
     }
 
-    // Check for invalid characters
+    normalize_path(path).is_some()
+}
+
+/// Normalize a virtual VFS path while rejecting traversal and unsafe segments.
+///
+/// A leading slash is treated as a virtual-root marker, so `/uploads/a.png`
+/// normalizes to `uploads/a.png`. Backslashes, control characters, `..`
+/// segments, and characters that are invalid on common filesystems are rejected.
+pub fn normalize_path(path: &str) -> Option<String> {
+    if path.contains('\\') {
+        return None;
+    }
+
     let invalid_chars = ['<', '>', ':', '"', '|', '?', '*'];
-    if path.chars().any(|c| invalid_chars.contains(&c)) {
-        return false;
+    let mut segments = Vec::new();
+
+    for segment in path.split('/') {
+        if segment.is_empty() || segment == "." {
+            continue;
+        }
+
+        if segment == ".."
+            || segment
+                .chars()
+                .any(|c| c.is_control() || invalid_chars.contains(&c))
+        {
+            return None;
+        }
+
+        segments.push(segment);
     }
 
-    true
+    Some(segments.join("/"))
 }
 
 /// Generate a unique file ID
@@ -105,10 +130,23 @@ mod tests {
     fn test_path_validation() {
         assert!(validate_path("folder/file.txt"));
         assert!(validate_path("file.txt"));
+        assert!(validate_path("folder/..file.txt"));
         assert!(!validate_path("../file.txt"));
         assert!(!validate_path("/etc/passwd"));
         assert!(!validate_path("folder\\file.txt"));
         assert!(!validate_path("file<.txt"));
+    }
+
+    #[test]
+    fn test_path_normalization() {
+        assert_eq!(
+            normalize_path("/uploads//images/./file.png"),
+            Some("uploads/images/file.png".to_string())
+        );
+        assert_eq!(normalize_path("/"), Some(String::new()));
+        assert_eq!(normalize_path(""), Some(String::new()));
+        assert_eq!(normalize_path("uploads/../file.png"), None);
+        assert_eq!(normalize_path("uploads\\file.png"), None);
     }
 
     #[test]

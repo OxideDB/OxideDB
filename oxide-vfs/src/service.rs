@@ -6,7 +6,7 @@
 
 use crate::backup;
 use crate::storage::FileSystemStorage;
-use crate::utils::{detect_mime_type, generate_file_id, validate_path};
+use crate::utils::{detect_mime_type, generate_file_id, normalize_path, validate_path};
 use oxide_core::event::RequestContext;
 use oxide_core::{
     AfterEventContext, AfterEventType, BeforeEventContext, BeforeEventType, EventBus,
@@ -144,13 +144,35 @@ impl VfsService {
     }
 
     /// Validate path for security
-    fn validate_file_path(&self, path: &str) -> VfsResult<()> {
-        if !validate_path(path) {
+    fn normalize_file_path(&self, path: &str) -> VfsResult<String> {
+        let normalized = normalize_path(path).ok_or_else(|| VfsError::InvalidPath {
+            path: path.to_string(),
+        })?;
+
+        if normalized.is_empty() {
             return Err(VfsError::InvalidPath {
                 path: path.to_string(),
             });
         }
-        Ok(())
+
+        Ok(normalized)
+    }
+
+    /// Normalize a directory path while allowing the virtual root.
+    fn normalize_directory_path(&self, path: &str) -> VfsResult<String> {
+        normalize_path(path).ok_or_else(|| VfsError::InvalidPath {
+            path: path.to_string(),
+        })
+    }
+
+    /// Normalize path identifiers before storage lookup.
+    fn normalize_identifier(&self, identifier: FileIdentifier) -> VfsResult<FileIdentifier> {
+        match identifier {
+            FileIdentifier::Path(path) => {
+                Ok(FileIdentifier::Path(self.normalize_file_path(&path)?))
+            }
+            FileIdentifier::Id(id) => Ok(FileIdentifier::Id(id)),
+        }
     }
 
     /// Check namespace quota before writing
@@ -159,7 +181,7 @@ impl VfsService {
         if let Some(config) = namespaces.get(namespace) {
             if let Some(quota) = config.quota_bytes {
                 let stats = self.get_usage_stats(namespace).await?;
-                if stats.storage_used + additional_bytes > quota {
+                if stats.storage_used.saturating_add(additional_bytes) > quota {
                     return Err(VfsError::QuotaExceeded {
                         namespace: namespace.clone(),
                     });
@@ -248,14 +270,34 @@ impl VirtualFileSystem for VfsService {
     async fn write_file(
         &self,
         namespace: &VfsNamespace,
-        request: FileWriteRequest,
+        mut request: FileWriteRequest,
     ) -> VfsResult<FileMetadata> {
         // Validate inputs
-        self.validate_file_path(&request.path)?;
+        request.path = self.normalize_file_path(&request.path)?;
+
+        let existing_metadata = match self
+            .storage
+            .get_file_metadata(namespace, &FileIdentifier::Path(request.path.clone()))
+            .await
+        {
+            Ok(metadata) => Some(metadata),
+            Err(VfsError::FileNotFound { .. }) => None,
+            Err(e) => return Err(e),
+        };
+
+        if existing_metadata.is_some() && !request.overwrite {
+            return Err(VfsError::FileAlreadyExists {
+                path: request.path.clone(),
+            });
+        }
 
         // Check quota before writing
-        self.check_quota(namespace, request.content.len() as u64)
-            .await?;
+        let new_size = request.content.len() as u64;
+        let additional_bytes = existing_metadata
+            .as_ref()
+            .map(|existing| new_size.saturating_sub(existing.size))
+            .unwrap_or(new_size);
+        self.check_quota(namespace, additional_bytes).await?;
 
         // Emit before event with real content
         let mut before_context = BeforeEventContext::new_vfs_write(
@@ -295,7 +337,10 @@ impl VirtualFileSystem for VfsService {
         }
 
         // Prepare metadata
-        let file_id = generate_file_id();
+        let file_id = existing_metadata
+            .as_ref()
+            .map(|existing| existing.id.clone())
+            .unwrap_or_else(generate_file_id);
         let mime_type = request
             .mime_type
             .unwrap_or_else(|| detect_mime_type(&request.path));
@@ -315,24 +360,26 @@ impl VirtualFileSystem for VfsService {
             mime_type: mime_type.clone(),
             size: request.content.len() as u64,
             content_hash: String::new(), // Will be set by storage layer
-            created_at: now,
+            created_at: existing_metadata
+                .as_ref()
+                .map(|existing| existing.created_at)
+                .unwrap_or(now),
             modified_at: now,
-            custom_metadata: request.custom_metadata.unwrap_or_default(),
+            custom_metadata: request.custom_metadata.unwrap_or_else(|| {
+                existing_metadata
+                    .as_ref()
+                    .map(|existing| existing.custom_metadata.clone())
+                    .unwrap_or_default()
+            }),
             compressed: false, // Will be set by storage layer
             compression_type: None,
-            tags: request.tags.unwrap_or_default(),
+            tags: request.tags.unwrap_or_else(|| {
+                existing_metadata
+                    .as_ref()
+                    .map(|existing| existing.tags.clone())
+                    .unwrap_or_default()
+            }),
         };
-
-        // Check if file exists and handle overwrite logic
-        if !request.overwrite {
-            if let Ok(_existing) = self
-                .storage
-                .get_file_metadata(namespace, &FileIdentifier::Path(request.path.clone()))
-                .await
-            {
-                return Err(VfsError::FileAlreadyExists { path: request.path });
-            }
-        }
 
         // Store file in storage layer
         let stored_metadata = self
@@ -383,9 +430,12 @@ impl VirtualFileSystem for VfsService {
         namespace: &VfsNamespace,
         request: FileReadRequest,
     ) -> VfsResult<FileReadResponse> {
+        let identifier = self.normalize_identifier(request.identifier)?;
+        let include_content = request.include_content;
+
         // Emit before event
         // Create proper context for read event
-        let (file_id, path) = match &request.identifier {
+        let (file_id, path) = match &identifier {
             FileIdentifier::Path(p) => ("unknown".to_string(), p.clone()),
             FileIdentifier::Id(id) => (id.clone(), "unknown".to_string()),
         };
@@ -420,12 +470,9 @@ impl VirtualFileSystem for VfsService {
             }
         }
 
-        let response = if request.include_content {
+        let response = if include_content {
             // Read file with content
-            let (metadata, content) = self
-                .storage
-                .retrieve_file(namespace, &request.identifier)
-                .await?;
+            let (metadata, content) = self.storage.retrieve_file(namespace, &identifier).await?;
 
             // Update metrics
             self.update_metrics(|metrics| {
@@ -442,7 +489,7 @@ impl VirtualFileSystem for VfsService {
             // Read metadata only
             let metadata = self
                 .storage
-                .get_file_metadata(namespace, &request.identifier)
+                .get_file_metadata(namespace, &identifier)
                 .await?;
 
             self.update_metrics(|metrics| {
@@ -462,7 +509,7 @@ impl VirtualFileSystem for VfsService {
             response.metadata.id.clone(),
             response.metadata.path.clone(),
             response.metadata.size,
-            request.include_content,
+            include_content,
             RequestContext::anonymous(),
         );
 
@@ -488,6 +535,8 @@ impl VirtualFileSystem for VfsService {
         namespace: &VfsNamespace,
         identifier: FileIdentifier,
     ) -> VfsResult<()> {
+        let identifier = self.normalize_identifier(identifier)?;
+
         // Get file metadata first for events and validation
         let metadata = self
             .storage
@@ -568,8 +617,10 @@ impl VirtualFileSystem for VfsService {
     async fn list_files(
         &self,
         namespace: &VfsNamespace,
-        request: FileListRequest,
+        mut request: FileListRequest,
     ) -> VfsResult<FileListResponse> {
+        request.directory = self.normalize_directory_path(&request.directory)?;
+
         // Validate namespace exists
         {
             let namespaces = self.namespaces.read().await;
@@ -851,5 +902,251 @@ mod tests {
         // Should fail due to quota
         let result = service.write_file(&"test".to_string(), write_request).await;
         assert!(matches!(result, Err(VfsError::QuotaExceeded { .. })));
+    }
+
+    #[tokio::test]
+    async fn test_duplicate_content_keeps_distinct_logical_files() {
+        let (service, _temp_dir) = create_test_service().await;
+        let namespace = "test".to_string();
+
+        service
+            .create_namespace(VfsNamespaceConfig {
+                namespace: namespace.clone(),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        let content = b"same bytes".to_vec();
+        let first = service
+            .write_file(
+                &namespace,
+                FileWriteRequest {
+                    path: "first.txt".to_string(),
+                    content: content.clone(),
+                    mime_type: Some("text/plain".to_string()),
+                    custom_metadata: None,
+                    tags: None,
+                    overwrite: false,
+                },
+            )
+            .await
+            .unwrap();
+
+        let second = service
+            .write_file(
+                &namespace,
+                FileWriteRequest {
+                    path: "second.txt".to_string(),
+                    content: content.clone(),
+                    mime_type: Some("text/plain".to_string()),
+                    custom_metadata: None,
+                    tags: None,
+                    overwrite: false,
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_ne!(first.id, second.id);
+        assert_eq!(first.content_hash, second.content_hash);
+
+        service
+            .delete_file(&namespace, FileIdentifier::Id(first.id))
+            .await
+            .unwrap();
+
+        let remaining = service
+            .read_file(
+                &namespace,
+                FileReadRequest {
+                    identifier: FileIdentifier::Id(second.id),
+                    include_content: true,
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(remaining.content.unwrap(), content);
+    }
+
+    #[tokio::test]
+    async fn test_overwrite_preserves_file_id_and_replaces_metadata() {
+        let (service, _temp_dir) = create_test_service().await;
+        let namespace = "test".to_string();
+
+        service
+            .create_namespace(VfsNamespaceConfig {
+                namespace: namespace.clone(),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        let original = service
+            .write_file(
+                &namespace,
+                FileWriteRequest {
+                    path: "/uploads/file.txt".to_string(),
+                    content: b"old".to_vec(),
+                    mime_type: Some("text/plain".to_string()),
+                    custom_metadata: None,
+                    tags: Some(vec!["old".to_string()]),
+                    overwrite: false,
+                },
+            )
+            .await
+            .unwrap();
+
+        let replacement = service
+            .write_file(
+                &namespace,
+                FileWriteRequest {
+                    path: "uploads/file.txt".to_string(),
+                    content: b"replacement".to_vec(),
+                    mime_type: Some("text/plain".to_string()),
+                    custom_metadata: None,
+                    tags: Some(vec!["new".to_string()]),
+                    overwrite: true,
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(replacement.id, original.id);
+        assert_eq!(replacement.created_at, original.created_at);
+        assert_eq!(replacement.tags, vec!["new".to_string()]);
+
+        let by_rooted_path = service
+            .read_file(
+                &namespace,
+                FileReadRequest {
+                    identifier: FileIdentifier::Path("/uploads/file.txt".to_string()),
+                    include_content: true,
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(by_rooted_path.metadata.id, original.id);
+        assert_eq!(by_rooted_path.content.unwrap(), b"replacement".to_vec());
+
+        let list = service
+            .list_files(
+                &namespace,
+                FileListRequest {
+                    directory: "uploads".to_string(),
+                    recursive: false,
+                    mime_filter: None,
+                    tag_filter: None,
+                    offset: None,
+                    limit: None,
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(list.files.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_overwrite_quota_uses_size_delta() {
+        let (service, _temp_dir) = create_test_service().await;
+        let namespace = "test".to_string();
+
+        service
+            .create_namespace(VfsNamespaceConfig {
+                namespace: namespace.clone(),
+                quota_bytes: Some(10),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        service
+            .write_file(
+                &namespace,
+                FileWriteRequest {
+                    path: "file.txt".to_string(),
+                    content: vec![b'a'; 8],
+                    mime_type: Some("text/plain".to_string()),
+                    custom_metadata: None,
+                    tags: None,
+                    overwrite: false,
+                },
+            )
+            .await
+            .unwrap();
+
+        let replacement = service
+            .write_file(
+                &namespace,
+                FileWriteRequest {
+                    path: "file.txt".to_string(),
+                    content: vec![b'b'; 9],
+                    mime_type: Some("text/plain".to_string()),
+                    custom_metadata: None,
+                    tags: None,
+                    overwrite: true,
+                },
+            )
+            .await;
+
+        assert!(replacement.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_recursive_directory_listing_respects_boundaries() {
+        let (service, _temp_dir) = create_test_service().await;
+        let namespace = "test".to_string();
+
+        service
+            .create_namespace(VfsNamespaceConfig {
+                namespace: namespace.clone(),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        for path in ["uploads/a.txt", "uploads/images/b.txt", "uploads2/c.txt"] {
+            service
+                .write_file(
+                    &namespace,
+                    FileWriteRequest {
+                        path: path.to_string(),
+                        content: path.as_bytes().to_vec(),
+                        mime_type: Some("text/plain".to_string()),
+                        custom_metadata: None,
+                        tags: None,
+                        overwrite: false,
+                    },
+                )
+                .await
+                .unwrap();
+        }
+
+        let list = service
+            .list_files(
+                &namespace,
+                FileListRequest {
+                    directory: "uploads".to_string(),
+                    recursive: true,
+                    mime_filter: None,
+                    tag_filter: None,
+                    offset: None,
+                    limit: None,
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(list.files.len(), 2);
+        assert!(list
+            .files
+            .iter()
+            .all(|metadata| metadata.path.starts_with("uploads/")));
+
+        let stats = service.get_usage_stats(&namespace).await.unwrap();
+        assert_eq!(stats.directory_count, 4);
     }
 }

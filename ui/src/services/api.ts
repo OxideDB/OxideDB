@@ -830,21 +830,35 @@ class ApiService {
   }
 
   // VFS File Operations
-  
+
   /**
    * Upload a file to the VFS for a specific collection
    */
   async uploadFile(
-    collection: string, 
-    file: File, 
+    collection: string,
+    file: File,
     path?: string,
-    onProgress?: (progress: number) => void
+    onProgress?: (progress: number) => void,
+    options?: {
+      overwrite?: boolean;
+      tags?: string[];
+      custom_metadata?: Record<string, string>;
+    }
   ): Promise<FileMetadata> {
     const formData = new FormData();
     formData.append('file', file);
     formData.append('collection', collection);
     if (path) {
       formData.append('path', path);
+    }
+    if (options?.overwrite !== undefined) {
+      formData.append('overwrite', String(options.overwrite));
+    }
+    if (options?.tags?.length) {
+      formData.append('tags', JSON.stringify(options.tags));
+    }
+    if (options?.custom_metadata) {
+      formData.append('custom_metadata', JSON.stringify(options.custom_metadata));
     }
 
     return new Promise((resolve, reject) => {

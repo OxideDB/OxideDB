@@ -111,6 +111,8 @@ impl MetadataStore {
         let metadata_key = format!("{}:{}", namespace, metadata.id);
         let path_key = format!("{}:{}", namespace, metadata.path);
         let namespace_key = format!("{}:{}", namespace, metadata.id);
+        let path_cache_key = format!("{}:path:{}", namespace, metadata.path);
+        let mut cache_keys_to_invalidate = vec![metadata_key.clone(), path_cache_key.clone()];
 
         // Serialize metadata using fast binary encoding
         let metadata_data = bincode::serialize(metadata).map_err(|e| VfsError::EncodingError {
@@ -122,6 +124,48 @@ impl MetadataStore {
             let mut txn = self.env.begin_rw_txn().map_err(|e| VfsError::IoError {
                 message: format!("Failed to begin LMDB transaction: {}", e),
             })?;
+
+            let existing_by_id = match txn.get(self.metadata_db, &metadata_key) {
+                Ok(existing_data) => Some(
+                    bincode::deserialize::<FileMetadata>(existing_data).map_err(|e| {
+                        VfsError::EncodingError {
+                            message: format!("Failed to deserialize existing metadata: {}", e),
+                        }
+                    })?,
+                ),
+                Err(_) => None,
+            };
+
+            if let Some(existing) = &existing_by_id {
+                if existing.path != metadata.path {
+                    let old_path_key = format!("{}:{}", namespace, existing.path);
+                    let old_path_cache_key = format!("{}:path:{}", namespace, existing.path);
+                    let _ = txn.del(self.path_index_db, &old_path_key, None);
+                    cache_keys_to_invalidate.push(old_path_cache_key);
+                }
+            }
+
+            let existing_id_for_path = match txn.get(self.path_index_db, &path_key) {
+                Ok(existing_id_bytes) => {
+                    let existing_id = std::str::from_utf8(existing_id_bytes).map_err(|e| {
+                        VfsError::EncodingError {
+                            message: format!("Invalid path index file ID encoding: {}", e),
+                        }
+                    })?;
+                    Some(existing_id.to_string())
+                }
+                Err(_) => None,
+            };
+
+            if let Some(existing_id) = existing_id_for_path {
+                if existing_id != metadata.id {
+                    let old_metadata_key = format!("{}:{}", namespace, existing_id);
+                    let old_namespace_key = old_metadata_key.clone();
+                    let _ = txn.del(self.metadata_db, &old_metadata_key, None);
+                    let _ = txn.del(self.namespace_index_db, &old_namespace_key, None);
+                    cache_keys_to_invalidate.push(old_metadata_key);
+                }
+            }
 
             // Store main metadata
             txn.put(
@@ -161,8 +205,10 @@ impl MetadataStore {
             })?;
         }
 
-        // Update cache
+        // Update cache and clear stale ID/path entries from replaced metadata.
+        self.invalidate_cache_keys(cache_keys_to_invalidate).await;
         self.cache_metadata(&metadata_key, metadata).await;
+        self.cache_metadata(&path_cache_key, metadata).await;
 
         debug!(
             "Stored metadata for file: {} in namespace: {}",
@@ -240,6 +286,8 @@ impl MetadataStore {
 
         // Remove from cache
         self.invalidate_cache(&metadata_key).await;
+        self.invalidate_cache(&format!("{}:path:{}", namespace, metadata.path))
+            .await;
 
         debug!(
             "Deleted metadata for file: {} in namespace: {}",
@@ -315,6 +363,44 @@ impl MetadataStore {
         Ok(results)
     }
 
+    /// Find one metadata record that references the given content hash.
+    #[instrument(skip(self))]
+    pub async fn find_by_content_hash(
+        &self,
+        content_hash: &str,
+    ) -> VfsResult<Option<FileMetadata>> {
+        let txn = self.env.begin_ro_txn().map_err(|e| VfsError::IoError {
+            message: format!("Failed to begin LMDB read transaction: {}", e),
+        })?;
+
+        let mut cursor = txn
+            .open_ro_cursor(self.metadata_db)
+            .map_err(|e| VfsError::IoError {
+                message: format!("Failed to open LMDB cursor: {}", e),
+            })?;
+
+        for (key, value) in cursor.iter() {
+            match bincode::deserialize::<FileMetadata>(value) {
+                Ok(metadata) if metadata.content_hash == content_hash => {
+                    return Ok(Some(metadata));
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    let key_str = std::str::from_utf8(key).unwrap_or("<invalid key>");
+                    warn!("Failed to deserialize metadata for key {}: {}", key_str, e);
+                }
+            }
+        }
+
+        Ok(None)
+    }
+
+    /// Return true when any metadata record still references a content hash.
+    #[instrument(skip(self))]
+    pub async fn has_content_references(&self, content_hash: &str) -> VfsResult<bool> {
+        Ok(self.find_by_content_hash(content_hash).await?.is_some())
+    }
+
     /// Get cache statistics
     pub async fn get_cache_stats(&self) -> (usize, usize) {
         let cache = self.cache.lock().await;
@@ -375,6 +461,13 @@ impl MetadataStore {
     async fn invalidate_cache(&self, key: &str) {
         let mut cache = self.cache.lock().await;
         cache.pop(key);
+    }
+
+    async fn invalidate_cache_keys(&self, keys: Vec<String>) {
+        let mut cache = self.cache.lock().await;
+        for key in keys {
+            cache.pop(&key);
+        }
     }
 
     async fn lookup_in_lmdb(

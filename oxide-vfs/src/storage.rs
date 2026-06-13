@@ -9,7 +9,8 @@ use crate::utils::{calculate_content_hash, compress_content, decompress_content}
 use oxide_core::{
     FileIdentifier, FileMetadata, VfsError, VfsNamespace, VfsNamespaceConfig, VfsResult,
 };
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::fs;
@@ -22,8 +23,6 @@ pub struct FileSystemStorage {
     metadata_store: MetadataStore,
     /// Cache of namespace configurations
     namespace_configs: tokio::sync::RwLock<HashMap<VfsNamespace, VfsNamespaceConfig>>,
-    /// Content deduplication cache (hash -> file_id)
-    content_cache: tokio::sync::RwLock<HashMap<String, String>>,
 }
 
 impl FileSystemStorage {
@@ -36,7 +35,6 @@ impl FileSystemStorage {
             base_path,
             metadata_store,
             namespace_configs: tokio::sync::RwLock::new(HashMap::new()),
-            content_cache: tokio::sync::RwLock::new(HashMap::new()),
         })
     }
 
@@ -103,64 +101,98 @@ impl FileSystemStorage {
             }
         }
 
-        // Check for content deduplication
+        let replaced_metadata = self
+            .metadata_store
+            .get_metadata(namespace, &FileIdentifier::Path(metadata.path.clone()))
+            .await
+            .ok();
+
         let content_hash = calculate_content_hash(content);
-        if config.enable_deduplication {
-            if let Some(existing_id) = self.get_duplicate_content(&content_hash).await {
-                debug!("Found duplicate content, reusing file ID: {}", existing_id);
-                metadata.id = existing_id;
-                metadata.content_hash = content_hash;
-                return Ok(metadata);
-            }
+        let content_path = self.get_content_path(&content_hash);
+        let existing_content_metadata = self
+            .metadata_store
+            .find_by_content_hash(&content_hash)
+            .await?;
+        let content_exists = self.content_file_exists(&content_path).await?;
+
+        // Reuse an existing content representation when another logical file has
+        // the same hash. The content path is global, so every metadata record
+        // that points at it must agree on compression settings.
+        let (final_content, compressed, compression_type, should_write_content) =
+            if let Some(existing_metadata) = existing_content_metadata {
+                let encoded_content = if content_exists {
+                    Vec::new()
+                } else if existing_metadata.compressed {
+                    compress_content(content).map_err(|e| VfsError::CompressionError {
+                        message: format!("Failed to recompress missing content: {}", e),
+                    })?
+                } else {
+                    content.to_vec()
+                };
+
+                (
+                    encoded_content,
+                    existing_metadata.compressed,
+                    existing_metadata.compression_type,
+                    !content_exists,
+                )
+            } else if config.enable_compression && content.len() > 1024 {
+                match compress_content(content) {
+                    Ok(compressed_content) if compressed_content.len() < content.len() => {
+                        debug!(
+                            "Compressed file from {} to {} bytes",
+                            content.len(),
+                            compressed_content.len()
+                        );
+                        (compressed_content, true, Some("gzip".to_string()), true)
+                    }
+                    Ok(_) => (content.to_vec(), false, None, true),
+                    Err(e) => {
+                        return Err(VfsError::CompressionError {
+                            message: format!("Failed to compress file: {}", e),
+                        });
+                    }
+                }
+            } else {
+                (content.to_vec(), false, None, true)
+            };
+
+        if !should_write_content {
+            debug!(
+                "Reusing existing content blob for hash {} in namespace {}",
+                content_hash, namespace
+            );
         }
 
-        // Handle compression if enabled
-        let (final_content, compressed) = if config.enable_compression && content.len() > 1024 {
-            match compress_content(content) {
-                Ok(compressed) if compressed.len() < content.len() => {
-                    debug!(
-                        "Compressed file from {} to {} bytes",
-                        content.len(),
-                        compressed.len()
-                    );
-                    (compressed, true)
-                }
-                _ => (content.to_vec(), false),
+        if should_write_content {
+            // Store content in content-addressed storage
+            self.ensure_parent_dir(&content_path).await?;
+
+            // Atomic write using temporary file
+            let temp_path = content_path.with_extension("tmp");
+            if let Err(e) = fs::write(&temp_path, &final_content).await {
+                error!("Failed to write file content: {}", e);
+                return Err(VfsError::IoError {
+                    message: format!("Failed to write file: {}", e),
+                });
+            }
+
+            if let Err(e) = fs::rename(&temp_path, &content_path).await {
+                error!("Failed to rename temporary file: {}", e);
+                let _ = fs::remove_file(&temp_path).await; // Cleanup
+                return Err(VfsError::IoError {
+                    message: format!("Failed to finalize file write: {}", e),
+                });
             }
         } else {
-            (content.to_vec(), false)
-        };
-
-        // Store content in content-addressed storage
-        let content_path = self.get_content_path(&content_hash);
-        self.ensure_parent_dir(&content_path).await?;
-
-        // Atomic write using temporary file
-        let temp_path = content_path.with_extension("tmp");
-        if let Err(e) = fs::write(&temp_path, &final_content).await {
-            error!("Failed to write file content: {}", e);
-            return Err(VfsError::IoError {
-                message: format!("Failed to write file: {}", e),
-            });
-        }
-
-        if let Err(e) = fs::rename(&temp_path, &content_path).await {
-            error!("Failed to rename temporary file: {}", e);
-            let _ = fs::remove_file(&temp_path).await; // Cleanup
-            return Err(VfsError::IoError {
-                message: format!("Failed to finalize file write: {}", e),
-            });
+            debug!("Skipped content write for duplicate hash {}", content_hash);
         }
 
         // Update metadata
         metadata.content_hash = content_hash.clone();
         metadata.size = content.len() as u64;
         metadata.compressed = compressed;
-        metadata.compression_type = if compressed {
-            Some("gzip".to_string())
-        } else {
-            None
-        };
+        metadata.compression_type = compression_type;
         metadata.modified_at = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
@@ -171,9 +203,12 @@ impl FileSystemStorage {
             .store_metadata(namespace, &metadata)
             .await?;
 
-        // Update content cache for deduplication
-        self.cache_content_mapping(&content_hash, &metadata.id)
-            .await;
+        if let Some(replaced) = replaced_metadata {
+            if replaced.content_hash != content_hash {
+                self.remove_content_if_unreferenced(&replaced.content_hash)
+                    .await?;
+            }
+        }
 
         debug!(
             "Successfully stored file: {} with LMDB metadata backend",
@@ -269,30 +304,13 @@ impl FileSystemStorage {
             .get_metadata(namespace, identifier)
             .await?;
 
-        // Check if content is still referenced by other files before deleting
-        let config = self.get_namespace_config(namespace).await?;
-        if config.enable_deduplication {
-            // Only remove content if no other files reference it
-            if !self.has_content_references(&metadata.content_hash).await? {
-                let content_path = self.get_content_path(&metadata.content_hash);
-                if let Err(e) = fs::remove_file(&content_path).await {
-                    // Log but don't fail - orphaned content will be cleaned up later
-                    error!("Failed to remove content file: {}", e);
-                }
-            }
-        } else {
-            // Remove content directly
-            let content_path = self.get_content_path(&metadata.content_hash);
-            let _ = fs::remove_file(&content_path).await; // Don't fail on content removal
-        }
-
         // Delete metadata from high-performance store
         self.metadata_store
             .delete_metadata(namespace, identifier)
             .await?;
 
-        // Remove from content cache
-        self.remove_from_content_cache(&metadata.content_hash).await;
+        self.remove_content_if_unreferenced(&metadata.content_hash)
+            .await?;
 
         debug!(
             "Successfully deleted file: {} from LMDB metadata store",
@@ -328,7 +346,7 @@ impl FileSystemStorage {
                 .into_iter()
                 .filter(|meta| {
                     if recursive {
-                        meta.path.starts_with(directory)
+                        path_is_in_directory(&meta.path, directory)
                     } else {
                         // Non-recursive: check if file is directly in the directory
                         let file_dir = std::path::Path::new(&meta.path)
@@ -442,25 +460,36 @@ impl FileSystemStorage {
         Ok(())
     }
 
-    async fn get_duplicate_content(&self, content_hash: &str) -> Option<String> {
-        let cache = self.content_cache.read().await;
-        cache.get(content_hash).cloned()
+    async fn content_file_exists(&self, content_path: &Path) -> VfsResult<bool> {
+        match fs::metadata(content_path).await {
+            Ok(metadata) => Ok(metadata.is_file()),
+            Err(e) if e.kind() == ErrorKind::NotFound => Ok(false),
+            Err(e) => Err(VfsError::IoError {
+                message: format!("Failed to inspect content file: {}", e),
+            }),
+        }
     }
 
-    async fn cache_content_mapping(&self, content_hash: &str, file_id: &str) {
-        let mut cache = self.content_cache.write().await;
-        cache.insert(content_hash.to_string(), file_id.to_string());
-    }
+    async fn remove_content_if_unreferenced(&self, content_hash: &str) -> VfsResult<()> {
+        if self
+            .metadata_store
+            .has_content_references(content_hash)
+            .await?
+        {
+            return Ok(());
+        }
 
-    async fn remove_from_content_cache(&self, content_hash: &str) {
-        let mut cache = self.content_cache.write().await;
-        cache.remove(content_hash);
-    }
-
-    async fn has_content_references(&self, content_hash: &str) -> VfsResult<bool> {
-        // This is a simplified implementation - in production you'd want a proper reference counting system
-        let content_cache = self.content_cache.read().await;
-        Ok(content_cache.contains_key(content_hash))
+        let content_path = self.get_content_path(content_hash);
+        match fs::remove_file(&content_path).await {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == ErrorKind::NotFound => Ok(()),
+            Err(e) => {
+                error!("Failed to remove unreferenced content file: {}", e);
+                Err(VfsError::IoError {
+                    message: format!("Failed to remove content file: {}", e),
+                })
+            }
+        }
     }
 
     /// Store namespace configuration
@@ -523,7 +552,7 @@ impl FileSystemStorage {
 
         let file_count = files.len();
         let storage_used: u64 = files.iter().map(|f| f.size).sum();
-        let directory_count = 1; // Simplified - we could calculate this more accurately if needed
+        let directory_count = count_virtual_directories(&files);
 
         Ok((file_count, storage_used, directory_count))
     }
@@ -537,4 +566,36 @@ impl FileSystemStorage {
     pub async fn sync_metadata(&self) -> VfsResult<()> {
         self.metadata_store.sync()
     }
+}
+
+fn path_is_in_directory(path: &str, directory: &str) -> bool {
+    path == directory
+        || path
+            .strip_prefix(directory)
+            .is_some_and(|remainder| remainder.starts_with('/'))
+}
+
+fn count_virtual_directories(files: &[FileMetadata]) -> usize {
+    let mut directories = BTreeSet::new();
+    directories.insert(String::new());
+
+    for file in files {
+        let mut parts: Vec<&str> = file
+            .path
+            .split('/')
+            .filter(|part| !part.is_empty())
+            .collect();
+        parts.pop();
+
+        let mut current = String::new();
+        for part in parts {
+            if !current.is_empty() {
+                current.push('/');
+            }
+            current.push_str(part);
+            directories.insert(current.clone());
+        }
+    }
+
+    directories.len()
 }
