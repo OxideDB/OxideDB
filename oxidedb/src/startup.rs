@@ -496,30 +496,31 @@ impl ApplicationBootstrap {
                     config.capabilities.len()
                 );
 
-                // Get WASM file path from configuration
-                let wasm_path = if let Some(ref path) = config.wasm_path {
-                    plugins_dir.join(path)
-                } else {
-                    warn!(
-                        "❌ Plugin '{}' has no WASM path in configuration, skipping",
-                        config.name
-                    );
-                    let _ = plugin_config_service
-                        .update_plugin_status(
-                            &config.name,
-                            oxide_core::plugin_config::PluginStatus::Error,
-                        )
-                        .await;
-                    continue;
+                let wasm_data = match plugin_config_service.load_plugin_wasm(&config.name).await {
+                    Ok(wasm_data) => wasm_data,
+                    Err(e) => {
+                        warn!(
+                            "❌ Failed to load WASM for plugin '{}' from database: {}",
+                            config.name, e
+                        );
+                        let _ = plugin_config_service
+                            .update_plugin_status(
+                                &config.name,
+                                oxide_core::plugin_config::PluginStatus::Error,
+                            )
+                            .await;
+                        continue;
+                    }
                 };
 
-                // Use the new load_plugin_with_config method that automatically uses database capabilities
+                // Use the persisted configuration so startup honors capabilities, hashes,
+                // active code-signing policy, and event registration as one lifecycle step.
                 if let Err(e) = plugin_manager
-                    .load_plugin_with_config(&config.name, &wasm_path, &config)
+                    .load_and_register_plugin(&event_bus, &config, &wasm_data)
                     .await
                 {
                     warn!(
-                        "❌ Failed to load plugin '{}' from database: {}",
+                        "❌ Failed to activate plugin '{}' from database: {}",
                         config.name, e
                     );
                     // Update status to error
@@ -530,7 +531,7 @@ impl ApplicationBootstrap {
                         )
                         .await;
                 } else {
-                    info!("✅ Successfully loaded plugin from database with database capabilities: {}", config.name);
+                    info!("✅ Successfully activated plugin from database with database capabilities: {}", config.name);
                 }
             }
         } else {
@@ -538,6 +539,7 @@ impl ApplicationBootstrap {
         }
 
         // Then, load plugins from folder (legacy support)
+        let mut registered_legacy_or_demo_hooks = false;
         if self.config.plugins.plugin_folder.exists() {
             info!(
                 "🔌 Also loading plugins from folder: {:?}",
@@ -547,6 +549,10 @@ impl ApplicationBootstrap {
             plugin_manager
                 .load_plugins_from_folder(&self.config.plugins.plugin_folder, &event_bus)
                 .await?;
+            plugin_manager
+                .register_with_event_system(&event_bus)
+                .await?;
+            registered_legacy_or_demo_hooks = true;
         } else {
             debug!(
                 "Plugin folder {:?} does not exist, skipping folder loading",
@@ -554,9 +560,11 @@ impl ApplicationBootstrap {
             );
         }
 
-        plugin_manager
-            .register_with_event_system(&event_bus)
-            .await?;
+        if !registered_legacy_or_demo_hooks && plugin_manager.get_loaded_plugin_count()? == 0 {
+            plugin_manager
+                .register_with_event_system(&event_bus)
+                .await?;
+        }
 
         let plugin_manager = Arc::new(plugin_manager);
         info!("✅ Plugin system initialized with database persistence");

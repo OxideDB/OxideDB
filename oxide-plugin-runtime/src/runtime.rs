@@ -21,7 +21,7 @@ use oxide_db::Db;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Instant;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 use wasmtime::{Engine, ExternType, Instance, Linker, Module, Store};
 
 /// Wasmtime-based implementation of the PluginRuntime trait
@@ -304,6 +304,74 @@ impl WasmtimePluginRuntime {
         }
     }
 
+    fn cleanup_plugin(&mut self, plugin_name: &str) -> PluginResult<()> {
+        if !self.has_function(plugin_name, plugin_exports::PLUGIN_CLEANUP) {
+            debug!(
+                "Plugin '{}' does not export '{}'; skipping cleanup",
+                plugin_name,
+                plugin_exports::PLUGIN_CLEANUP
+            );
+            return Ok(());
+        }
+
+        let result = (|| {
+            let instance = self
+                .instances
+                .get(plugin_name)
+                .ok_or_else(|| PluginError::PluginNotFound(plugin_name.to_string()))?;
+
+            {
+                let mut state = self.host_state("preparing plugin cleanup")?;
+                state.current_plugin = Some(plugin_name.to_string());
+                state.current_http_request = None;
+                state.error_message = None;
+                state.set_execution_context(ExecutionContext::Idle);
+            }
+
+            let cleanup = instance
+                .get_typed_func::<(), i32>(&mut self.store, plugin_exports::PLUGIN_CLEANUP)
+                .map_err(|e| {
+                    PluginError::FunctionNotExported(format!(
+                        "{}: {}",
+                        plugin_exports::PLUGIN_CLEANUP,
+                        e
+                    ))
+                })?;
+
+            let code = cleanup.call(&mut self.store, ()).map_err(|e| {
+                PluginError::ExecutionFailed(format!(
+                    "Plugin '{}' cleanup failed: {}",
+                    plugin_name, e
+                ))
+            })?;
+
+            if code != 0 {
+                return Err(PluginError::ExecutionFailed(format!(
+                    "Plugin '{}' cleanup returned non-zero status {}",
+                    plugin_name, code
+                )));
+            }
+
+            Ok(())
+        })();
+
+        let cleanup_result = self
+            .host_state("clearing plugin cleanup context")
+            .map(|mut state| {
+                state.current_plugin = None;
+                state.current_http_request = None;
+                state.error_message = None;
+                state.set_execution_context(ExecutionContext::Idle);
+                state.exit_database_operation();
+            });
+
+        match (result, cleanup_result) {
+            (Err(error), _) => Err(error),
+            (Ok(()), Err(error)) => Err(error),
+            (Ok(()), Ok(())) => Ok(()),
+        }
+    }
+
     fn sync_plugin_capabilities_to_host_state(&mut self, plugin_name: &str) {
         let capabilities = self
             .security_manager
@@ -343,6 +411,14 @@ impl WasmtimePluginRuntime {
                 PluginError::InitializationFailed(format!("Failed to instantiate module: {}", e))
             })?;
 
+        if self.instances.contains_key(name) {
+            if let Err(error) = self.cleanup_plugin(name) {
+                warn!(
+                    "Plugin '{}' cleanup failed before reload; replacing runtime state anyway: {}",
+                    name, error
+                );
+            }
+        }
         self.remove_plugin_runtime_state(name);
 
         // Register plugin with specified security settings
@@ -916,6 +992,15 @@ impl PluginRuntime for WasmtimePluginRuntime {
                 .count()
         };
 
+        if self.instances.contains_key(plugin_name) {
+            if let Err(error) = self.cleanup_plugin(plugin_name) {
+                warn!(
+                    "Plugin '{}' cleanup failed during unload; removing runtime state anyway: {}",
+                    plugin_name, error
+                );
+            }
+        }
+
         self.remove_plugin_runtime_state(plugin_name);
 
         if removed_count > 0 {
@@ -942,5 +1027,58 @@ impl PluginRuntime for WasmtimePluginRuntime {
 
     fn runtime_version(&self) -> &'static str {
         env!("CARGO_PKG_VERSION")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use oxide_core::auth::{AuthService, AuthServiceConfig};
+    use oxide_core::plugin_api::RouteRegistration;
+    use oxide_core::InMemoryEventBus;
+    use oxide_db::SqliteDb;
+
+    fn test_runtime() -> WasmtimePluginRuntime {
+        let auth_config = AuthServiceConfig::new("test_secret".to_string());
+        let auth_service = Arc::new(AuthService::new(auth_config));
+        let event_bus = Arc::new(InMemoryEventBus::new());
+        let db = SqliteDb::new(":memory:", event_bus, auth_service)
+            .map_err(|error| PluginError::InitializationFailed(error.to_string()))
+            .and_then(|db| WasmtimePluginRuntime::new(Arc::new(db)));
+
+        match db {
+            Ok(runtime) => runtime,
+            Err(error) => panic!("failed to create test runtime: {}", error),
+        }
+    }
+
+    #[test]
+    fn unload_plugin_removes_registered_routes() {
+        let mut runtime = test_runtime();
+        let host_state = runtime.get_host_state();
+        {
+            let mut state = match host_state.lock() {
+                Ok(state) => state,
+                Err(error) => panic!("failed to acquire host state lock: {}", error),
+            };
+            state.registered_routes.push(RouteRegistration {
+                method: "GET".to_string(),
+                path: "/api/test".to_string(),
+                handler_function: "handle_http_request".to_string(),
+                plugin_name: "test-plugin".to_string(),
+            });
+            state.registered_routes.push(RouteRegistration {
+                method: "GET".to_string(),
+                path: "/api/other".to_string(),
+                handler_function: "handle_http_request".to_string(),
+                plugin_name: "other-plugin".to_string(),
+            });
+        }
+
+        assert!(runtime.unload_plugin("test-plugin").is_ok());
+
+        let routes = runtime.get_registered_routes();
+        assert_eq!(routes.len(), 1);
+        assert_eq!(routes[0].plugin_name, "other-plugin");
     }
 }

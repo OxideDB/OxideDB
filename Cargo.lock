@@ -2225,6 +2225,7 @@ name = "oxide-plugin-runtime"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "oxide-core",
  "oxide-db",
  "oxide-logging",

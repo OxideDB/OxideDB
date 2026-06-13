@@ -6,6 +6,7 @@
 use crate::WasmtimePluginRuntime;
 use oxide_core::{
     plugin_api::{plugin_exports, EventPayload, PluginError, PluginRuntime},
+    plugin_config::PluginConfiguration,
     plugin_security::{PluginCapability, PluginTrustLevel, ResourceLimits, SecurityPolicies},
     AfterEventContext, AfterEventType, AppError, BeforeEventContext, BeforeEventType, EventBus,
 };
@@ -230,6 +231,45 @@ impl PluginManager {
         Ok(())
     }
 
+    /// Load a plugin into the runtime and register its event handlers.
+    ///
+    /// If handler registration fails after the WASM module has loaded, runtime
+    /// state and any partially registered handlers are removed before returning
+    /// the original registration error.
+    pub async fn load_and_register_plugin(
+        &self,
+        event_bus: &Arc<dyn EventBus>,
+        config: &PluginConfiguration,
+        wasm_bytes: &[u8],
+    ) -> Result<(), AppError> {
+        self.unregister_plugin_from_event_system(event_bus, &config.name)
+            .await?;
+        self.load_plugin_bytes_with_config(&config.name, wasm_bytes, config)
+            .await?;
+
+        if let Err(error) = self
+            .register_plugin_with_event_system(event_bus, &config.name)
+            .await
+        {
+            warn!(
+                "Plugin '{}' loaded but event registration failed; rolling back runtime state: {}",
+                config.name, error
+            );
+            if let Err(cleanup_error) = self
+                .unregister_and_unload_plugin(event_bus, &config.name)
+                .await
+            {
+                warn!(
+                    "Failed to fully roll back plugin '{}' after registration failure: {}",
+                    config.name, cleanup_error
+                );
+            }
+            return Err(error);
+        }
+
+        Ok(())
+    }
+
     /// Remove all record event handlers for one plugin.
     pub async fn unregister_plugin_from_event_system(
         &self,
@@ -252,6 +292,45 @@ impl PluginManager {
 
         info!("✅ Plugin '{}' unregistered from event system", plugin_name);
         Ok(())
+    }
+
+    /// Remove a plugin from the event system and runtime.
+    ///
+    /// Both cleanup steps are attempted so a partial failure does not leave the
+    /// other side active. The first error is returned after cleanup finishes.
+    pub async fn unregister_and_unload_plugin(
+        &self,
+        event_bus: &Arc<dyn EventBus>,
+        plugin_name: &str,
+    ) -> Result<(), AppError> {
+        let unregister_result = self
+            .unregister_plugin_from_event_system(event_bus, plugin_name)
+            .await;
+        let unload_result = self.unload_plugin_from_runtime(plugin_name);
+
+        match (unregister_result, unload_result) {
+            (Ok(()), Ok(())) => Ok(()),
+            (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
+            (Err(error), Err(unload_error)) => {
+                warn!(
+                    "Plugin '{}' event unregistration and runtime unload both failed; unload error: {}",
+                    plugin_name, unload_error
+                );
+                Err(error)
+            }
+        }
+    }
+
+    /// Remove a plugin from the runtime without touching EventBus handlers.
+    pub fn unload_plugin_from_runtime(&self, plugin_name: &str) -> Result<(), AppError> {
+        let mut runtime_guard = self
+            .runtime
+            .lock()
+            .map_err(|_| AppError::internal("Failed to acquire plugin runtime lock"))?;
+
+        runtime_guard
+            .unload_plugin(plugin_name)
+            .map_err(|e| AppError::internal(format!("Failed to unload plugin: {}", e)))
     }
 
     fn before_event_bindings() -> [(BeforeEventType, &'static str); 3] {
@@ -292,7 +371,8 @@ impl PluginManager {
         format!("plugin_{}_{}", plugin_name, event_name)
     }
 
-    fn is_plugin_loaded(&self, plugin_name: &str) -> Result<bool, AppError> {
+    /// Return true when a plugin is currently loaded in the runtime.
+    pub fn is_plugin_loaded(&self, plugin_name: &str) -> Result<bool, AppError> {
         let runtime_guard = self
             .runtime
             .lock()
@@ -456,13 +536,23 @@ impl PluginManager {
             AppError::internal(format!("Failed to read WASM file {:?}: {}", path, e))
         })?;
 
+        self.load_plugin_bytes(plugin_name, &wasm_bytes, config)
+            .await
+    }
+
+    async fn load_plugin_bytes(
+        &self,
+        plugin_name: &str,
+        wasm_bytes: &[u8],
+        config: Option<&oxide_core::plugin_config::PluginConfiguration>,
+    ) -> Result<(), AppError> {
         self.ensure_code_signing_policy(plugin_name, config)?;
 
         // Determine the expected hash (if any) from the provided configuration
         let expected_hash: Option<String> = config.and_then(|c| c.wasm_hash.clone());
 
         // Verify WASM integrity – abort loading on mismatch
-        self.verify_plugin_hash(plugin_name, &wasm_bytes, expected_hash.as_deref())
+        self.verify_plugin_hash(plugin_name, wasm_bytes, expected_hash.as_deref())
             .await?;
 
         let mut runtime_guard = self
@@ -508,7 +598,7 @@ impl PluginManager {
         runtime_guard
             .load_plugin_with_trust(
                 plugin_name,
-                &wasm_bytes,
+                wasm_bytes,
                 trust_level,
                 capabilities,
                 resource_limits,
@@ -527,6 +617,20 @@ impl PluginManager {
         config: &oxide_core::plugin_config::PluginConfiguration,
     ) -> Result<(), AppError> {
         self.load_single_plugin(plugin_name, path, Some(config))
+            .await
+    }
+
+    /// Load a plugin from already-read bytes using the persisted configuration.
+    ///
+    /// This is useful for callers that need to validate and read the WASM file
+    /// through their own storage service before handing it to the runtime.
+    pub async fn load_plugin_bytes_with_config(
+        &self,
+        plugin_name: &str,
+        wasm_bytes: &[u8],
+        config: &oxide_core::plugin_config::PluginConfiguration,
+    ) -> Result<(), AppError> {
+        self.load_plugin_bytes(plugin_name, wasm_bytes, Some(config))
             .await
     }
 
@@ -972,10 +1076,15 @@ pub enum PluginStatus {
 mod tests {
     use super::*;
     use oxide_core::auth::{AuthService, AuthServiceConfig};
+    use oxide_core::event::{
+        AfterEventHandler, BeforeEventHandler, EventBusHealth, EventFilter, EventMetrics,
+        HandlerExecutionResult, HandlerMetadata,
+    };
     use oxide_core::plugin_config::PluginConfiguration;
     use oxide_core::plugin_security::SecurityPolicies;
     use oxide_core::InMemoryEventBus;
     use oxide_db::SqliteDb;
+    use std::collections::HashMap;
 
     #[test]
     fn test_plugin_manager_creation() {
@@ -1032,6 +1141,140 @@ mod tests {
             "signature_verified": signature_verified
         }));
         config
+    }
+
+    const MINIMAL_PLUGIN_WASM: &[u8] = &[
+        0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x06, 0x01, 0x60, 0x00, 0x01, 0x7f,
+        0x03, 0x02, 0x01, 0x00, 0x07, 0x0f, 0x01, 0x0b, 0x70, 0x6c, 0x75, 0x67, 0x69, 0x6e, 0x5f,
+        0x69, 0x6e, 0x69, 0x74, 0x00, 0x00, 0x0a, 0x06, 0x01, 0x04, 0x00, 0x41, 0x00, 0x0b,
+    ];
+
+    struct FailingRegistrationEventBus;
+
+    #[async_trait::async_trait]
+    impl EventBus for FailingRegistrationEventBus {
+        async fn dispatch_before(
+            &self,
+            _event_type: BeforeEventType,
+            _context: &mut BeforeEventContext,
+        ) -> Result<Vec<HandlerExecutionResult>, AppError> {
+            Ok(Vec::new())
+        }
+
+        async fn dispatch_after(
+            &self,
+            _event_type: AfterEventType,
+            _context: &AfterEventContext,
+        ) -> Result<Vec<HandlerExecutionResult>, AppError> {
+            Ok(Vec::new())
+        }
+
+        async fn subscribe_before(
+            &self,
+            _event_name: &str,
+            _handler: BeforeEventHandler,
+            _metadata: HandlerMetadata,
+        ) -> Result<String, AppError> {
+            Err(AppError::internal("registration failed"))
+        }
+
+        async fn subscribe_after(
+            &self,
+            _event_name: &str,
+            _handler: AfterEventHandler,
+            _metadata: HandlerMetadata,
+        ) -> Result<String, AppError> {
+            Err(AppError::internal("registration failed"))
+        }
+
+        async fn unsubscribe_before(
+            &self,
+            _event_name: &str,
+            _handler_id: &str,
+        ) -> Result<bool, AppError> {
+            Ok(false)
+        }
+
+        async fn unsubscribe_after(
+            &self,
+            _event_name: &str,
+            _handler_id: &str,
+        ) -> Result<bool, AppError> {
+            Ok(false)
+        }
+
+        async fn set_handler_enabled(
+            &self,
+            _handler_id: &str,
+            _enabled: bool,
+        ) -> Result<bool, AppError> {
+            Ok(false)
+        }
+
+        fn before_listener_count(&self, _event_name: &str) -> usize {
+            0
+        }
+
+        fn after_listener_count(&self, _event_name: &str) -> usize {
+            0
+        }
+
+        fn list_handlers(&self) -> HashMap<String, Vec<HandlerMetadata>> {
+            HashMap::new()
+        }
+
+        fn metrics(&self) -> EventMetrics {
+            EventMetrics::default()
+        }
+
+        async fn add_filter(&self, _filter: Box<dyn EventFilter>) -> Result<String, AppError> {
+            Ok("test-filter".to_string())
+        }
+
+        async fn remove_filter(&self, _filter_id: &str) -> Result<bool, AppError> {
+            Ok(false)
+        }
+
+        fn health_status(&self) -> EventBusHealth {
+            EventBusHealth::healthy()
+        }
+
+        async fn shutdown(&self) -> Result<(), AppError> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn load_and_register_rolls_back_runtime_when_event_registration_fails() {
+        let policies = SecurityPolicies {
+            require_code_signing: false,
+            allow_untrusted_plugins: true,
+            ..Default::default()
+        };
+        let manager = test_manager_with_policies(policies);
+        let event_bus: Arc<dyn EventBus> = Arc::new(FailingRegistrationEventBus);
+        let config = PluginConfiguration::new(
+            "rollback_plugin".to_string(),
+            "1.0.0".to_string(),
+            "Rollback test plugin".to_string(),
+            "OxideDB".to_string(),
+            PluginTrustLevel::PartiallyTrusted,
+            vec![PluginCapability::LogInfo],
+            ResourceLimits::default(),
+            None,
+            Some(MINIMAL_PLUGIN_WASM.len() as u64),
+            None,
+        );
+
+        let result = manager
+            .load_and_register_plugin(&event_bus, &config, MINIMAL_PLUGIN_WASM)
+            .await;
+
+        assert!(matches!(result, Err(AppError::Internal { .. })));
+        match manager.get_loaded_plugin_count() {
+            Ok(count) => assert_eq!(count, 0),
+            Err(error) => panic!("failed to inspect loaded plugin count: {}", error),
+        }
     }
 
     #[test]

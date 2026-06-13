@@ -332,21 +332,47 @@ pub async fn register_plugin(
         }
     };
 
-    // Load the plugin into runtime (NO METADATA EXTRACTION FROM WASM)
-    let load_result = {
-        let mut runtime_guard = plugin_manager
-            .runtime
-            .lock()
-            .map_err(|_| ApiError::internal("Failed to acquire plugin runtime lock".to_string()))?;
+    let persisted_config = match state
+        .plugin_config_service
+        .get_plugin_config(&plugin_name)
+        .await
+    {
+        Ok(config) => config,
+        Err(error) => {
+            record_plugin_audit_event(
+                &state,
+                &plugin_name,
+                "plugin_load_failed",
+                "failure",
+                serde_json::json!({
+                    "source": "zip_package",
+                    "version": plugin_version,
+                    "reason": error.to_string(),
+                }),
+            )
+            .await;
+            if let Err(rollback_error) = state
+                .plugin_config_service
+                .uninstall_plugin(&plugin_name)
+                .await
+            {
+                error!(
+                    "Failed to roll back plugin '{}' after persisted config lookup failure: {}",
+                    plugin_name, rollback_error
+                );
+            }
 
-        runtime_guard.load_plugin_with_trust(
-            &plugin_name,
-            &package.wasm_data,
-            user_trust_level.clone(),
-            final_capabilities.clone(),
-            ResourceLimits::default(),
-        )
+            return Err(ApiError::internal(format!(
+                "Failed to load persisted plugin configuration: {}",
+                error
+            )));
+        }
     };
+
+    // Load the plugin into runtime and register event handlers as one lifecycle step.
+    let load_result = plugin_manager
+        .load_and_register_plugin(&state.event_bus, &persisted_config, &package.wasm_data)
+        .await;
 
     if let Err(e) = load_result {
         record_plugin_audit_event(
@@ -373,28 +399,6 @@ pub async fn register_plugin(
         }
 
         return Err(ApiError::internal(format!("Failed to load plugin: {}", e)));
-    }
-
-    if let Err(e) = plugin_manager
-        .register_plugin_with_event_system(&state.event_bus, &plugin_name)
-        .await
-    {
-        record_plugin_audit_event(
-            &state,
-            &plugin_name,
-            "plugin_registration_failed",
-            "failure",
-            serde_json::json!({
-                "source": "zip_package",
-                "version": plugin_version,
-                "reason": e.to_string(),
-            }),
-        )
-        .await;
-        return Err(ApiError::internal(format!(
-            "Failed to register plugin event handlers for '{}': {}",
-            plugin_name, e
-        )));
     }
 
     info!(

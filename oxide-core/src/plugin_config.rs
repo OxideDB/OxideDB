@@ -434,15 +434,14 @@ pub fn record_to_plugin_config(
             if resource_limits.is_string() && resource_limits.as_str() == Some("") {
                 obj.insert(
                     "resource_limits".to_string(),
-                    serde_json::to_value(crate::plugin_security::ResourceLimits::default())
-                        .unwrap(),
+                    default_resource_limits_value(),
                 );
             }
         } else {
             // Add missing resource_limits field with defaults
             obj.insert(
                 "resource_limits".to_string(),
-                serde_json::to_value(crate::plugin_security::ResourceLimits::default()).unwrap(),
+                default_resource_limits_value(),
             );
         }
 
@@ -488,6 +487,8 @@ pub fn record_to_plugin_config(
         if let Some(wasm_size) = obj.get("wasm_size") {
             if let Some(f) = wasm_size.as_f64() {
                 obj.insert("wasm_size".to_string(), serde_json::json!(f as u64));
+            } else if wasm_size.is_string() && wasm_size.as_str() == Some("") {
+                obj.insert("wasm_size".to_string(), serde_json::Value::Null);
             }
         }
 
@@ -537,6 +538,16 @@ pub fn record_to_plugin_config(
     serde_json::from_value(record).map_err(|e| {
         warn!("Failed to deserialize plugin config: {}", e);
         e
+    })
+}
+
+fn default_resource_limits_value() -> serde_json::Value {
+    let limits = crate::plugin_security::ResourceLimits::default();
+    serde_json::json!({
+        "max_memory": limits.max_memory,
+        "max_execution_time": limits.max_execution_time,
+        "max_host_calls": limits.max_host_calls,
+        "rate_limit": limits.rate_limit,
     })
 }
 
@@ -756,6 +767,31 @@ mod tests {
         assert!(schema.fields.contains_key("capabilities"));
         assert!(schema.fields.contains_key("wasm_path"));
         assert!(schema.fields.contains_key("wasm_hash"));
+    }
+
+    #[test]
+    fn test_record_to_plugin_config_handles_legacy_missing_fields() {
+        let record = serde_json::json!({
+            "name": "legacy-plugin",
+            "capabilities": "",
+            "resource_limits": "",
+            "metadata": "",
+            "wasm_size": "",
+            "created_at": 1_700_000_000_i64
+        });
+
+        let config = record_to_plugin_config(&record).expect("legacy plugin config should load");
+
+        assert_eq!(config.name, "legacy-plugin");
+        assert_eq!(config.version, "1.0.0");
+        assert_eq!(config.author, "Unknown");
+        assert_eq!(config.updated_at, 1_700_000_000_i64);
+        assert!(config.capabilities.is_empty());
+        assert_eq!(
+            config.resource_limits.max_memory,
+            ResourceLimits::default().max_memory
+        );
+        assert!(config.wasm_size.is_none());
     }
 
     #[test]

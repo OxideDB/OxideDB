@@ -11,8 +11,12 @@ use oxide_core::{
     plugin_security::{PluginCapability, PluginTrustLevel, ResourceLimits},
     AppError,
 };
-use oxide_db::{db::ListParams, Db};
-use std::path::{Component, PathBuf};
+use oxide_db::{
+    db::{FilterOp, ListParams},
+    Db, Record,
+};
+use std::io;
+use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use tracing::{debug, error, info, warn};
 
@@ -34,6 +38,10 @@ fn copy_dir_recursive(source: &std::path::Path, dest: &std::path::Path) -> std::
     }
 
     Ok(())
+}
+
+fn permission_denied(message: &'static str) -> io::Error {
+    io::Error::new(io::ErrorKind::PermissionDenied, message)
 }
 
 /// Service for managing plugin configurations in the database and filesystem
@@ -237,15 +245,13 @@ impl PluginConfigService {
         // Get existing plugin configuration
         let mut config = self.get_plugin_config(plugin_name).await?;
 
-        // Remove old WASM file if it exists
-        if let Some(old_wasm_path) = &config.wasm_path {
-            if let Err(e) = tokio::task::spawn_blocking({
-                let plugins_dir = self.plugins_dir.clone();
-                let old_wasm_path = old_wasm_path.clone();
-                move || plugin_fs::delete_wasm_file(&plugins_dir, &old_wasm_path)
-            })
-            .await
-            {
+        // Remove old plugin artifacts if they exist.
+        if let Some(old_plugin_directory) = &config.plugin_directory {
+            if let Err(e) = self.remove_plugin_directory(old_plugin_directory).await {
+                warn!("Failed to delete old plugin directory: {}", e);
+            }
+        } else if let Some(old_wasm_path) = &config.wasm_path {
+            if let Err(e) = self.delete_wasm_file(old_wasm_path).await {
                 warn!("Failed to delete old WASM file: {}", e);
             }
         }
@@ -264,6 +270,7 @@ impl PluginConfigService {
         // Update configuration
         config.version = new_version;
         config.set_wasm_info(Some(wasm_path), Some(wasm_size), Some(wasm_hash));
+        config.set_plugin_directory(None);
 
         // Save updated configuration
         self.update_plugin_config(&config).await?;
@@ -286,37 +293,34 @@ impl PluginConfigService {
             // Load from plugin directory structure
             debug!("Loading WASM from plugin directory: {}", plugin_directory);
 
-            let stored_wasm_path = PathBuf::from(&wasm_path);
+            let plugin_directory_path = Self::safe_plugin_directory_path(plugin_directory)?;
+            let stored_wasm_path = Self::safe_relative_path("wasm_path", &wasm_path)?;
             let wasm_relative_path = stored_wasm_path
-                .strip_prefix(plugin_directory)
+                .strip_prefix(&plugin_directory_path)
                 .unwrap_or(stored_wasm_path.as_path())
                 .to_path_buf();
-
-            if wasm_relative_path.as_os_str().is_empty()
-                || wasm_relative_path
-                    .components()
-                    .any(|component| !matches!(component, Component::Normal(_)))
-            {
-                return Err(AppError::internal(format!(
-                    "Invalid plugin WASM path stored for '{}': {}",
-                    plugin_name, wasm_path
-                )));
-            }
+            Self::ensure_nonempty_relative_path("wasm_path", &wasm_relative_path)?;
 
             tokio::task::spawn_blocking({
                 let plugins_dir = self.plugins_dir.clone();
-                let plugin_directory = plugin_directory.clone();
+                let plugin_directory_path = plugin_directory_path.clone();
                 let wasm_relative_path = wasm_relative_path.clone();
 
                 move || {
-                    let plugin_dir = plugins_dir.join(&plugin_directory);
+                    let plugin_dir = plugins_dir.join(&plugin_directory_path);
                     let wasm_path = plugin_dir.join(&wasm_relative_path);
+                    let canonical_plugins_dir = plugins_dir.canonicalize()?;
                     let canonical_plugin_dir = plugin_dir.canonicalize()?;
                     let canonical_wasm_path = wasm_path.canonicalize()?;
 
+                    if !canonical_plugin_dir.starts_with(&canonical_plugins_dir) {
+                        return Err(permission_denied(
+                            "Plugin directory escapes plugins directory",
+                        ));
+                    }
+
                     if !canonical_wasm_path.starts_with(&canonical_plugin_dir) {
-                        return Err(std::io::Error::new(
-                            std::io::ErrorKind::PermissionDenied,
+                        return Err(permission_denied(
                             "Plugin WASM path escapes plugin directory",
                         ));
                     }
@@ -332,14 +336,7 @@ impl PluginConfigService {
         } else {
             // Load from legacy flat file structure
             debug!("Loading WASM from legacy path: {}", wasm_path);
-            tokio::task::spawn_blocking({
-                let plugins_dir = self.plugins_dir.clone();
-                let wasm_path = wasm_path.clone();
-                move || plugin_fs::load_wasm_file(&plugins_dir, &wasm_path)
-            })
-            .await
-            .map_err(|e| AppError::internal(format!("Failed to spawn blocking task: {}", e)))?
-            .map_err(|e| AppError::internal(format!("Failed to load WASM file: {}", e)))?
+            self.load_wasm_file(&wasm_path).await?
         };
 
         // Verify file integrity if hash is available
@@ -382,33 +379,16 @@ impl PluginConfigService {
         if let Some(plugin_directory) = &config.plugin_directory {
             // Remove entire plugin directory
             debug!("Removing plugin directory: {}", plugin_directory);
-            if let Err(e) = tokio::task::spawn_blocking({
-                let plugins_dir = self.plugins_dir.clone();
-                let plugin_directory = plugin_directory.clone();
-                move || {
-                    let plugin_dir = plugins_dir.join(&plugin_directory);
-                    if plugin_dir.exists() {
-                        std::fs::remove_dir_all(plugin_dir)
-                    } else {
-                        Ok(())
-                    }
-                }
-            })
-            .await
-            {
+            if let Err(e) = self.remove_plugin_directory(plugin_directory).await {
                 warn!("Failed to delete plugin directory during uninstall: {}", e);
+                return Err(e);
             }
         } else if let Some(wasm_path) = &config.wasm_path {
             // Legacy: Remove individual WASM file
             debug!("Removing legacy WASM file: {}", wasm_path);
-            if let Err(e) = tokio::task::spawn_blocking({
-                let plugins_dir = self.plugins_dir.clone();
-                let wasm_path = wasm_path.clone();
-                move || plugin_fs::delete_wasm_file(&plugins_dir, &wasm_path)
-            })
-            .await
-            {
+            if let Err(e) = self.delete_wasm_file(wasm_path).await {
                 warn!("Failed to delete WASM file during uninstall: {}", e);
+                return Err(e);
             }
         }
 
@@ -457,17 +437,12 @@ impl PluginConfigService {
         let mut cleaned_count = 0;
 
         for file in orphaned_files {
-            if let Err(e) = tokio::task::spawn_blocking({
-                let plugins_dir = self.plugins_dir.clone();
-                let file = file.clone();
-                move || plugin_fs::delete_wasm_file(&plugins_dir, &file)
-            })
-            .await
-            {
-                warn!("Failed to delete orphaned WASM file {}: {}", file, e);
-            } else {
-                cleaned_count += 1;
-                debug!("Deleted orphaned WASM file: {}", file);
+            match self.delete_wasm_file(&file).await {
+                Ok(()) => {
+                    cleaned_count += 1;
+                    debug!("Deleted orphaned WASM file: {}", file);
+                }
+                Err(e) => warn!("Failed to delete orphaned WASM file {}: {}", file, e),
             }
         }
 
@@ -487,11 +462,11 @@ impl PluginConfigService {
             .map_err(|e| AppError::internal(format!("Failed to serialize plugin config: {}", e)))?;
 
         // Check if plugin already exists
-        if let Ok(existing_record) = self.get_plugin_config(&config.name).await {
+        if let Some((existing_record, _)) = self.find_plugin_record(&config.name).await? {
             // Update existing plugin
             let record = self
                 .db
-                .update_record("_plugins", &existing_record.name, record_data)
+                .update_record("_plugins", &existing_record.id, record_data)
                 .await?;
             info!("✅ Updated plugin configuration: {}", config.name);
             Ok(record.id)
@@ -510,17 +485,9 @@ impl PluginConfigService {
     ) -> Result<PluginConfiguration, AppError> {
         debug!("Getting plugin configuration: {}", plugin_name);
 
-        // List all plugins and find by name (since we need to search by name, not ID)
-        let params = ListParams::default();
-        let records = self.db.list_records("_plugins", params).await?;
-
-        for record in records {
-            if let Ok(config) = record_to_plugin_config(&record.data) {
-                if config.name == plugin_name {
-                    debug!("✅ Found plugin configuration: {}", plugin_name);
-                    return Ok(config);
-                }
-            }
+        if let Some((_, config)) = self.find_plugin_record(plugin_name).await? {
+            debug!("✅ Found plugin configuration: {}", plugin_name);
+            return Ok(config);
         }
 
         Err(AppError::not_found("plugin", plugin_name))
@@ -530,21 +497,9 @@ impl PluginConfigService {
     pub async fn list_plugin_configs(&self) -> Result<Vec<PluginConfiguration>, AppError> {
         debug!("Listing all plugin configurations");
 
-        let params = ListParams::default();
-        let records = self.db.list_records("_plugins", params).await?;
-
-        let mut configs = Vec::new();
-        for record in records {
-            match record_to_plugin_config(&record.data) {
-                Ok(config) => configs.push(config),
-                Err(e) => {
-                    warn!(
-                        "Failed to deserialize plugin config from record {}: {}",
-                        record.id, e
-                    );
-                }
-            }
-        }
+        let configs = self
+            .list_plugin_configs_with_params(ListParams::default())
+            .await?;
 
         debug!("✅ Listed {} plugin configurations", configs.len());
         Ok(configs)
@@ -554,27 +509,16 @@ impl PluginConfigService {
     pub async fn update_plugin_config(&self, config: &PluginConfiguration) -> Result<(), AppError> {
         debug!("Updating plugin configuration: {}", config.name);
 
-        // Get existing record to verify it exists
-        let _existing_config = self.get_plugin_config(&config.name).await?;
-
         // Convert to record data
         let record_data = plugin_config_to_record(config)
             .map_err(|e| AppError::internal(format!("Failed to serialize plugin config: {}", e)))?;
 
-        // Find the record ID by listing and matching name
-        let params = ListParams::default();
-        let records = self.db.list_records("_plugins", params).await?;
-
-        for record in records {
-            if let Ok(existing) = record_to_plugin_config(&record.data) {
-                if existing.name == config.name {
-                    self.db
-                        .update_record("_plugins", &record.id, record_data)
-                        .await?;
-                    info!("✅ Updated plugin configuration: {}", config.name);
-                    return Ok(());
-                }
-            }
+        if let Some((record, _)) = self.find_plugin_record(&config.name).await? {
+            self.db
+                .update_record("_plugins", &record.id, record_data)
+                .await?;
+            info!("✅ Updated plugin configuration: {}", config.name);
+            return Ok(());
         }
 
         Err(AppError::not_found("plugin", &config.name))
@@ -584,18 +528,10 @@ impl PluginConfigService {
     pub async fn delete_plugin_config(&self, plugin_name: &str) -> Result<(), AppError> {
         debug!("Deleting plugin configuration: {}", plugin_name);
 
-        // Find the record ID by listing and matching name
-        let params = ListParams::default();
-        let records = self.db.list_records("_plugins", params).await?;
-
-        for record in records {
-            if let Ok(config) = record_to_plugin_config(&record.data) {
-                if config.name == plugin_name {
-                    self.db.delete_record("_plugins", &record.id).await?;
-                    info!("✅ Deleted plugin configuration: {}", plugin_name);
-                    return Ok(());
-                }
-            }
+        if let Some((record, _)) = self.find_plugin_record(plugin_name).await? {
+            self.db.delete_record("_plugins", &record.id).await?;
+            info!("✅ Deleted plugin configuration: {}", plugin_name);
+            return Ok(());
         }
 
         Err(AppError::not_found("plugin", plugin_name))
@@ -747,6 +683,239 @@ impl PluginConfigService {
         Ok(enabled_configs)
     }
 
+    fn plugin_name_params(plugin_name: &str) -> ListParams {
+        ListParams {
+            limit: Some(2),
+            filter_field: Some("name".to_string()),
+            filter_op: Some(FilterOp::Eq),
+            filter_value: Some(plugin_name.to_string()),
+            ..Default::default()
+        }
+    }
+
+    async fn find_plugin_record(
+        &self,
+        plugin_name: &str,
+    ) -> Result<Option<(Record, PluginConfiguration)>, AppError> {
+        let records = self
+            .db
+            .list_records("_plugins", Self::plugin_name_params(plugin_name))
+            .await?;
+
+        if records.len() > 1 {
+            warn!(
+                "Found {} plugin configuration records named '{}'; using the first record",
+                records.len(),
+                plugin_name
+            );
+        }
+
+        let Some(record) = records.into_iter().next() else {
+            return Ok(None);
+        };
+
+        let record_id = record.id.clone();
+        let config = Self::plugin_config_from_record(&record).map_err(|e| {
+            AppError::internal(format!(
+                "Failed to deserialize plugin configuration record '{}' for '{}': {}",
+                record_id, plugin_name, e
+            ))
+        })?;
+
+        Ok(Some((record, config)))
+    }
+
+    async fn load_wasm_file(&self, wasm_path: &str) -> Result<Vec<u8>, AppError> {
+        let wasm_path = Self::safe_relative_path("wasm_path", wasm_path)?;
+
+        tokio::task::spawn_blocking({
+            let plugins_dir = self.plugins_dir.clone();
+            move || {
+                let file_path = plugins_dir.join(&wasm_path);
+                let canonical_plugins_dir = plugins_dir.canonicalize()?;
+                let canonical_file_path = file_path.canonicalize()?;
+
+                if !canonical_file_path.starts_with(&canonical_plugins_dir) {
+                    return Err(permission_denied(
+                        "Plugin WASM path escapes plugins directory",
+                    ));
+                }
+
+                std::fs::read(canonical_file_path)
+            }
+        })
+        .await
+        .map_err(|e| AppError::internal(format!("Failed to spawn blocking task: {}", e)))?
+        .map_err(|e| AppError::internal(format!("Failed to load WASM file: {}", e)))
+    }
+
+    async fn delete_wasm_file(&self, wasm_path: &str) -> Result<(), AppError> {
+        let wasm_path = Self::safe_relative_path("wasm_path", wasm_path)?;
+
+        tokio::task::spawn_blocking({
+            let plugins_dir = self.plugins_dir.clone();
+            move || {
+                let file_path = plugins_dir.join(&wasm_path);
+                let metadata = match std::fs::symlink_metadata(&file_path) {
+                    Ok(metadata) => metadata,
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+                    Err(error) => return Err(error),
+                };
+                if metadata.file_type().is_symlink() {
+                    return Err(permission_denied(
+                        "Refusing to delete symlinked plugin WASM",
+                    ));
+                }
+
+                let canonical_plugins_dir = plugins_dir.canonicalize()?;
+                let canonical_file_path = file_path.canonicalize()?;
+                if !canonical_file_path.starts_with(&canonical_plugins_dir) {
+                    return Err(permission_denied(
+                        "Plugin WASM path escapes plugins directory",
+                    ));
+                }
+
+                std::fs::remove_file(file_path)
+            }
+        })
+        .await
+        .map_err(|e| AppError::internal(format!("Failed to spawn blocking task: {}", e)))?
+        .map_err(|e| AppError::internal(format!("Failed to delete WASM file: {}", e)))
+    }
+
+    async fn remove_plugin_directory(&self, plugin_directory: &str) -> Result<(), AppError> {
+        let plugin_directory = Self::safe_plugin_directory_path(plugin_directory)?;
+
+        tokio::task::spawn_blocking({
+            let plugins_dir = self.plugins_dir.clone();
+            move || {
+                let plugin_dir = plugins_dir.join(&plugin_directory);
+                let metadata = match std::fs::symlink_metadata(&plugin_dir) {
+                    Ok(metadata) => metadata,
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+                    Err(error) => return Err(error),
+                };
+                if metadata.file_type().is_symlink() {
+                    return Err(permission_denied(
+                        "Refusing to delete symlinked plugin directory",
+                    ));
+                }
+
+                let canonical_plugins_dir = plugins_dir.canonicalize()?;
+                let canonical_plugin_dir = plugin_dir.canonicalize()?;
+                if canonical_plugin_dir == canonical_plugins_dir
+                    || !canonical_plugin_dir.starts_with(&canonical_plugins_dir)
+                {
+                    return Err(permission_denied(
+                        "Plugin directory escapes plugins directory",
+                    ));
+                }
+
+                std::fs::remove_dir_all(canonical_plugin_dir)
+            }
+        })
+        .await
+        .map_err(|e| AppError::internal(format!("Failed to spawn blocking task: {}", e)))?
+        .map_err(|e| AppError::internal(format!("Failed to delete plugin directory: {}", e)))
+    }
+
+    fn safe_plugin_directory_path(plugin_directory: &str) -> Result<PathBuf, AppError> {
+        let path = Self::safe_relative_path("plugin_directory", plugin_directory)?;
+        if path.components().count() != 1 {
+            return Err(AppError::security(format!(
+                "Invalid plugin_directory '{}': expected a single directory name",
+                plugin_directory
+            )));
+        }
+
+        Ok(path)
+    }
+
+    fn safe_relative_path(field_name: &str, value: &str) -> Result<PathBuf, AppError> {
+        let mut path = PathBuf::new();
+        let mut has_components = false;
+
+        for component in Path::new(value).components() {
+            match component {
+                Component::Normal(part) => {
+                    path.push(part);
+                    has_components = true;
+                }
+                Component::CurDir => {}
+                Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+                    return Err(AppError::security(format!(
+                        "Invalid plugin {} '{}': path must be relative and stay inside the plugins directory",
+                        field_name, value
+                    )));
+                }
+            }
+        }
+
+        if !has_components {
+            return Err(AppError::security(format!(
+                "Invalid plugin {} '{}': path must not be empty",
+                field_name, value
+            )));
+        }
+
+        Ok(path)
+    }
+
+    fn ensure_nonempty_relative_path(field_name: &str, path: &Path) -> Result<(), AppError> {
+        let has_normal_component = path
+            .components()
+            .any(|component| matches!(component, Component::Normal(_)));
+
+        if !has_normal_component {
+            return Err(AppError::security(format!(
+                "Invalid plugin {} '{}': path must not be empty",
+                field_name,
+                path.display()
+            )));
+        }
+
+        Ok(())
+    }
+
+    async fn list_plugin_configs_with_params(
+        &self,
+        params: ListParams,
+    ) -> Result<Vec<PluginConfiguration>, AppError> {
+        let records = self.db.list_records("_plugins", params).await?;
+
+        let mut configs = Vec::new();
+        for record in records {
+            match Self::plugin_config_from_record(&record) {
+                Ok(config) => configs.push(config),
+                Err(e) => {
+                    warn!(
+                        "Failed to deserialize plugin config from record {}: {}",
+                        record.id, e
+                    );
+                }
+            }
+        }
+
+        Ok(configs)
+    }
+
+    fn plugin_config_from_record(
+        record: &Record,
+    ) -> Result<PluginConfiguration, serde_json::Error> {
+        let mut data = record.data.clone();
+
+        if let Some(obj) = data.as_object_mut() {
+            obj.entry("installed_at".to_string())
+                .or_insert_with(|| serde_json::json!(record.created_at));
+            obj.insert(
+                "updated_at".to_string(),
+                serde_json::json!(record.updated_at),
+            );
+        }
+
+        record_to_plugin_config(&data)
+    }
+
     /// Update plugin metadata with extracted information from the plugin runtime
     pub async fn update_plugin_metadata(
         &self,
@@ -761,5 +930,34 @@ impl PluginConfigService {
 
         info!("✅ Updated plugin metadata: {}", plugin_name);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn safe_relative_path_accepts_normalized_relative_paths() {
+        let path = PluginConfigService::safe_relative_path(
+            "wasm_path",
+            "./plugin-1.0.0/./nested/plugin.wasm",
+        )
+        .expect("relative plugin path should be accepted");
+
+        assert_eq!(path, PathBuf::from("plugin-1.0.0/nested/plugin.wasm"));
+    }
+
+    #[test]
+    fn safe_relative_path_rejects_paths_that_escape_plugin_root() {
+        assert!(PluginConfigService::safe_relative_path("wasm_path", "../plugin.wasm").is_err());
+        assert!(PluginConfigService::safe_relative_path("wasm_path", "/tmp/plugin.wasm").is_err());
+        assert!(PluginConfigService::safe_relative_path("wasm_path", "").is_err());
+    }
+
+    #[test]
+    fn plugin_directory_must_be_a_single_relative_component() {
+        assert!(PluginConfigService::safe_plugin_directory_path("plugin-1.0.0/nested").is_err());
+        assert!(PluginConfigService::safe_plugin_directory_path("plugin-1.0.0").is_ok());
     }
 }
