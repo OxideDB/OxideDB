@@ -1,8 +1,9 @@
 //! Host function interface for calling back to the OxideDB host
 
 use crate::{
-    DatabaseResult, EventPayload, HttpRequestContext, HttpResponse, LogLevel, PluginError,
-    PluginResult,
+    DatabaseResult, EventPayload, FileIdentifier, FileListRequest, FileListResponse, FileMetadata,
+    FileMoveRequest, FileReadRequest, FileReadResponse, FileWriteRequest, HttpRequestContext,
+    HttpResponse, LogLevel, PluginError, PluginResult, VfsUsageStats,
 };
 
 // Raw host function imports
@@ -58,6 +59,40 @@ extern "C" {
         record_id_ptr: *const u8,
         record_id_len: usize,
     ) -> i32;
+
+    // VFS functions
+    fn vfs_write_file(
+        namespace_ptr: *const u8,
+        namespace_len: usize,
+        request_ptr: *const u8,
+        request_len: usize,
+    ) -> i64;
+    fn vfs_read_file(
+        namespace_ptr: *const u8,
+        namespace_len: usize,
+        request_ptr: *const u8,
+        request_len: usize,
+    ) -> i64;
+    fn vfs_move_file(
+        namespace_ptr: *const u8,
+        namespace_len: usize,
+        request_ptr: *const u8,
+        request_len: usize,
+    ) -> i64;
+    fn vfs_delete_file(
+        namespace_ptr: *const u8,
+        namespace_len: usize,
+        identifier_ptr: *const u8,
+        identifier_len: usize,
+    ) -> i64;
+    fn vfs_list_files(
+        namespace_ptr: *const u8,
+        namespace_len: usize,
+        request_ptr: *const u8,
+        request_len: usize,
+    ) -> i64;
+    fn vfs_get_usage_stats(namespace_ptr: *const u8, namespace_len: usize) -> i64;
+
     fn get_http_request() -> i32;
     fn set_http_response(
         status_code: i32,
@@ -143,6 +178,61 @@ unsafe fn delete_record(
     _record_id_ptr: *const u8,
     _record_id_len: usize,
 ) -> i32 {
+    -1
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+unsafe fn vfs_write_file(
+    _namespace_ptr: *const u8,
+    _namespace_len: usize,
+    _request_ptr: *const u8,
+    _request_len: usize,
+) -> i64 {
+    -1
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+unsafe fn vfs_read_file(
+    _namespace_ptr: *const u8,
+    _namespace_len: usize,
+    _request_ptr: *const u8,
+    _request_len: usize,
+) -> i64 {
+    -1
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+unsafe fn vfs_move_file(
+    _namespace_ptr: *const u8,
+    _namespace_len: usize,
+    _request_ptr: *const u8,
+    _request_len: usize,
+) -> i64 {
+    -1
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+unsafe fn vfs_delete_file(
+    _namespace_ptr: *const u8,
+    _namespace_len: usize,
+    _identifier_ptr: *const u8,
+    _identifier_len: usize,
+) -> i64 {
+    -1
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+unsafe fn vfs_list_files(
+    _namespace_ptr: *const u8,
+    _namespace_len: usize,
+    _request_ptr: *const u8,
+    _request_len: usize,
+) -> i64 {
+    -1
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+unsafe fn vfs_get_usage_stats(_namespace_ptr: *const u8, _namespace_len: usize) -> i64 {
     -1
 }
 
@@ -385,6 +475,153 @@ impl Host {
         }
     }
 
+    /// Write a file to a VFS namespace.
+    pub fn vfs_write_file(
+        namespace: &str,
+        request: &FileWriteRequest,
+    ) -> PluginResult<FileMetadata> {
+        let request_json = serde_json::to_string(request)?;
+        let namespace_bytes = namespace.as_bytes();
+        let request_bytes = request_json.as_bytes();
+
+        unsafe {
+            let result = vfs_write_file(
+                namespace_bytes.as_ptr(),
+                namespace_bytes.len(),
+                request_bytes.as_ptr(),
+                request_bytes.len(),
+            );
+
+            if result == 0 {
+                Self::get_json_result()
+            } else {
+                Err(PluginError::HostCallFailed(
+                    "Failed to write VFS file".to_string(),
+                ))
+            }
+        }
+    }
+
+    /// Read a file from a VFS namespace.
+    pub fn vfs_read_file(
+        namespace: &str,
+        request: &FileReadRequest,
+    ) -> PluginResult<FileReadResponse> {
+        let request_json = serde_json::to_string(request)?;
+        let namespace_bytes = namespace.as_bytes();
+        let request_bytes = request_json.as_bytes();
+
+        unsafe {
+            let result = vfs_read_file(
+                namespace_bytes.as_ptr(),
+                namespace_bytes.len(),
+                request_bytes.as_ptr(),
+                request_bytes.len(),
+            );
+
+            if result == 0 {
+                Self::get_json_result()
+            } else {
+                Err(PluginError::HostCallFailed(
+                    "Failed to read VFS file".to_string(),
+                ))
+            }
+        }
+    }
+
+    /// Move or rename a file in a VFS namespace.
+    pub fn vfs_move_file(namespace: &str, request: &FileMoveRequest) -> PluginResult<FileMetadata> {
+        let request_json = serde_json::to_string(request)?;
+        let namespace_bytes = namespace.as_bytes();
+        let request_bytes = request_json.as_bytes();
+
+        unsafe {
+            let result = vfs_move_file(
+                namespace_bytes.as_ptr(),
+                namespace_bytes.len(),
+                request_bytes.as_ptr(),
+                request_bytes.len(),
+            );
+
+            if result == 0 {
+                Self::get_json_result()
+            } else {
+                Err(PluginError::HostCallFailed(
+                    "Failed to move VFS file".to_string(),
+                ))
+            }
+        }
+    }
+
+    /// Delete a file from a VFS namespace.
+    pub fn vfs_delete_file(namespace: &str, identifier: &FileIdentifier) -> PluginResult<()> {
+        let identifier_json = serde_json::to_string(identifier)?;
+        let namespace_bytes = namespace.as_bytes();
+        let identifier_bytes = identifier_json.as_bytes();
+
+        unsafe {
+            let result = vfs_delete_file(
+                namespace_bytes.as_ptr(),
+                namespace_bytes.len(),
+                identifier_bytes.as_ptr(),
+                identifier_bytes.len(),
+            );
+
+            if result == 0 {
+                let _: bool = Self::get_json_result()?;
+                Ok(())
+            } else {
+                Err(PluginError::HostCallFailed(
+                    "Failed to delete VFS file".to_string(),
+                ))
+            }
+        }
+    }
+
+    /// List files in a VFS namespace.
+    pub fn vfs_list_files(
+        namespace: &str,
+        request: &FileListRequest,
+    ) -> PluginResult<FileListResponse> {
+        let request_json = serde_json::to_string(request)?;
+        let namespace_bytes = namespace.as_bytes();
+        let request_bytes = request_json.as_bytes();
+
+        unsafe {
+            let result = vfs_list_files(
+                namespace_bytes.as_ptr(),
+                namespace_bytes.len(),
+                request_bytes.as_ptr(),
+                request_bytes.len(),
+            );
+
+            if result == 0 {
+                Self::get_json_result()
+            } else {
+                Err(PluginError::HostCallFailed(
+                    "Failed to list VFS files".to_string(),
+                ))
+            }
+        }
+    }
+
+    /// Get usage statistics for a VFS namespace.
+    pub fn vfs_get_usage_stats(namespace: &str) -> PluginResult<VfsUsageStats> {
+        let namespace_bytes = namespace.as_bytes();
+
+        unsafe {
+            let result = vfs_get_usage_stats(namespace_bytes.as_ptr(), namespace_bytes.len());
+
+            if result == 0 {
+                Self::get_json_result()
+            } else {
+                Err(PluginError::HostCallFailed(
+                    "Failed to get VFS usage stats".to_string(),
+                ))
+            }
+        }
+    }
+
     /// Get the current HTTP request context
     pub fn get_http_request() -> PluginResult<HttpRequestContext> {
         unsafe {
@@ -450,6 +687,24 @@ impl Host {
                     data: None,
                     error: Some("No result data".to_string()),
                 });
+            }
+
+            let slice = std::slice::from_raw_parts(ptr as *const u8, len as usize);
+            let json_str = std::str::from_utf8(slice)
+                .map_err(|e| PluginError::InvalidData(format!("Invalid UTF-8: {}", e)))?;
+
+            serde_json::from_str(json_str).map_err(PluginError::JsonError)
+        }
+    }
+
+    /// Get a JSON operation result from the host result buffer.
+    fn get_json_result<T: serde::de::DeserializeOwned>() -> PluginResult<T> {
+        unsafe {
+            let ptr = get_result_ptr();
+            let len = get_result_len();
+
+            if ptr == 0 || len == 0 {
+                return Err(PluginError::HostCallFailed("No result data".to_string()));
             }
 
             let slice = std::slice::from_raw_parts(ptr as *const u8, len as usize);

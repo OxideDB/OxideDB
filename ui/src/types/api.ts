@@ -489,6 +489,7 @@ export interface LoggingHealthResponse {
 
 // Plugin-specific CRUD operations for capabilities (different from API CrudOperation)
 export type PluginCrudOperation = "Create" | "Read" | "Update" | "Delete";
+export type PluginVfsOperation = "Write" | "Read" | "Move" | "Delete" | "List" | "Usage";
 
 // PluginCapability types matching Rust enum
 export type PluginCapability = 
@@ -504,6 +505,7 @@ export type PluginCapability =
   | { HttpRequest: { allowed_urls: string[]; rate_limit: number } }
   | { PersistentStorage: { max_size: number; key_prefixes: string[] } }
   | { EmitEvents: { event_types: string[] } }
+  | { AccessVfs: { namespaces: string[]; operations: PluginVfsOperation[] } }
   | { RegisterHttpRoutes: { path_patterns: string[]; methods: string[] } }
   | { CreateRecords: { collections: string[] } }
   | { ReadRecords: { collections: string[] } }
@@ -528,6 +530,8 @@ export const createCapability = {
     ({ PersistentStorage: { max_size, key_prefixes } }),
   EmitEvents: (event_types: string[] = ["custom.*"]): PluginCapability => 
     ({ EmitEvents: { event_types } }),
+  AccessVfs: (namespaces: string[] = ["*"], operations: PluginVfsOperation[] = ["Read", "List", "Usage"]): PluginCapability =>
+    ({ AccessVfs: { namespaces, operations } }),
   RegisterHttpRoutes: (path_patterns: string[] = ["*"], methods: string[] = ["GET", "POST"]): PluginCapability => 
     ({ RegisterHttpRoutes: { path_patterns, methods } }),
   CreateRecords: (collections: string[] = ["*"]): PluginCapability => 
@@ -656,6 +660,22 @@ function numberArg(args: Record<string, unknown>, key: string, fallback: number)
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
+function normalizeVfsOperation(operation: string): PluginVfsOperation {
+  switch (operation.trim().toLowerCase()) {
+    case "write": return "Write";
+    case "read": return "Read";
+    case "move":
+    case "rename": return "Move";
+    case "delete": return "Delete";
+    case "list": return "List";
+    case "usage":
+    case "stats":
+    case "usage_stats": return "Usage";
+    default:
+      return operation as PluginVfsOperation;
+  }
+}
+
 // Function to convert capability names to capability objects
 export function capabilityNameToObject(capabilityName: string): PluginCapability {
   try {
@@ -691,6 +711,10 @@ export function capabilityNameToObject(capabilityName: string): PluginCapability
       stringArrayArg(args, "key_prefixes", ["plugin_*"])
     );
     case "EmitEvents": return createCapability.EmitEvents(stringArrayArg(args, "event_types", ["custom.*"]));
+    case "AccessVfs": return createCapability.AccessVfs(
+      stringArrayArg(args, "namespaces", ["*"]),
+      stringArrayArg(args, "operations", ["Read", "List", "Usage"]).map(normalizeVfsOperation)
+    );
     case "RegisterHttpRoutes": return createCapability.RegisterHttpRoutes(
       stringArrayArg(args, "path_patterns", ["*"]),
       stringArrayArg(args, "methods", ["GET", "POST"]).map((method) => method.toUpperCase())

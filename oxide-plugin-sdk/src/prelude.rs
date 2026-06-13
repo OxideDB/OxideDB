@@ -11,6 +11,14 @@
 pub use crate::{
     DatabaseResult,
     EventPayload,
+    FileIdentifier,
+    FileListRequest,
+    FileListResponse,
+    FileMetadata,
+    FileMoveRequest,
+    FileReadRequest,
+    FileReadResponse,
+    FileWriteRequest,
     LogLevel,
     MemoryInfo,
     PluginError,
@@ -24,6 +32,8 @@ pub use crate::{
     PluginStatus,
     Record,
     RuntimeDetails,
+    Vfs,
+    VfsUsageStats,
 };
 
 // Re-export host interface

@@ -39,11 +39,13 @@ pub mod macros;
 pub mod memory;
 pub mod prelude;
 pub mod types;
+pub mod vfs;
 
 // Re-export commonly used types
 pub use host::Host;
 pub use memory::MemoryManager;
 pub use types::*;
+pub use vfs::Vfs;
 
 /// Result type for plugin operations
 pub type PluginResult<T> = Result<T, PluginError>;

@@ -661,6 +661,7 @@ fn parse_vfs_operation(operation: &str) -> Result<VfsOperation, ApiError> {
     match operation.trim().to_lowercase().as_str() {
         "write" => Ok(VfsOperation::Write),
         "read" => Ok(VfsOperation::Read),
+        "move" | "rename" => Ok(VfsOperation::Move),
         "delete" => Ok(VfsOperation::Delete),
         "list" => Ok(VfsOperation::List),
         "usage" | "stats" | "usage_stats" => Ok(VfsOperation::Usage),
@@ -866,7 +867,7 @@ mod tests {
     #[test]
     fn parses_scoped_vfs_capability() {
         let capability = parse_capability_string(
-            r#"AccessVfs(namespaces=["media/*"], operations=["read", "list"])"#,
+            r#"AccessVfs(namespaces=["media/*"], operations=["read", "move", "list"])"#,
         )
         .unwrap();
 
@@ -876,7 +877,7 @@ mod tests {
                 namespaces,
                 operations,
             } if namespaces == vec!["media/*".to_string()]
-                && operations == vec![VfsOperation::Read, VfsOperation::List]
+                && operations == vec![VfsOperation::Read, VfsOperation::Move, VfsOperation::List]
         ));
     }
 

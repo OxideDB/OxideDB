@@ -37,6 +37,24 @@ pub fn validate_path(path: &str) -> bool {
     normalize_path(path).is_some()
 }
 
+/// Validate a VFS namespace identifier.
+///
+/// Namespaces map to top-level storage directories, so they must be a single
+/// identifier segment rather than a virtual file path.
+pub fn validate_namespace(namespace: &str) -> bool {
+    if namespace.is_empty() || namespace.len() > 128 {
+        return false;
+    }
+
+    let mut chars = namespace.chars();
+    match chars.next() {
+        Some(first) if first == '_' || first.is_ascii_alphanumeric() => {}
+        _ => return false,
+    }
+
+    chars.all(|ch| ch == '_' || ch == '-' || ch == '.' || ch.is_ascii_alphanumeric())
+}
+
 /// Normalize a virtual VFS path while rejecting traversal and unsafe segments.
 ///
 /// A leading slash is treated as a virtual-root marker, so `/uploads/a.png`
@@ -135,6 +153,19 @@ mod tests {
         assert!(!validate_path("/etc/passwd"));
         assert!(!validate_path("folder\\file.txt"));
         assert!(!validate_path("file<.txt"));
+    }
+
+    #[test]
+    fn test_namespace_validation() {
+        assert!(validate_namespace("uploads"));
+        assert!(validate_namespace("tenant-1.assets"));
+        assert!(validate_namespace("_system"));
+        assert!(!validate_namespace(""));
+        assert!(!validate_namespace(".hidden"));
+        assert!(!validate_namespace("tenant/uploads"));
+        assert!(!validate_namespace("../uploads"));
+        assert!(!validate_namespace("plugin:uploads"));
+        assert!(!validate_namespace("uploads\\files"));
     }
 
     #[test]

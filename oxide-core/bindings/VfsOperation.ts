@@ -3,4 +3,4 @@
 /**
  * VFS operations that can be granted to plugins.
  */
-export type VfsOperation = "Write" | "Read" | "Delete" | "List" | "Usage";
+export type VfsOperation = "Write" | "Read" | "Move" | "Delete" | "List" | "Usage";

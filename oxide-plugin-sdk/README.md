@@ -7,6 +7,7 @@ A high-level SDK for developing OxideDB plugins with WebAssembly (WASM). This SD
 - **Event Handling**: Simple trait-based event handling for database operations
 - **HTTP Routes**: Easy HTTP route registration and handling
 - **Database Operations**: High-level database CRUD operations
+- **VFS Operations**: Safe namespace-scoped file access for plugin data workflows
 - **Logging**: Structured logging support with multiple levels
 - **Memory Management**: Automatic memory management for WASM
 - **Type Safety**: Strongly-typed interfaces with comprehensive error handling
@@ -142,6 +143,38 @@ impl PluginEventHandler for DatabasePlugin {
 
 export_plugin!(DatabasePlugin);
 ```
+
+### VFS Operations
+
+Read, write, move, list, and delete files in namespaces granted to your plugin:
+
+```rust
+use oxide_plugin_sdk::prelude::*;
+
+fn archive_report() -> PluginResult<()> {
+    let metadata = Vfs::write(
+        "reports",
+        "incoming/q2.txt",
+        b"quarterly results".to_vec(),
+        Some("text/plain"),
+    )?;
+
+    Vfs::move_file(
+        "reports",
+        FileIdentifier::id(metadata.id),
+        "archive/2026/q2.txt",
+        false,
+    )?;
+
+    let files = Vfs::list("reports", "archive", true)?;
+    log_info!("Archived report count: {}", files.total_count);
+
+    Ok(())
+}
+```
+
+Grant VFS access with an `AccessVfs` capability, for example:
+`AccessVfs(namespaces=["reports"], operations=["read", "write", "move", "list"])`.
 
 ## Configuration
 

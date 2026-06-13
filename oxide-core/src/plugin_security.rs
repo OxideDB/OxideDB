@@ -113,6 +113,8 @@ pub enum VfsOperation {
     Write,
     /// Read files in a VFS namespace
     Read,
+    /// Move or rename files in a VFS namespace
+    Move,
     /// Delete files in a VFS namespace
     Delete,
     /// List files in a VFS namespace
@@ -1062,6 +1064,10 @@ impl PluginSecurityManager {
                 namespaces: vec!["*".to_string()],
                 operations: vec![VfsOperation::Read],
             }),
+            "vfs_move_file" => Ok(PluginCapability::AccessVfs {
+                namespaces: vec!["*".to_string()],
+                operations: vec![VfsOperation::Move],
+            }),
             "vfs_delete_file" => Ok(PluginCapability::AccessVfs {
                 namespaces: vec!["*".to_string()],
                 operations: vec![VfsOperation::Delete],
@@ -1235,10 +1241,15 @@ mod tests {
             namespaces: vec!["media/public".to_string()],
             operations: vec![VfsOperation::Delete],
         };
+        let denied_move = PluginCapability::AccessVfs {
+            namespaces: vec!["media/public".to_string()],
+            operations: vec![VfsOperation::Move],
+        };
 
         assert!(granted.grants(&requested));
         assert!(!granted.grants(&denied_namespace));
         assert!(!granted.grants(&denied_operation));
+        assert!(!granted.grants(&denied_move));
     }
 
     #[test]

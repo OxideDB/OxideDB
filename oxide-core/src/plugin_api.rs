@@ -209,6 +209,11 @@ pub mod host_functions {
     /// Returns: FileReadResponse as JSON string
     pub const VFS_READ_FILE: &str = "vfs_read_file";
 
+    /// Function signature for moving or renaming a file in VFS
+    /// Parameters: namespace (string), request (JSON)
+    /// Returns: FileMetadata as JSON string
+    pub const VFS_MOVE_FILE: &str = "vfs_move_file";
+
     /// Function signature for deleting a file from VFS
     /// Parameters: namespace (string), identifier (JSON)
     /// Returns: success boolean

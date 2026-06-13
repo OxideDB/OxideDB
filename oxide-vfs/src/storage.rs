@@ -5,7 +5,9 @@
 //! Now featuring ultra-fast metadata lookups using LMDB with LRU cache.
 
 use crate::metadata_store::MetadataStore;
-use crate::utils::{calculate_content_hash, compress_content, decompress_content};
+use crate::utils::{
+    calculate_content_hash, compress_content, decompress_content, validate_namespace,
+};
 use oxide_core::{
     FileIdentifier, FileMetadata, VfsError, VfsNamespace, VfsNamespaceConfig, VfsResult,
 };
@@ -492,8 +494,15 @@ impl FileSystemStorage {
                 let namespace = entry.file_name().to_string_lossy().to_string();
                 let config_path = entry.path().join("config.json");
 
+                if !validate_namespace(&namespace) {
+                    continue;
+                }
+
                 if let Ok(config_data) = fs::read(&config_path).await {
                     if let Ok(config) = serde_json::from_slice::<VfsNamespaceConfig>(&config_data) {
+                        if config.namespace != namespace || !validate_namespace(&config.namespace) {
+                            continue;
+                        }
                         configs.insert(namespace, config);
                     }
                 }
@@ -555,6 +564,12 @@ impl FileSystemStorage {
 
     /// Store namespace configuration
     pub async fn store_namespace_config(&self, config: &VfsNamespaceConfig) -> VfsResult<()> {
+        if !validate_namespace(&config.namespace) {
+            return Err(VfsError::InvalidPath {
+                path: config.namespace.clone(),
+            });
+        }
+
         let namespace_dir = self.base_path.join("namespaces").join(&config.namespace);
         let config_path = namespace_dir.join("config.json");
 
@@ -580,6 +595,12 @@ impl FileSystemStorage {
 
     /// Remove namespace and all its files
     pub async fn remove_namespace(&self, namespace: &VfsNamespace) -> VfsResult<()> {
+        if !validate_namespace(namespace) {
+            return Err(VfsError::InvalidPath {
+                path: namespace.clone(),
+            });
+        }
+
         let namespace_dir = self.base_path.join("namespaces").join(namespace);
 
         if namespace_dir.exists() {

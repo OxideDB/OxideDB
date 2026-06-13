@@ -6,7 +6,7 @@
 
 use crate::backup;
 use crate::storage::FileSystemStorage;
-use crate::utils::{detect_mime_type, generate_file_id, normalize_path, validate_path};
+use crate::utils::{detect_mime_type, generate_file_id, normalize_path, validate_namespace};
 use oxide_core::event::RequestContext;
 use oxide_core::{
     AfterEventContext, AfterEventType, BeforeEventContext, BeforeEventType, EventBus,
@@ -106,11 +106,26 @@ impl VfsService {
                 let namespace = entry.file_name().to_string_lossy().to_string();
                 let config_path = entry.path().join("config.json");
 
+                if !validate_namespace(&namespace) {
+                    warn!(
+                        "Skipping invalid VFS namespace directory name: {}",
+                        namespace
+                    );
+                    continue;
+                }
+
                 if config_path.exists() {
                     match tokio::fs::read(&config_path).await {
                         Ok(config_data) => {
                             match serde_json::from_slice::<VfsNamespaceConfig>(&config_data) {
                                 Ok(config) => {
+                                    if config.namespace != namespace {
+                                        warn!(
+                                            "Skipping VFS namespace config mismatch: directory={}, config={}",
+                                            namespace, config.namespace
+                                        );
+                                        continue;
+                                    }
                                     namespaces.insert(namespace.clone(), config);
                                     loaded_count += 1;
                                     debug!("Loaded namespace configuration: {}", namespace);
@@ -142,6 +157,17 @@ impl VfsService {
     {
         let mut metrics = self.metrics.write().await;
         update_fn(&mut metrics);
+    }
+
+    /// Validate a namespace before it can reach storage paths.
+    fn validate_namespace_name(&self, namespace: &str) -> VfsResult<()> {
+        if validate_namespace(namespace) {
+            Ok(())
+        } else {
+            Err(VfsError::InvalidPath {
+                path: namespace.to_string(),
+            })
+        }
     }
 
     /// Validate path for security
@@ -203,12 +229,7 @@ impl VirtualFileSystem for VfsService {
             config.namespace, config.quota_bytes
         );
 
-        // Validate namespace name
-        if config.namespace.is_empty() || !validate_path(&config.namespace) {
-            return Err(VfsError::InvalidPath {
-                path: config.namespace,
-            });
-        }
+        self.validate_namespace_name(&config.namespace)?;
 
         // Check if namespace already exists
         {
@@ -238,6 +259,8 @@ impl VirtualFileSystem for VfsService {
 
     #[instrument(skip(self))]
     async fn delete_namespace(&self, namespace: &VfsNamespace) -> VfsResult<()> {
+        self.validate_namespace_name(namespace)?;
+
         // Log namespace deletion (namespace events are not yet in core EventBus)
         debug!("VFS before namespace delete: namespace={}", namespace);
 
@@ -273,6 +296,8 @@ impl VirtualFileSystem for VfsService {
         namespace: &VfsNamespace,
         mut request: FileWriteRequest,
     ) -> VfsResult<FileMetadata> {
+        self.validate_namespace_name(namespace)?;
+
         // Validate inputs
         request.path = self.normalize_file_path(&request.path)?;
 
@@ -431,6 +456,8 @@ impl VirtualFileSystem for VfsService {
         namespace: &VfsNamespace,
         request: FileMoveRequest,
     ) -> VfsResult<FileMetadata> {
+        self.validate_namespace_name(namespace)?;
+
         let identifier = self.normalize_identifier(request.identifier)?;
         let new_path = self.normalize_file_path(&request.new_path)?;
         let overwrite = request.overwrite;
@@ -542,6 +569,8 @@ impl VirtualFileSystem for VfsService {
         namespace: &VfsNamespace,
         request: FileReadRequest,
     ) -> VfsResult<FileReadResponse> {
+        self.validate_namespace_name(namespace)?;
+
         let identifier = self.normalize_identifier(request.identifier)?;
         let include_content = request.include_content;
 
@@ -647,6 +676,8 @@ impl VirtualFileSystem for VfsService {
         namespace: &VfsNamespace,
         identifier: FileIdentifier,
     ) -> VfsResult<()> {
+        self.validate_namespace_name(namespace)?;
+
         let identifier = self.normalize_identifier(identifier)?;
 
         // Get file metadata first for events and validation
@@ -731,6 +762,8 @@ impl VirtualFileSystem for VfsService {
         namespace: &VfsNamespace,
         mut request: FileListRequest,
     ) -> VfsResult<FileListResponse> {
+        self.validate_namespace_name(namespace)?;
+
         request.directory = self.normalize_directory_path(&request.directory)?;
 
         // Validate namespace exists
@@ -772,6 +805,8 @@ impl VirtualFileSystem for VfsService {
 
     #[instrument(skip(self))]
     async fn get_usage_stats(&self, namespace: &VfsNamespace) -> VfsResult<VfsUsageStats> {
+        self.validate_namespace_name(namespace)?;
+
         // Validate namespace exists
         let config = {
             let namespaces = self.namespaces.read().await;
@@ -802,6 +837,8 @@ impl VirtualFileSystem for VfsService {
 
     #[instrument(skip(self))]
     async fn create_backup(&self, namespace: &VfsNamespace) -> VfsResult<String> {
+        self.validate_namespace_name(namespace)?;
+
         // Validate namespace exists
         {
             let namespaces = self.namespaces.read().await;
@@ -821,6 +858,8 @@ impl VirtualFileSystem for VfsService {
 
     #[instrument(skip(self))]
     async fn restore_backup(&self, namespace: &VfsNamespace, backup_id: &str) -> VfsResult<()> {
+        self.validate_namespace_name(namespace)?;
+
         // Validate namespace exists
         {
             let namespaces = self.namespaces.read().await;
@@ -843,6 +882,8 @@ impl VirtualFileSystem for VfsService {
         &self,
         namespace: &VfsNamespace,
     ) -> VfsResult<VfsNamespaceConfig> {
+        self.validate_namespace_name(namespace)?;
+
         let namespaces = self.namespaces.read().await;
         namespaces
             .get(namespace)
@@ -854,12 +895,7 @@ impl VirtualFileSystem for VfsService {
 
     #[instrument(skip(self))]
     async fn update_namespace_config(&self, config: VfsNamespaceConfig) -> VfsResult<()> {
-        // Validate configuration
-        if config.namespace.is_empty() {
-            return Err(VfsError::InvalidPath {
-                path: config.namespace,
-            });
-        }
+        self.validate_namespace_name(&config.namespace)?;
 
         // Store updated configuration
         self.storage.store_namespace_config(&config).await?;
@@ -915,6 +951,28 @@ mod tests {
             .get_namespace_config(&config.namespace)
             .await
             .is_err());
+    }
+
+    #[tokio::test]
+    async fn test_namespace_rejects_path_like_names() {
+        let (service, _temp_dir) = create_test_service().await;
+
+        for namespace in [
+            "tenant/uploads",
+            "../uploads",
+            "plugin:uploads",
+            ".hidden",
+            "uploads\\files",
+        ] {
+            let result = service
+                .create_namespace(VfsNamespaceConfig {
+                    namespace: namespace.to_string(),
+                    ..Default::default()
+                })
+                .await;
+
+            assert!(matches!(result, Err(VfsError::InvalidPath { .. })));
+        }
     }
 
     #[tokio::test]

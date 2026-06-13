@@ -253,6 +253,147 @@ impl DatabaseResult {
     }
 }
 
+/// File metadata returned by VFS operations.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileMetadata {
+    /// Unique file identifier.
+    pub id: String,
+    /// File name without parent directories.
+    pub name: String,
+    /// Virtual path within the namespace.
+    pub path: String,
+    /// MIME type of the file.
+    pub mime_type: String,
+    /// Original file size in bytes.
+    pub size: u64,
+    /// SHA256 hash of the file content.
+    pub content_hash: String,
+    /// Creation timestamp as Unix seconds.
+    pub created_at: u64,
+    /// Last modification timestamp as Unix seconds.
+    pub modified_at: u64,
+    /// Custom metadata set by the caller.
+    pub custom_metadata: HashMap<String, String>,
+    /// Whether the stored content is compressed.
+    pub compressed: bool,
+    /// Compression algorithm, when compression is enabled.
+    pub compression_type: Option<String>,
+    /// Tags associated with the file.
+    pub tags: Vec<String>,
+}
+
+/// Identifier for a VFS file.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum FileIdentifier {
+    /// Identify a file by virtual path.
+    Path(String),
+    /// Identify a file by stable file ID.
+    Id(String),
+}
+
+impl FileIdentifier {
+    /// Create a path-based file identifier.
+    pub fn path(path: impl Into<String>) -> Self {
+        Self::Path(path.into())
+    }
+
+    /// Create an ID-based file identifier.
+    pub fn id(id: impl Into<String>) -> Self {
+        Self::Id(id.into())
+    }
+}
+
+/// Request to write a file through the VFS.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileWriteRequest {
+    /// Destination virtual path.
+    pub path: String,
+    /// File content.
+    pub content: Vec<u8>,
+    /// Optional MIME type. The host detects it from the path when omitted.
+    pub mime_type: Option<String>,
+    /// Optional custom metadata.
+    pub custom_metadata: Option<HashMap<String, String>>,
+    /// Optional tags.
+    pub tags: Option<Vec<String>>,
+    /// Whether to overwrite an existing file at the same path.
+    pub overwrite: bool,
+}
+
+/// Request to move or rename a VFS file.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileMoveRequest {
+    /// Existing file identifier.
+    pub identifier: FileIdentifier,
+    /// New virtual path.
+    pub new_path: String,
+    /// Whether to replace an existing file at the destination path.
+    pub overwrite: bool,
+}
+
+/// Request to read a VFS file.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileReadRequest {
+    /// File identifier.
+    pub identifier: FileIdentifier,
+    /// Whether to include file bytes in the response.
+    pub include_content: bool,
+}
+
+/// Response from a VFS read operation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileReadResponse {
+    /// File metadata.
+    pub metadata: FileMetadata,
+    /// File content, when requested.
+    pub content: Option<Vec<u8>>,
+}
+
+/// Request to list VFS files.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileListRequest {
+    /// Directory to list. Use an empty string for the namespace root.
+    pub directory: String,
+    /// Whether to include nested files.
+    pub recursive: bool,
+    /// Optional MIME type prefix filter.
+    pub mime_filter: Option<String>,
+    /// Optional required tags.
+    pub tag_filter: Option<Vec<String>>,
+    /// Pagination offset.
+    pub offset: Option<usize>,
+    /// Pagination limit.
+    pub limit: Option<usize>,
+}
+
+/// Response from a VFS list operation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileListResponse {
+    /// Matching files.
+    pub files: Vec<FileMetadata>,
+    /// Total matching file count before pagination.
+    pub total_count: usize,
+    /// Whether more results are available.
+    pub has_more: bool,
+}
+
+/// VFS namespace usage statistics.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VfsUsageStats {
+    /// Namespace identifier.
+    pub namespace: String,
+    /// Number of files in the namespace.
+    pub file_count: usize,
+    /// Logical storage used in bytes.
+    pub storage_used: u64,
+    /// Configured storage quota in bytes.
+    pub storage_quota: Option<u64>,
+    /// Number of virtual directories.
+    pub directory_count: usize,
+    /// Last updated timestamp as Unix seconds.
+    pub last_updated: u64,
+}
+
 /// Log level for plugin logging
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LogLevel {

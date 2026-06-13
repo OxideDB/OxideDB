@@ -5,11 +5,11 @@
 
 use crate::{
     host_state::{lock_host_state, record_host_call, HostStateRef},
-    utils::read_memory_slice,
+    utils::{allocate_plugin_memory_and_copy, read_memory_slice},
 };
 use oxide_core::{
-    plugin_security::VfsOperation, FileIdentifier, FileListRequest, FileReadRequest,
-    FileWriteRequest,
+    plugin_security::VfsOperation, FileIdentifier, FileListRequest, FileMoveRequest,
+    FileReadRequest, FileWriteRequest,
 };
 use std::{future::Future, sync::OnceLock};
 use tokio::runtime::RuntimeFlavor;
@@ -88,6 +88,35 @@ fn vfs_host_runtime() -> Result<&'static tokio::runtime::Runtime, String> {
         .map_err(Clone::clone)
 }
 
+fn store_vfs_result(
+    caller: &mut Caller<'_, HostStateRef>,
+    state: &HostStateRef,
+    function_name: &str,
+    result_json: String,
+) -> wasmtime::Result<i64> {
+    let Some((ptr, len)) = allocate_plugin_memory_and_copy(caller, result_json.as_bytes()) else {
+        if let Some(mut state_guard) = lock_host_state(state, "storing VFS result allocation error")
+        {
+            state_guard.store_error(function_name, "failed to allocate plugin result memory");
+        }
+        return Ok(-1);
+    };
+
+    let ptr =
+        u32::try_from(ptr).map_err(|_| wasmtime::Error::msg("invalid plugin result pointer"))?;
+    let len =
+        u32::try_from(len).map_err(|_| wasmtime::Error::msg("invalid plugin result length"))?;
+
+    if let Some(mut state_guard) = lock_host_state(state, "storing VFS result") {
+        state_guard.store_result(function_name, result_json);
+        state_guard.result_buffer =
+            [ptr.to_le_bytes().to_vec(), len.to_le_bytes().to_vec()].concat();
+        Ok(0)
+    } else {
+        Ok(-1)
+    }
+}
+
 /// Write a file to the VFS
 pub fn vfs_write_file(
     mut caller: Caller<'_, HostStateRef>,
@@ -158,12 +187,7 @@ pub fn vfs_write_file(
             let result_json = serde_json::to_string(&metadata)
                 .map_err(|e| wasmtime::Error::msg(format!("failed to serialize result: {}", e)))?;
 
-            if let Some(mut state_guard) = lock_host_state(&state, "storing VFS write result") {
-                state_guard.store_result(FUNCTION_NAME, result_json);
-                Ok(0) // Success
-            } else {
-                Ok(-1)
-            }
+            store_vfs_result(&mut caller, &state, FUNCTION_NAME, result_json)
         }
         Ok(Err(e)) => {
             if let Some(mut state_guard) = lock_host_state(&state, "storing VFS write error") {
@@ -250,12 +274,7 @@ pub fn vfs_read_file(
             let result_json = serde_json::to_string(&response)
                 .map_err(|e| wasmtime::Error::msg(format!("failed to serialize result: {}", e)))?;
 
-            if let Some(mut state_guard) = lock_host_state(&state, "storing VFS read result") {
-                state_guard.store_result(FUNCTION_NAME, result_json);
-                Ok(0) // Success
-            } else {
-                Ok(-1)
-            }
+            store_vfs_result(&mut caller, &state, FUNCTION_NAME, result_json)
         }
         Ok(Err(e)) => {
             if let Some(mut state_guard) = lock_host_state(&state, "storing VFS read error") {
@@ -268,6 +287,89 @@ pub fn vfs_read_file(
                 state_guard.store_error(FUNCTION_NAME, &e);
             }
             Ok(-1) // Error
+        }
+    }
+}
+
+/// Move or rename a file in the VFS
+pub fn vfs_move_file(
+    mut caller: Caller<'_, HostStateRef>,
+    namespace_ptr: i32,
+    namespace_len: i32,
+    request_ptr: i32,
+    request_len: i32,
+) -> wasmtime::Result<i64> {
+    const FUNCTION_NAME: &str = "vfs_move_file";
+
+    if !begin_vfs_call(
+        caller.data(),
+        FUNCTION_NAME,
+        "recording vfs_move_file host call",
+    ) {
+        return Ok(-1);
+    }
+
+    let memory = caller
+        .get_export("memory")
+        .and_then(|e| e.into_memory())
+        .ok_or_else(|| wasmtime::Error::msg("failed to find host memory"))?;
+
+    let data = memory.data(&caller);
+
+    let namespace_bytes = read_memory_slice(data, namespace_ptr, namespace_len, "namespace")?;
+    let namespace = String::from_utf8(namespace_bytes.to_vec())
+        .map_err(|e| wasmtime::Error::msg(format!("invalid UTF-8 in namespace: {}", e)))?;
+    let state = caller.data().clone();
+    if !ensure_vfs_capability(&state, FUNCTION_NAME, &VfsOperation::Move, &namespace) {
+        return Ok(-1);
+    }
+
+    let request_bytes = read_memory_slice(data, request_ptr, request_len, "request")?;
+    let request_json = String::from_utf8(request_bytes.to_vec())
+        .map_err(|e| wasmtime::Error::msg(format!("invalid UTF-8 in request: {}", e)))?;
+
+    let request: FileMoveRequest = serde_json::from_str(&request_json)
+        .map_err(|e| wasmtime::Error::msg(format!("failed to parse request: {}", e)))?;
+
+    let operation_state = state.clone();
+    let result = run_vfs_operation(async move {
+        let vfs_bridge = {
+            let Some(state_guard) =
+                lock_host_state(&operation_state, "reading VFS bridge for move")
+            else {
+                return Err(oxide_core::vfs::VfsError::IoError {
+                    message: "Plugin host state not available".to_string(),
+                });
+            };
+            state_guard.vfs_bridge.clone()
+        };
+        if let Some(vfs_bridge) = vfs_bridge {
+            vfs_bridge.vfs().move_file(&namespace, request).await
+        } else {
+            Err(oxide_core::vfs::VfsError::IoError {
+                message: "VFS not available".to_string(),
+            })
+        }
+    });
+
+    match result {
+        Ok(Ok(metadata)) => {
+            let result_json = serde_json::to_string(&metadata)
+                .map_err(|e| wasmtime::Error::msg(format!("failed to serialize result: {}", e)))?;
+
+            store_vfs_result(&mut caller, &state, FUNCTION_NAME, result_json)
+        }
+        Ok(Err(e)) => {
+            if let Some(mut state_guard) = lock_host_state(&state, "storing VFS move error") {
+                state_guard.store_error(FUNCTION_NAME, &e.to_string());
+            }
+            Ok(-1)
+        }
+        Err(e) => {
+            if let Some(mut state_guard) = lock_host_state(&state, "storing VFS move error") {
+                state_guard.store_error(FUNCTION_NAME, &e);
+            }
+            Ok(-1)
         }
     }
 }
@@ -337,14 +439,7 @@ pub fn vfs_delete_file(
     });
 
     match result {
-        Ok(Ok(_)) => {
-            if let Some(mut state_guard) = lock_host_state(&state, "storing VFS delete result") {
-                state_guard.store_result(FUNCTION_NAME, "true".to_string());
-                Ok(0) // Success
-            } else {
-                Ok(-1)
-            }
-        }
+        Ok(Ok(_)) => store_vfs_result(&mut caller, &state, FUNCTION_NAME, "true".to_string()),
         Ok(Err(e)) => {
             if let Some(mut state_guard) = lock_host_state(&state, "storing VFS delete error") {
                 state_guard.store_error(FUNCTION_NAME, &e.to_string());
@@ -430,12 +525,7 @@ pub fn vfs_list_files(
             let result_json = serde_json::to_string(&response)
                 .map_err(|e| wasmtime::Error::msg(format!("failed to serialize result: {}", e)))?;
 
-            if let Some(mut state_guard) = lock_host_state(&state, "storing VFS list result") {
-                state_guard.store_result(FUNCTION_NAME, result_json);
-                Ok(0) // Success
-            } else {
-                Ok(-1)
-            }
+            store_vfs_result(&mut caller, &state, FUNCTION_NAME, result_json)
         }
         Ok(Err(e)) => {
             if let Some(mut state_guard) = lock_host_state(&state, "storing VFS list error") {
@@ -512,13 +602,7 @@ pub fn vfs_get_usage_stats(
             let result_json = serde_json::to_string(&stats)
                 .map_err(|e| wasmtime::Error::msg(format!("failed to serialize result: {}", e)))?;
 
-            if let Some(mut state_guard) = lock_host_state(&state, "storing VFS usage stats result")
-            {
-                state_guard.store_result(FUNCTION_NAME, result_json);
-                Ok(0) // Success
-            } else {
-                Ok(-1)
-            }
+            store_vfs_result(&mut caller, &state, FUNCTION_NAME, result_json)
         }
         Ok(Err(e)) => {
             if let Some(mut state_guard) = lock_host_state(&state, "storing VFS usage stats error")
@@ -541,6 +625,7 @@ pub fn vfs_get_usage_stats(
 pub fn register_vfs_functions(linker: &mut Linker<HostStateRef>) -> wasmtime::Result<()> {
     linker.func_wrap("env", "vfs_write_file", vfs_write_file)?;
     linker.func_wrap("env", "vfs_read_file", vfs_read_file)?;
+    linker.func_wrap("env", "vfs_move_file", vfs_move_file)?;
     linker.func_wrap("env", "vfs_delete_file", vfs_delete_file)?;
     linker.func_wrap("env", "vfs_list_files", vfs_list_files)?;
     linker.func_wrap("env", "vfs_get_usage_stats", vfs_get_usage_stats)?;
