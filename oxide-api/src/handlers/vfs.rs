@@ -4,7 +4,7 @@
 //! It supports secure file upload, download, and management within collection namespaces.
 
 use axum::{
-    extract::{Json, Multipart, Path, Query, State},
+    extract::{multipart::Field, Json, Multipart, Path, Query, State},
     http::{header, StatusCode},
     response::{IntoResponse, Response},
 };
@@ -112,6 +112,39 @@ fn parse_custom_metadata_form_value(value: &str) -> AppResult<HashMap<String, St
             e
         ))
     })
+}
+
+async fn read_file_field(mut field: Field<'_>, max_file_size: Option<u64>) -> AppResult<Vec<u8>> {
+    let mut file_data = Vec::new();
+
+    while let Some(chunk) = field
+        .chunk()
+        .await
+        .map_err(|e| ApiError::bad_request(format!("Failed to read file data: {}", e)))?
+    {
+        append_file_chunk(&mut file_data, &chunk, max_file_size)?;
+    }
+
+    Ok(file_data)
+}
+
+fn append_file_chunk(
+    file_data: &mut Vec<u8>,
+    chunk: &[u8],
+    max_file_size: Option<u64>,
+) -> AppResult<()> {
+    let current_len = u64::try_from(file_data.len()).map_err(|_| ApiError::PayloadTooLarge)?;
+    let chunk_len = u64::try_from(chunk.len()).map_err(|_| ApiError::PayloadTooLarge)?;
+    let next_len = current_len
+        .checked_add(chunk_len)
+        .ok_or(ApiError::PayloadTooLarge)?;
+
+    if max_file_size.is_some_and(|limit| next_len > limit) {
+        return Err(ApiError::PayloadTooLarge);
+    }
+
+    file_data.extend_from_slice(chunk);
+    Ok(())
 }
 
 /// Ensure a VFS namespace exists for the given collection
@@ -264,6 +297,22 @@ pub async fn upload_file(
             }
         })?;
 
+    let namespace_config = vfs_service
+        .get_namespace_config(&collection)
+        .await
+        .map_err(|e| {
+            error!(
+                "Failed to load VFS namespace config for collection '{}': {:?}",
+                collection, e
+            );
+            match e {
+                VfsError::InvalidPath { .. } => {
+                    ApiError::bad_request("Invalid collection name".to_string())
+                }
+                _ => ApiError::internal("Failed to load collection file storage".to_string()),
+            }
+        })?;
+
     let mut file_data: Option<Vec<u8>> = None;
     let mut file_name: Option<String> = None;
     let mut mime_type: Option<String> = None;
@@ -278,22 +327,14 @@ pub async fn upload_file(
         .await
         .map_err(|e| ApiError::bad_request(format!("Failed to read multipart data: {}", e)))?
     {
-        let field_name = field.name().unwrap_or("");
+        let field_name = field.name().unwrap_or("").to_string();
 
-        match field_name {
+        match field_name.as_str() {
             "file" => {
                 file_name = field.file_name().map(|s| s.to_string());
                 mime_type = field.content_type().map(|s| s.to_string());
 
-                file_data = Some(
-                    field
-                        .bytes()
-                        .await
-                        .map_err(|e| {
-                            ApiError::bad_request(format!("Failed to read file data: {}", e))
-                        })?
-                        .to_vec(),
-                );
+                file_data = Some(read_file_field(field, namespace_config.max_file_size).await?);
             }
             "path" => {
                 custom_path = Some(field.text().await.map_err(|e| {
@@ -803,4 +844,39 @@ pub async fn get_collection_usage_stats(
 
     let usage_stats = usage_stats_for_namespace(vfs_service.as_ref(), &collection).await?;
     Ok(ApiResponse::success(usage_stats))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn append_file_chunk_allows_data_at_limit() {
+        let mut file_data = vec![1, 2];
+
+        let result = append_file_chunk(&mut file_data, &[3, 4], Some(4));
+
+        assert!(result.is_ok());
+        assert_eq!(file_data, vec![1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn append_file_chunk_rejects_data_over_limit() {
+        let mut file_data = vec![1, 2, 3];
+
+        let result = append_file_chunk(&mut file_data, &[4, 5], Some(4));
+
+        assert!(matches!(result, Err(ApiError::PayloadTooLarge)));
+        assert_eq!(file_data, vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn append_file_chunk_allows_unlimited_data() {
+        let mut file_data = Vec::new();
+
+        let result = append_file_chunk(&mut file_data, &[1, 2, 3], None);
+
+        assert!(result.is_ok());
+        assert_eq!(file_data, vec![1, 2, 3]);
+    }
 }

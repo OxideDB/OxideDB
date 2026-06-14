@@ -781,7 +781,9 @@ fn origin_from_host(headers: &HeaderMap) -> Option<String> {
     let host = headers
         .get(header::HOST)
         .and_then(|value| value.to_str().ok())?;
-    let scheme = forwarded_proto(headers).unwrap_or("https");
+    let scheme = forwarded_proto(headers)
+        .or_else(|| forwarded_header_proto(headers))
+        .unwrap_or("https");
     normalize_origin(&format!("{scheme}://{host}"))
 }
 
@@ -807,7 +809,7 @@ fn normalize_origin(origin: &str) -> Option<String> {
 
 fn request_is_https(headers: &HeaderMap) -> bool {
     forwarded_proto(headers).is_some_and(|proto| proto.eq_ignore_ascii_case("https"))
-        || forwarded_header_has_https(headers)
+        || forwarded_header_proto(headers).is_some_and(|proto| proto.eq_ignore_ascii_case("https"))
 }
 
 fn forwarded_proto(headers: &HeaderMap) -> Option<&str> {
@@ -819,15 +821,85 @@ fn forwarded_proto(headers: &HeaderMap) -> Option<&str> {
         .filter(|value| !value.is_empty())
 }
 
-fn forwarded_header_has_https(headers: &HeaderMap) -> bool {
+fn forwarded_header_proto(headers: &HeaderMap) -> Option<&str> {
     headers
         .get("forwarded")
         .and_then(|value| value.to_str().ok())
-        .is_some_and(|value| {
-            value.split(';').any(|part| {
-                part.trim()
-                    .strip_prefix("proto=")
-                    .is_some_and(|proto| proto.trim_matches('"').eq_ignore_ascii_case("https"))
+        .and_then(|value| {
+            value.split(',').find_map(|element| {
+                element.split(';').find_map(|part| {
+                    let (key, value) = part.trim().split_once('=')?;
+                    if key.trim().eq_ignore_ascii_case("proto") {
+                        let proto = value.trim().trim_matches('"');
+                        if !proto.is_empty() {
+                            return Some(proto);
+                        }
+                    }
+                    None
+                })
             })
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::{HeaderName, HeaderValue};
+
+    #[test]
+    fn forwarded_header_proto_handles_case_quotes_and_proxy_hops() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            HeaderName::from_static("forwarded"),
+            HeaderValue::from_static(
+                r#"for=192.0.2.1;host=api.example.com, for=10.0.0.1;Proto="https""#,
+            ),
+        );
+
+        assert_eq!(forwarded_header_proto(&headers), Some("https"));
+        assert!(request_is_https(&headers));
+    }
+
+    #[test]
+    fn origin_from_host_uses_forwarded_proto_when_present() {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::HOST, HeaderValue::from_static("api.example.com"));
+        headers.insert(
+            HeaderName::from_static("forwarded"),
+            HeaderValue::from_static("for=192.0.2.1;proto=http"),
+        );
+
+        assert_eq!(
+            origin_from_host(&headers).as_deref(),
+            Some("http://api.example.com")
+        );
+    }
+
+    #[test]
+    fn cookie_auth_write_requires_origin_or_referer() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::COOKIE,
+            HeaderValue::from_static("oxidedb_access_token=token"),
+        );
+
+        assert!(request_uses_cookie_auth(&headers));
+        assert!(validate_cookie_auth_request(&Method::POST, &headers).is_err());
+    }
+
+    #[test]
+    fn cookie_auth_write_allows_same_origin_host() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::COOKIE,
+            HeaderValue::from_static("oxidedb_access_token=token"),
+        );
+        headers.insert(header::HOST, HeaderValue::from_static("api.example.com"));
+        headers.insert(
+            header::ORIGIN,
+            HeaderValue::from_static("https://api.example.com"),
+        );
+
+        assert!(validate_cookie_auth_request(&Method::POST, &headers).is_ok());
+    }
 }
