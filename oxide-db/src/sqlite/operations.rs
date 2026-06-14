@@ -1,6 +1,8 @@
 //! CRUD operations for SQLite database
 
-use super::{connection::SqliteDb, schema_adapter::quote_identifier};
+use super::{
+    connection::SqliteDb, hooks::ensure_before_handlers_succeeded, schema_adapter::quote_identifier,
+};
 use crate::{
     db::{Db, FilterOp, ListParams, SchemaAdapter},
     Record,
@@ -17,8 +19,6 @@ use rusqlite::{
 use serde_json::Value as JsonValue;
 use tokio::task::spawn_blocking;
 use tracing::debug;
-
-use oxide_core::event::handlers::HandlerExecutionResult;
 
 impl SqliteDb {
     /// Convert a record data JSON to SQL values for a specific schema
@@ -94,7 +94,7 @@ impl SqliteDb {
     }
 
     /// Convert SQL row to Record for a specific collection
-    fn sql_row_to_record(
+    pub(super) fn sql_row_to_record(
         row: &rusqlite::Row,
         collection: &str,
         schema: &oxide_core::CollectionSchema,
@@ -163,39 +163,6 @@ impl SqliteDb {
             updated_at: row.get("updated_at")?,
         })
     }
-}
-
-fn ensure_before_handlers_succeeded(results: &[HandlerExecutionResult]) -> Result<(), AppError> {
-    if let Some(result) = results
-        .iter()
-        .find(|result| !result.success && !result.skipped)
-    {
-        let error = result
-            .error
-            .clone()
-            .unwrap_or_else(|| "Unknown handler error".to_string());
-
-        if let Some(plugin_error) = plugin_error_from_handler_error(&error) {
-            return Err(plugin_error);
-        }
-
-        return Err(AppError::internal(format!(
-            "Before event handler {} failed: {}",
-            result.handler_id, error
-        )));
-    }
-
-    Ok(())
-}
-
-fn plugin_error_from_handler_error(error: &str) -> Option<AppError> {
-    let rest = error.strip_prefix("Plugin error: ")?;
-    let (plugin_name, message) = rest.split_once(" - ")?;
-
-    Some(AppError::plugin(
-        plugin_name.to_string(),
-        message.to_string(),
-    ))
 }
 
 /// Enum for SQL value types
@@ -930,6 +897,8 @@ impl Db for SqliteDb {
 
         let collection_name = collection.to_string();
         let connection = self.connection.clone();
+        let limit = params.effective_limit();
+        let offset = params.effective_offset();
 
         let records = spawn_blocking(move || {
             let conn = connection
@@ -954,13 +923,12 @@ impl Db for SqliteDb {
                 query.push_str(&format!(" ORDER BY {} ASC", quote_identifier("created_at")));
             }
 
-            // Add limit and offset
-            if let Some(limit) = params.limit {
-                query.push_str(" LIMIT ?");
-                bind_params.push(SqlValue::Integer(limit as i64));
-            }
+            // Always apply a bounded LIMIT so omitted query parameters cannot
+            // accidentally trigger an unbounded table scan.
+            query.push_str(" LIMIT ?");
+            bind_params.push(SqlValue::Integer(limit as i64));
 
-            if let Some(offset) = params.offset {
+            if offset > 0 {
                 query.push_str(" OFFSET ?");
                 bind_params.push(SqlValue::Integer(offset as i64));
             }

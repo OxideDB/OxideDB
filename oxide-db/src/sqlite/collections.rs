@@ -1,6 +1,8 @@
 //! Collection management operations for SQLite database
 
-use super::{connection::SqliteDb, schema_adapter::quote_identifier};
+use super::{
+    connection::SqliteDb, hooks::ensure_before_handlers_succeeded, schema_adapter::quote_identifier,
+};
 use crate::db::SchemaAdapter;
 use oxide_core::{
     AfterEventContext, AfterEventType, AppError, BeforeEventContext, BeforeEventType,
@@ -71,9 +73,11 @@ impl SqliteDb {
         );
 
         // Dispatch BeforeCollectionCreate event
-        self.event_bus
+        let before_results = self
+            .event_bus
             .dispatch_before(BeforeEventType::CollectionCreate, &mut context)
             .await?;
+        ensure_before_handlers_succeeded(&before_results)?;
 
         let connection = self.connection.clone();
         let schema_name = schema.name.clone();
@@ -232,9 +236,11 @@ impl SqliteDb {
         );
 
         // Dispatch BeforeCollectionUpdate event
-        self.event_bus
+        let before_results = self
+            .event_bus
             .dispatch_before(BeforeEventType::CollectionUpdate, &mut context)
             .await?;
+        ensure_before_handlers_succeeded(&before_results)?;
 
         let connection = self.connection.clone();
         let collection_name = collection.to_string();
@@ -329,9 +335,11 @@ impl SqliteDb {
         );
 
         // Dispatch BeforeCollectionDelete event
-        self.event_bus
+        let before_results = self
+            .event_bus
             .dispatch_before(BeforeEventType::CollectionDelete, &mut context)
             .await?;
+        ensure_before_handlers_succeeded(&before_results)?;
 
         // Get the schema to determine the table name
         let schema = self.get_collection_schema(collection).await?;

@@ -5,6 +5,7 @@
 //! the server implementation for better maintainability.
 
 use axum::{
+    extract::DefaultBodyLimit,
     http::{header, HeaderName, HeaderValue, Method},
     routing::{delete, get, patch, post},
     Router,
@@ -88,6 +89,12 @@ pub struct RouteConfig {
     pub enable_cors: bool,
     /// Enable request tracing
     pub enable_tracing: bool,
+    /// Require HTTPS based on forwarded protocol headers
+    pub require_https: bool,
+    /// Maximum request body size in bytes
+    pub max_request_size: usize,
+    /// Directory used for persisted plugin package files
+    pub plugin_dir: PathBuf,
 }
 
 impl Default for RouteConfig {
@@ -98,6 +105,9 @@ impl Default for RouteConfig {
             admin_path: "/admin".to_string(),
             enable_cors: false,
             enable_tracing: true,
+            require_https: false,
+            max_request_size: 16 * 1024 * 1024,
+            plugin_dir: PathBuf::from("oxide-plugins"),
         }
     }
 }
@@ -111,6 +121,9 @@ impl RouteConfig {
             admin_path: "/admin".to_string(),
             enable_cors: false, // Configure CORS more restrictively
             enable_tracing: true,
+            require_https: true,
+            max_request_size: 16 * 1024 * 1024,
+            plugin_dir: PathBuf::from("oxide-plugins"),
         }
     }
 
@@ -122,6 +135,9 @@ impl RouteConfig {
             admin_path: "/admin".to_string(),
             enable_cors: true,
             enable_tracing: true,
+            require_https: false,
+            max_request_size: 16 * 1024 * 1024,
+            plugin_dir: PathBuf::from("oxide-plugins"),
         }
     }
 
@@ -133,6 +149,9 @@ impl RouteConfig {
             admin_path: url_prefix,
             enable_cors: false,
             enable_tracing: true,
+            require_https: false,
+            max_request_size: 16 * 1024 * 1024,
+            plugin_dir: PathBuf::from("oxide-plugins"),
         }
     }
 }
@@ -1048,7 +1067,7 @@ fn auth_routes() -> Router<AppState> {
 }
 
 /// Core API routes
-fn api_routes() -> Router<AppState> {
+fn api_routes(config: &RouteConfig) -> Router<AppState> {
     Router::new()
         // Protected auth routes (require authentication)
         .merge(protected_auth_routes())
@@ -1069,7 +1088,7 @@ fn api_routes() -> Router<AppState> {
         // User preferences routes
         .merge(user_preferences_routes())
         // Plugin routes
-        .merge(plugin_routes())
+        .merge(plugin_routes(config.max_request_size))
         // Logging routes
         .merge(logging_routes())
         // VFS routes
@@ -1205,20 +1224,18 @@ fn user_preferences_routes() -> Router<AppState> {
 }
 
 /// Plugin management routes
-fn plugin_routes() -> Router<AppState> {
-    use axum::extract::DefaultBodyLimit;
-
+fn plugin_routes(max_request_size: usize) -> Router<AppState> {
     Router::new()
         // Plugin management
         .route(
             "/plugins",
             get(list_plugins)
                 .post(register_plugin)
-                .layer(DefaultBodyLimit::max(64 * 1024 * 1024)), // 64MB limit for plugin uploads
+                .layer(DefaultBodyLimit::max(max_request_size)),
         )
         .route(
             "/plugins/analyze",
-            axum::routing::post(analyze_plugin).layer(DefaultBodyLimit::max(64 * 1024 * 1024)), // 64MB limit for plugin analysis
+            axum::routing::post(analyze_plugin).layer(DefaultBodyLimit::max(max_request_size)),
         )
         .route(
             "/plugins/:plugin_name",
@@ -1409,7 +1426,7 @@ fn build_route_tree(config: RouteConfig) -> Router<AppState> {
     let mut router = Router::new().merge(health_routes()).merge(auth_routes());
 
     // Add API routes
-    router = router.merge(api_routes());
+    router = router.merge(api_routes(&config));
 
     // Conditionally add admin routes based on configuration
     if config.enable_admin {
@@ -1428,6 +1445,8 @@ pub fn build_router_with_config(config: RouteConfig, state: AppState) -> Router<
 pub fn build_router_with_config_and_middleware(config: RouteConfig, state: AppState) -> Router<()> {
     let mut router = build_route_tree(config.clone());
 
+    router = router.layer(DefaultBodyLimit::max(config.max_request_size));
+
     // Apply auth middleware to protected API routes only. Public routes are
     // already bypassed by auth_middleware via its public endpoint allowlist.
     router = router.route_layer(axum::middleware::from_fn_with_state(
@@ -1435,11 +1454,22 @@ pub fn build_router_with_config_and_middleware(config: RouteConfig, state: AppSt
         crate::middleware::auth_middleware,
     ));
 
+    router = router.layer(axum::middleware::from_fn_with_state(
+        state.clone(),
+        crate::middleware::auth_rate_limit_middleware,
+    ));
+
     // Apply logging middleware to all routes (should be applied before CORS and tracing)
     router = router.layer(axum::middleware::from_fn_with_state(
         state.clone(),
         crate::middleware::request_logging_middleware,
     ));
+
+    if config.require_https {
+        router = router.layer(axum::middleware::from_fn(
+            crate::middleware::require_https_middleware,
+        ));
+    }
 
     // Apply middleware based on configuration - CORS should be outermost
     if config.enable_tracing {

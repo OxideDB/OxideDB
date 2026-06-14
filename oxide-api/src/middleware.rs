@@ -13,7 +13,7 @@
 
 use axum::{
     extract::{Request, State},
-    http::{HeaderMap, StatusCode},
+    http::{header, HeaderMap, Method, StatusCode},
     middleware::Next,
     response::Response,
 };
@@ -21,14 +21,17 @@ use oxide_core::{
     logging::{ApplicationLogger, LogContext, LogLevel, SecurityAuditor},
     AuthService, BeforeEventContext, BeforeEventType, Claims,
 };
-use std::sync::Arc;
-use std::time::Instant;
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+    time::{Duration, Instant},
+};
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
 use crate::{
     errors::ApiError,
-    handlers::auth::{extract_cookie_value, ACCESS_TOKEN_COOKIE},
+    handlers::auth::{extract_cookie_value, ACCESS_TOKEN_COOKIE, REFRESH_TOKEN_COOKIE},
     server::AppState,
 };
 
@@ -43,6 +46,99 @@ pub struct RequestStartTime(pub Instant);
 /// Extension key for storing correlation ID
 #[derive(Clone)]
 pub struct CorrelationId(pub String);
+
+/// Shared fixed-window rate limiter for sensitive public endpoints.
+#[derive(Clone)]
+pub struct RateLimiter {
+    entries: Arc<Mutex<HashMap<String, RateLimitEntry>>>,
+}
+
+#[derive(Clone)]
+struct RateLimitEntry {
+    window_started_at: Instant,
+    request_count: u32,
+}
+
+impl Default for RateLimiter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl RateLimiter {
+    /// Create a new in-memory rate limiter.
+    pub fn new() -> Self {
+        Self {
+            entries: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
+    /// Check and record one request against a key.
+    pub fn check(&self, key: String, max_requests: u32, window: Duration) -> Result<(), ApiError> {
+        let now = Instant::now();
+        let mut entries = self
+            .entries
+            .lock()
+            .map_err(|_| ApiError::internal("Rate limiter lock poisoned".to_string()))?;
+
+        if entries.len() > 10_000 {
+            entries.retain(|_, entry| now.duration_since(entry.window_started_at) < window);
+        }
+
+        let entry = entries.entry(key).or_insert_with(|| RateLimitEntry {
+            window_started_at: now,
+            request_count: 0,
+        });
+
+        if now.duration_since(entry.window_started_at) >= window {
+            entry.window_started_at = now;
+            entry.request_count = 0;
+        }
+
+        if entry.request_count >= max_requests {
+            return Err(ApiError::Core(oxide_core::AppError::rate_limit(format!(
+                "Too many authentication requests; retry after {} seconds",
+                window.as_secs()
+            ))));
+        }
+
+        entry.request_count = entry.request_count.saturating_add(1);
+        Ok(())
+    }
+}
+
+/// Rate-limit public authentication endpoints before expensive auth work runs.
+pub async fn auth_rate_limit_middleware(
+    State(state): State<AppState>,
+    request: Request,
+    next: Next,
+) -> Result<Response, ApiError> {
+    if let Some(limit) = auth_endpoint_rate_limit(request.method(), request.uri().path()) {
+        let client_ip = extract_client_ip(request.headers());
+        let key = format!(
+            "{}:{}:{}",
+            request.method(),
+            auth_rate_limit_path_key(request.uri().path()),
+            client_ip
+        );
+        state
+            .rate_limiter
+            .check(key, limit, Duration::from_secs(60))?;
+    }
+
+    Ok(next.run(request).await)
+}
+
+/// Reject plain HTTP requests when HTTPS is required by deployment config.
+pub async fn require_https_middleware(request: Request, next: Next) -> Result<Response, ApiError> {
+    if request_is_https(request.headers()) {
+        return Ok(next.run(request).await);
+    }
+
+    Err(ApiError::forbidden(
+        "HTTPS is required for this deployment".to_string(),
+    ))
+}
 
 /// Comprehensive request logging middleware that logs API access
 ///
@@ -422,6 +518,10 @@ pub async fn auth_middleware(
 
     debug!("🔐 Processing auth middleware for {} {}", method, uri);
 
+    if request_uses_cookie_auth(&headers) {
+        validate_cookie_auth_request(&method, &headers)?;
+    }
+
     // Check if this is a public endpoint that doesn't require authentication
     if is_public_endpoint(path) {
         debug!("🌐 Public endpoint accessed: {} {}", method, path);
@@ -567,4 +667,167 @@ pub fn extract_user_claims(headers: &HeaderMap, auth_service: &Arc<AuthService>)
 
     let token = bearer_token.or_else(|| extract_cookie_value(headers, ACCESS_TOKEN_COOKIE))?;
     auth_service.verify_token(&token).ok()
+}
+
+fn auth_endpoint_rate_limit(method: &Method, path: &str) -> Option<u32> {
+    if *method != Method::POST {
+        return None;
+    }
+
+    if matches_auth_endpoint(path, "login") {
+        return Some(10);
+    }
+
+    if matches_auth_endpoint(path, "register") {
+        return Some(5);
+    }
+
+    match path {
+        "/auth/refresh" => Some(30),
+        "/auth/validate" => Some(60),
+        _ => None,
+    }
+}
+
+fn auth_rate_limit_path_key(path: &str) -> String {
+    if matches_auth_endpoint(path, "login") {
+        return "/auth/*/login".to_string();
+    }
+
+    if matches_auth_endpoint(path, "register") {
+        return "/auth/*/register".to_string();
+    }
+
+    path.to_string()
+}
+
+fn matches_auth_endpoint(path: &str, action: &str) -> bool {
+    let mut parts = path.split('/').filter(|part| !part.is_empty());
+    matches!(
+        (parts.next(), parts.next(), parts.next(), parts.next()),
+        (Some("auth"), Some(_collection), Some(endpoint), None) if endpoint == action
+    )
+}
+
+fn request_uses_cookie_auth(headers: &HeaderMap) -> bool {
+    let has_bearer = headers
+        .get(header::AUTHORIZATION)
+        .or_else(|| headers.get("Authorization"))
+        .and_then(|h| h.to_str().ok())
+        .is_some_and(|value| value.starts_with("Bearer "));
+
+    !has_bearer
+        && (extract_cookie_value(headers, ACCESS_TOKEN_COOKIE).is_some()
+            || extract_cookie_value(headers, REFRESH_TOKEN_COOKIE).is_some())
+}
+
+fn validate_cookie_auth_request(method: &Method, headers: &HeaderMap) -> Result<(), ApiError> {
+    if matches!(
+        *method,
+        Method::GET | Method::HEAD | Method::OPTIONS | Method::TRACE
+    ) {
+        return Ok(());
+    }
+
+    if cookie_request_has_trusted_origin(headers) {
+        return Ok(());
+    }
+
+    Err(ApiError::forbidden(
+        "Cookie-authenticated write requests require a trusted Origin or Referer".to_string(),
+    ))
+}
+
+fn cookie_request_has_trusted_origin(headers: &HeaderMap) -> bool {
+    let Some(origin) = request_origin(headers) else {
+        return false;
+    };
+
+    trusted_cookie_origins(headers)
+        .iter()
+        .any(|trusted_origin| trusted_origin == &origin)
+}
+
+fn request_origin(headers: &HeaderMap) -> Option<String> {
+    headers
+        .get(header::ORIGIN)
+        .and_then(|value| value.to_str().ok())
+        .and_then(normalize_origin)
+        .or_else(|| {
+            headers
+                .get(header::REFERER)
+                .and_then(|value| value.to_str().ok())
+                .and_then(origin_from_referer)
+        })
+}
+
+fn trusted_cookie_origins(headers: &HeaderMap) -> Vec<String> {
+    let mut origins = Vec::new();
+
+    if let Some(host_origin) = origin_from_host(headers) {
+        origins.push(host_origin);
+    }
+
+    if let Ok(configured) = std::env::var("OXIDEDB_CORS_ALLOWED_ORIGINS") {
+        origins.extend(configured.split(',').filter_map(normalize_origin));
+    }
+
+    origins.sort();
+    origins.dedup();
+    origins
+}
+
+fn origin_from_host(headers: &HeaderMap) -> Option<String> {
+    let host = headers
+        .get(header::HOST)
+        .and_then(|value| value.to_str().ok())?;
+    let scheme = forwarded_proto(headers).unwrap_or("https");
+    normalize_origin(&format!("{scheme}://{host}"))
+}
+
+fn origin_from_referer(referer: &str) -> Option<String> {
+    let normalized = referer.trim();
+    let scheme_end = normalized.find("://")?;
+    let after_scheme = scheme_end + 3;
+    let path_start = normalized[after_scheme..]
+        .find('/')
+        .map(|offset| after_scheme + offset)
+        .unwrap_or(normalized.len());
+    normalize_origin(&normalized[..path_start])
+}
+
+fn normalize_origin(origin: &str) -> Option<String> {
+    let origin = origin.trim().trim_end_matches('/').to_ascii_lowercase();
+    if origin.starts_with("https://") || origin.starts_with("http://") {
+        Some(origin)
+    } else {
+        None
+    }
+}
+
+fn request_is_https(headers: &HeaderMap) -> bool {
+    forwarded_proto(headers).is_some_and(|proto| proto.eq_ignore_ascii_case("https"))
+        || forwarded_header_has_https(headers)
+}
+
+fn forwarded_proto(headers: &HeaderMap) -> Option<&str> {
+    headers
+        .get("x-forwarded-proto")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(',').next())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+}
+
+fn forwarded_header_has_https(headers: &HeaderMap) -> bool {
+    headers
+        .get("forwarded")
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| {
+            value.split(';').any(|part| {
+                part.trim()
+                    .strip_prefix("proto=")
+                    .is_some_and(|proto| proto.trim_matches('"').eq_ignore_ascii_case("https"))
+            })
+        })
 }

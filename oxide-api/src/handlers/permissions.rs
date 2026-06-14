@@ -8,7 +8,7 @@ use axum::{
     extract::{Path, State},
     Json,
 };
-use oxide_core::auth::types::AuthOperation;
+use oxide_core::auth::{rules::RuleEvaluator, types::AuthOperation};
 use oxide_core::{
     Claims, CollectionPermissions, CollectionType, CrudOperation, PermissionLevel, UserRole,
 };
@@ -334,27 +334,28 @@ impl PermissionHandlers {
         // Validate custom rules syntax (basic check)
         for rule in permissions.crud_rules.values() {
             if let PermissionLevel::Rule(rule_expr) = &rule.permission {
-                if rule_expr.is_empty() {
-                    return Err(ApiError::bad_request(
-                        "Custom rule expression cannot be empty".to_string(),
-                    ));
-                }
-                // TODO: Add more sophisticated rule validation
+                Self::validate_rule_expression(rule_expr)?;
             }
         }
 
         for rule in permissions.auth_rules.values() {
             if let PermissionLevel::Rule(rule_expr) = &rule.permission {
-                if rule_expr.is_empty() {
-                    return Err(ApiError::bad_request(
-                        "Custom rule expression cannot be empty".to_string(),
-                    ));
-                }
-                // TODO: Add more sophisticated rule validation
+                Self::validate_rule_expression(rule_expr)?;
             }
         }
 
         Ok(())
+    }
+
+    fn validate_rule_expression(rule_expr: &str) -> Result<(), ApiError> {
+        if rule_expr.trim().is_empty() {
+            return Err(ApiError::bad_request(
+                "Custom rule expression cannot be empty".to_string(),
+            ));
+        }
+
+        RuleEvaluator::validate_syntax(rule_expr)
+            .map_err(|e| ApiError::bad_request(format!("Invalid custom rule expression: {}", e)))
     }
 }
 

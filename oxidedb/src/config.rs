@@ -5,11 +5,17 @@
 //! application settings.
 
 use clap::{Parser, Subcommand, ValueEnum};
-use oxide_core::AppError;
+use oxide_core::{
+    auth::{AuthServiceConfig, JwtKeyRing, JwtSigningKey},
+    AppError,
+};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use tracing::Level;
 
 const DEFAULT_JWT_SECRET: &str = "dev_secret_key_change_in_production";
+const DEFAULT_JWT_KEY_ID: &str = "default";
+const MAX_JWT_KEYS: usize = 16;
 const PRODUCTION_ENV_VARS: [&str; 5] = ["OXIDEDB_ENV", "OXIDE_ENV", "APP_ENV", "ENV", "NODE_ENV"];
 
 /// Main application configuration
@@ -203,6 +209,8 @@ impl LoggingConfig {
 #[derive(Debug, Clone)]
 pub struct SecurityConfig {
     pub jwt_secret: String,
+    pub jwt_key_id: String,
+    pub jwt_previous_keys: Option<String>,
     pub require_https: bool,
     pub max_request_size: usize,
 }
@@ -212,14 +220,29 @@ impl Default for SecurityConfig {
         Self {
             jwt_secret: std::env::var("JWT_SECRET")
                 .unwrap_or_else(|_| DEFAULT_JWT_SECRET.to_string()),
-            require_https: false, // Default to false for development
-            max_request_size: 16 * 1024 * 1024, // 16MB default
+            jwt_key_id: std::env::var("OXIDEDB_JWT_KEY_ID")
+                .ok()
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty())
+                .unwrap_or_else(|| DEFAULT_JWT_KEY_ID.to_string()),
+            jwt_previous_keys: std::env::var("OXIDEDB_JWT_PREVIOUS_KEYS")
+                .ok()
+                .filter(|value| !value.trim().is_empty()),
+            require_https: std::env::var("OXIDEDB_REQUIRE_HTTPS")
+                .map(|value| parse_bool_env(&value))
+                .unwrap_or_else(|_| is_production_environment()),
+            max_request_size: std::env::var("OXIDEDB_MAX_REQUEST_SIZE")
+                .ok()
+                .and_then(|value| value.parse::<usize>().ok())
+                .unwrap_or(16 * 1024 * 1024),
         }
     }
 }
 
 impl SecurityConfig {
     fn validate(&self) -> Result<(), AppError> {
+        let jwt_key_ring = self.jwt_key_ring()?;
+
         if self.jwt_secret == DEFAULT_JWT_SECRET {
             if is_production_environment() {
                 return Err(AppError::validation(
@@ -238,8 +261,92 @@ impl SecurityConfig {
             ));
         }
 
+        for signing_key in jwt_key_ring.signing_keys() {
+            if signing_key.secret().len() < 32 {
+                return Err(AppError::validation(
+                    "jwt_previous_keys",
+                    &format!(
+                        "JWT key '{}' secret must be at least 32 characters",
+                        signing_key.key_id()
+                    ),
+                ));
+            }
+        }
+
+        if self.max_request_size == 0 {
+            return Err(AppError::validation(
+                "max_request_size",
+                "Max request size must be greater than 0",
+            ));
+        }
+
         Ok(())
     }
+
+    /// Build the authentication service configuration from validated security settings.
+    pub fn auth_service_config(&self) -> Result<AuthServiceConfig, AppError> {
+        Ok(AuthServiceConfig::with_jwt_key_ring(self.jwt_key_ring()?))
+    }
+
+    /// Build the JWT key ring from active and previous signing keys.
+    pub fn jwt_key_ring(&self) -> Result<JwtKeyRing, AppError> {
+        let mut keys = vec![JwtSigningKey::new(
+            self.jwt_key_id.clone(),
+            self.jwt_secret.clone(),
+        )];
+
+        for (key_id, secret) in parse_previous_jwt_keys(self.jwt_previous_keys.as_deref())? {
+            keys.push(JwtSigningKey::new(key_id, secret));
+        }
+
+        let key_ring = JwtKeyRing::new(self.jwt_key_id.clone(), keys)?;
+
+        if key_ring.key_count() > MAX_JWT_KEYS {
+            return Err(AppError::validation(
+                "jwt_previous_keys",
+                &format!(
+                    "JWT key ring cannot contain more than {} keys",
+                    MAX_JWT_KEYS
+                ),
+            ));
+        }
+
+        Ok(key_ring)
+    }
+}
+
+/// Build auth service configuration from process environment variables.
+pub fn auth_service_config_from_env() -> Result<AuthServiceConfig, AppError> {
+    let security = SecurityConfig::default();
+    security.validate()?;
+    security.auth_service_config()
+}
+
+fn parse_previous_jwt_keys(previous_keys: Option<&str>) -> Result<Vec<(String, String)>, AppError> {
+    let Some(previous_keys) = previous_keys else {
+        return Ok(Vec::new());
+    };
+
+    let parsed: HashMap<String, String> = serde_json::from_str(previous_keys).map_err(|e| {
+        AppError::validation(
+            "jwt_previous_keys",
+            &format!(
+                "OXIDEDB_JWT_PREVIOUS_KEYS must be a JSON object of key ids to secrets: {}",
+                e
+            ),
+        )
+    })?;
+
+    let mut keys = parsed.into_iter().collect::<Vec<_>>();
+    keys.sort_by(|left, right| left.0.cmp(&right.0));
+    Ok(keys)
+}
+
+fn parse_bool_env(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes" | "on"
+    )
 }
 
 fn is_production_environment() -> bool {
@@ -627,5 +734,56 @@ impl From<PluginTrustLevel> for oxide_core::plugin_security::PluginTrustLevel {
             }
             PluginTrustLevel::System => oxide_core::plugin_security::PluginTrustLevel::System,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn strong_secret(label: &str) -> String {
+        format!("{}_secret_value_with_more_than_32_chars", label)
+    }
+
+    fn test_security_config(previous_keys: Option<String>) -> SecurityConfig {
+        SecurityConfig {
+            jwt_secret: strong_secret("active"),
+            jwt_key_id: "active".to_string(),
+            jwt_previous_keys: previous_keys,
+            require_https: false,
+            max_request_size: 1024,
+        }
+    }
+
+    #[test]
+    fn test_jwt_key_ring_includes_previous_keys() {
+        let config = test_security_config(Some(format!(
+            r#"{{"previous":"{}"}}"#,
+            strong_secret("previous")
+        )));
+
+        let key_ring = config.jwt_key_ring().unwrap();
+
+        assert_eq!(key_ring.active_key_id(), "active");
+        assert!(key_ring.secret_for("active").is_some());
+        assert!(key_ring.secret_for("previous").is_some());
+        assert_eq!(key_ring.key_count(), 2);
+    }
+
+    #[test]
+    fn test_invalid_previous_jwt_keys_fail_validation() {
+        let config = test_security_config(Some("not-json".to_string()));
+
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn test_duplicate_active_previous_key_fails_validation() {
+        let config = test_security_config(Some(format!(
+            r#"{{"active":"{}"}}"#,
+            strong_secret("previous")
+        )));
+
+        assert!(config.validate().is_err());
     }
 }

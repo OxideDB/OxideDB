@@ -6,6 +6,7 @@
 mod auth;
 mod collections;
 mod connection;
+mod hooks;
 mod operations;
 mod permissions;
 mod relationships;

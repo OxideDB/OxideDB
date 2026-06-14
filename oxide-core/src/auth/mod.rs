@@ -54,7 +54,8 @@ pub mod types;
 
 // Re-export commonly used types for convenience
 pub use types::{
-    AuthCollectionConfig, AuthMethod, AuthServiceConfig, CrudOperation, PermissionLevel, UserRole,
+    AuthCollectionConfig, AuthMethod, AuthServiceConfig, CrudOperation, JwtKeyRing, JwtSigningKey,
+    PermissionLevel, UserRole,
 };
 
 pub use jwt::{Claims, JwtService, RefreshClaims, TokenPair};
@@ -404,5 +405,28 @@ mod tests {
         assert!(!evaluator
             .evaluate("@req.user.id = @record.user_id && @record.status = 'deleted'")
             .unwrap());
+
+        assert!(evaluator
+            .evaluate(
+                "@req.user.role = 'superuser' || (@req.user.id = @record.user_id && @record.status = 'active')"
+            )
+            .unwrap());
+    }
+
+    #[test]
+    fn test_rule_evaluator_fails_closed_for_unsupported_syntax() {
+        let context = PermissionContext::new(
+            None,
+            Operation::Crud(CrudOperation::Read),
+            "test".to_string(),
+            None,
+        );
+        let evaluator = RuleEvaluator::new(&context);
+
+        assert!(evaluator.evaluate("'quoted string'").is_err());
+        assert!(evaluator.evaluate("@unknown.value = 'x'").is_err());
+        assert!(evaluator.evaluate("@req.user.id = 'x' &&").is_err());
+        assert!(RuleEvaluator::validate_syntax("@req.user.role = 'user'").is_ok());
+        assert!(RuleEvaluator::validate_syntax("@req.user.role = user").is_err());
     }
 }

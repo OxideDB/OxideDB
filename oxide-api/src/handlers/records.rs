@@ -9,7 +9,10 @@ use axum::{
     response::Json,
 };
 use oxide_core::event::types::{RecordData, RecordId};
-use oxide_db::{db::ListParams, Db, Record};
+use oxide_db::{
+    db::{ListParams, DEFAULT_LIST_LIMIT},
+    Db, Record,
+};
 use std::sync::Arc;
 use tracing::{debug, info};
 
@@ -337,13 +340,14 @@ pub async fn list_records(
     Path(collection): Path<String>,
     Query(params): Query<ListParams>,
 ) -> Result<Json<PaginatedResponse<Record>>, ApiError> {
+    let params = params.bounded();
     let (records, total_count) =
         RecordHandlers::list_records(state.db, collection, params.clone()).await?;
 
     // Calculate page from offset and limit
-    let per_page = params.limit.unwrap_or(50) as u32;
+    let per_page = params.limit.unwrap_or(DEFAULT_LIST_LIMIT) as u32;
     let page = if per_page > 0 {
-        (params.offset.unwrap_or(0) / params.limit.unwrap_or(50)) + 1
+        (params.offset.unwrap_or(0) / params.limit.unwrap_or(DEFAULT_LIST_LIMIT)) + 1
     } else {
         1
     } as u32;

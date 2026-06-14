@@ -51,13 +51,19 @@ impl MetadataStore {
             message: format!("Failed to create LMDB directory: {}", e),
         })?;
 
-        // Create LMDB environment with optimized settings
-        let env = Environment::new()
-            .set_flags(
+        // Create LMDB environment. Durable defaults are used for production;
+        // unsafe async flags require explicit opt-in for benchmark/dev setups.
+        let mut env_builder = Environment::new();
+        if unsafe_lmdb_async_enabled() {
+            warn!("OXIDEDB_VFS_LMDB_UNSAFE_ASYNC is enabled; LMDB durability is reduced");
+            env_builder.set_flags(
                 EnvironmentFlags::NO_SYNC
                     | EnvironmentFlags::WRITE_MAP
                     | EnvironmentFlags::MAP_ASYNC,
-            )
+            );
+        }
+
+        let env = env_builder
             .set_max_readers(1024)
             .set_max_dbs(4)
             .set_map_size(1024 * 1024 * 1024) // 1GB max
@@ -86,10 +92,13 @@ impl MetadataStore {
             })?;
 
         // Create LRU cache (default 10,000 entries)
-        let cache_capacity = cache_size.unwrap_or(10_000);
-        let cache = Arc::new(Mutex::new(LruCache::new(
-            NonZeroUsize::new(cache_capacity).unwrap(),
-        )));
+        let cache_capacity =
+            NonZeroUsize::new(cache_size.unwrap_or(10_000).max(1)).ok_or_else(|| {
+                VfsError::IoError {
+                    message: "Metadata cache size must be greater than zero".to_string(),
+                }
+            })?;
+        let cache = Arc::new(Mutex::new(LruCache::new(cache_capacity)));
 
         Ok(Self {
             env,
@@ -519,6 +528,17 @@ impl MetadataStore {
             }),
         }
     }
+}
+
+fn unsafe_lmdb_async_enabled() -> bool {
+    std::env::var("OXIDEDB_VFS_LMDB_UNSAFE_ASYNC")
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false)
 }
 
 impl Drop for MetadataStore {

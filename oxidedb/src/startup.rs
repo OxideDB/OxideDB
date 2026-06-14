@@ -246,8 +246,7 @@ impl ApplicationBootstrap {
 
     /// Initialize the authentication service
     fn initialize_auth_service(&self) -> Result<Arc<AuthService>> {
-        let auth_config =
-            oxide_core::auth::AuthServiceConfig::new(self.config.security.jwt_secret.clone());
+        let auth_config = self.config.security.auth_service_config()?;
         let auth_service = Arc::new(AuthService::new(auth_config));
         info!("✅ Authentication service initialized");
         Ok(auth_service)
@@ -693,6 +692,9 @@ impl ApplicationBootstrap {
                 crate::AdminMode::Disabled => oxide_api::routes::AdminUiMode::Disabled,
             },
             admin_path: self.config.server.admin_path.clone(),
+            require_https: self.config.security.require_https,
+            max_request_size: self.config.security.max_request_size,
+            plugin_dir: self.config.plugins.plugin_folder.clone(),
         })
     }
 

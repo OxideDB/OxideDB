@@ -645,20 +645,22 @@ pub async fn login_collection(
     )
     .await?;
 
-    let headers = auth_cookie_headers(
-        response
-            .token
-            .as_deref()
-            .ok_or_else(|| ApiError::internal("Missing access token".to_string()))?,
-        response.refresh_token.as_deref(),
-        response.expires_in,
-        response.refresh_expires_in,
-    )?;
-
-    if cookie_session {
+    let headers = if cookie_session {
+        let headers = auth_cookie_headers(
+            response
+                .token
+                .as_deref()
+                .ok_or_else(|| ApiError::internal("Missing access token".to_string()))?,
+            response.refresh_token.as_deref(),
+            response.expires_in,
+            response.refresh_expires_in,
+        )?;
         response.token = None;
         response.refresh_token = None;
-    }
+        headers
+    } else {
+        HeaderMap::new()
+    };
 
     Ok((headers, Json(ApiResponse::success(response))))
 }
@@ -759,20 +761,22 @@ pub async fn refresh_token(
     let mut response =
         AuthHandlers::refresh_token(state.db, state.auth_service, refresh_token).await?;
 
-    let headers = auth_cookie_headers(
-        response
-            .access_token
-            .as_deref()
-            .ok_or_else(|| ApiError::internal("Missing refreshed access token".to_string()))?,
-        response.refresh_token.as_deref(),
-        response.expires_in,
-        Some(response.refresh_expires_in),
-    )?;
-
-    if cookie_session {
+    let headers = if cookie_session {
+        let headers = auth_cookie_headers(
+            response
+                .access_token
+                .as_deref()
+                .ok_or_else(|| ApiError::internal("Missing refreshed access token".to_string()))?,
+            response.refresh_token.as_deref(),
+            response.expires_in,
+            Some(response.refresh_expires_in),
+        )?;
         response.access_token = None;
         response.refresh_token = None;
-    }
+        headers
+    } else {
+        HeaderMap::new()
+    };
 
     Ok((headers, Json(ApiResponse::success(response))))
 }
@@ -800,6 +804,8 @@ mod tests {
             exp: 12345,
             iat: 10000,
             typ: "refresh".to_string(),
+            iss: None,
+            aud: None,
             jti: "jti-1".to_string(),
         };
 

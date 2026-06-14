@@ -88,6 +88,18 @@ cargo run --bin oxidedb start
 
 The backend will start on `http://localhost:8080`
 
+### Production JWT Configuration
+
+Set a strong `JWT_SECRET` before exposing OxideDB beyond local development. New JWTs include a `kid` header so deployments can rotate keys without immediately invalidating every session:
+
+```bash
+export JWT_SECRET="new-active-secret-at-least-32-characters"
+export OXIDEDB_JWT_KEY_ID="2026-06-rotation"
+export OXIDEDB_JWT_PREVIOUS_KEYS='{"2026-03-rotation":"old-secret-at-least-32-characters"}'
+```
+
+`JWT_SECRET` is the active signing key. `OXIDEDB_JWT_PREVIOUS_KEYS` is a JSON object of previous key ids to secrets that should remain accepted during the rotation window. Remove old keys after their tokens have expired.
+
 ### 3. Setup and Run the Frontend
 
 ```bash

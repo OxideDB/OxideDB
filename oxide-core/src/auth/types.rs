@@ -4,10 +4,12 @@
 //! structures used throughout the authentication system.
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::sync::RwLock;
 use ts_rs::TS;
+
+const DEFAULT_JWT_KEY_ID: &str = "default";
 
 /// User roles in the system
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash, TS)]
@@ -107,10 +109,16 @@ impl Default for AuthCollectionConfig {
 pub struct AuthServiceConfig {
     /// JWT secret for token signing
     pub jwt_secret: String,
+    /// JWT signing key ring used for key rotation.
+    pub jwt_key_ring: JwtKeyRing,
     /// Token expiration time in hours
     pub token_expiry_hours: i64,
     /// Refresh token expiration time in days
     pub refresh_token_expiry_days: i64,
+    /// Optional JWT issuer that generated tokens must contain.
+    pub jwt_issuer: Option<String>,
+    /// Optional JWT audience that generated tokens must contain.
+    pub jwt_audience: Option<String>,
     /// Authentication configurations per collection (with interior mutability)
     pub auth_collections: RwLock<HashMap<String, AuthCollectionConfig>>,
 }
@@ -118,10 +126,24 @@ pub struct AuthServiceConfig {
 impl AuthServiceConfig {
     /// Create a new auth service configuration
     pub fn new(jwt_secret: String) -> Self {
+        let jwt_key_ring = JwtKeyRing::single(jwt_secret.clone());
+        Self::with_jwt_key_ring(jwt_key_ring)
+    }
+
+    /// Create a new auth service configuration with a JWT key ring.
+    pub fn with_jwt_key_ring(jwt_key_ring: JwtKeyRing) -> Self {
+        let jwt_secret = jwt_key_ring.active_secret().to_string();
         Self {
             jwt_secret,
+            jwt_key_ring,
             token_expiry_hours: 24,
             refresh_token_expiry_days: 30,
+            jwt_issuer: std::env::var("OXIDEDB_JWT_ISSUER")
+                .ok()
+                .filter(|value| !value.trim().is_empty()),
+            jwt_audience: std::env::var("OXIDEDB_JWT_AUDIENCE")
+                .ok()
+                .filter(|value| !value.trim().is_empty()),
             auth_collections: RwLock::new(HashMap::new()),
         }
     }
@@ -149,6 +171,188 @@ impl AuthServiceConfig {
         let collections = self.auth_collections.read().unwrap();
         collections.contains_key(collection)
     }
+}
+
+/// A single HMAC signing key accepted for JWT verification.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JwtSigningKey {
+    key_id: String,
+    secret: String,
+}
+
+impl JwtSigningKey {
+    /// Create a JWT signing key with a key identifier and secret.
+    pub fn new(key_id: impl Into<String>, secret: impl Into<String>) -> Self {
+        Self {
+            key_id: key_id.into().trim().to_string(),
+            secret: secret.into(),
+        }
+    }
+
+    /// Return the key identifier used in the JWT `kid` header.
+    pub fn key_id(&self) -> &str {
+        &self.key_id
+    }
+
+    /// Return the HMAC secret associated with this key.
+    pub fn secret(&self) -> &str {
+        &self.secret
+    }
+}
+
+/// JWT signing and verification keys, with one active signing key.
+#[derive(Debug, Clone)]
+pub struct JwtKeyRing {
+    active_key_id: String,
+    key_order: Vec<String>,
+    keys: HashMap<String, String>,
+}
+
+impl JwtKeyRing {
+    /// Create a single-key JWT key ring for legacy deployments.
+    pub fn single(secret: String) -> Self {
+        let key = JwtSigningKey::new(DEFAULT_JWT_KEY_ID, secret);
+        let active_key_id = key.key_id().to_string();
+        let mut keys = HashMap::new();
+        keys.insert(active_key_id.clone(), key.secret().to_string());
+
+        Self {
+            active_key_id: active_key_id.clone(),
+            key_order: vec![active_key_id],
+            keys,
+        }
+    }
+
+    /// Create a JWT key ring from an active key id and accepted keys.
+    pub fn new(
+        active_key_id: impl Into<String>,
+        keys: Vec<JwtSigningKey>,
+    ) -> Result<Self, crate::AppError> {
+        let active_key_id = active_key_id.into().trim().to_string();
+        validate_jwt_key_id(&active_key_id)?;
+
+        let mut key_map = HashMap::new();
+        let mut key_order = Vec::new();
+        let mut seen = HashSet::new();
+
+        for key in keys {
+            validate_jwt_key_id(key.key_id())?;
+
+            if key.secret().is_empty() {
+                return Err(crate::AppError::validation(
+                    "jwt_key_secret",
+                    &format!("JWT key '{}' secret cannot be empty", key.key_id()),
+                ));
+            }
+
+            if !seen.insert(key.key_id().to_string()) {
+                return Err(crate::AppError::validation(
+                    "jwt_key_id",
+                    &format!("Duplicate JWT key id '{}'", key.key_id()),
+                ));
+            }
+
+            key_order.push(key.key_id().to_string());
+            key_map.insert(key.key_id().to_string(), key.secret().to_string());
+        }
+
+        if !key_map.contains_key(&active_key_id) {
+            return Err(crate::AppError::validation(
+                "jwt_key_id",
+                &format!(
+                    "Active JWT key id '{}' is not present in the key ring",
+                    active_key_id
+                ),
+            ));
+        }
+
+        Ok(Self {
+            active_key_id,
+            key_order,
+            keys: key_map,
+        })
+    }
+
+    /// Return the active JWT key id used when signing new tokens.
+    pub fn active_key_id(&self) -> &str {
+        &self.active_key_id
+    }
+
+    /// Return the active JWT signing secret.
+    pub fn active_secret(&self) -> &str {
+        self.keys
+            .get(&self.active_key_id)
+            .map(String::as_str)
+            .unwrap_or_default()
+    }
+
+    /// Return the secret for a specific JWT key id.
+    pub fn secret_for(&self, key_id: &str) -> Option<&str> {
+        self.keys.get(key_id).map(String::as_str)
+    }
+
+    /// Return accepted verification secrets, with the active key first.
+    pub fn accepted_secrets(&self) -> Vec<&str> {
+        let mut secrets = Vec::new();
+
+        if let Some(secret) = self.secret_for(&self.active_key_id) {
+            secrets.push(secret);
+        }
+
+        for key_id in &self.key_order {
+            if key_id != &self.active_key_id {
+                if let Some(secret) = self.secret_for(key_id) {
+                    secrets.push(secret);
+                }
+            }
+        }
+
+        secrets
+    }
+
+    /// Return the number of accepted JWT keys.
+    pub fn key_count(&self) -> usize {
+        self.keys.len()
+    }
+
+    /// Return all accepted JWT signing keys.
+    pub fn signing_keys(&self) -> Vec<JwtSigningKey> {
+        self.key_order
+            .iter()
+            .filter_map(|key_id| {
+                self.secret_for(key_id)
+                    .map(|secret| JwtSigningKey::new(key_id.clone(), secret.to_string()))
+            })
+            .collect()
+    }
+}
+
+fn validate_jwt_key_id(key_id: &str) -> Result<(), crate::AppError> {
+    if key_id.is_empty() {
+        return Err(crate::AppError::validation(
+            "jwt_key_id",
+            "JWT key id cannot be empty",
+        ));
+    }
+
+    if key_id.len() > 128 {
+        return Err(crate::AppError::validation(
+            "jwt_key_id",
+            "JWT key id cannot be longer than 128 characters",
+        ));
+    }
+
+    if !key_id
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+    {
+        return Err(crate::AppError::validation(
+            "jwt_key_id",
+            "JWT key id may only contain ASCII letters, digits, '.', '_' and '-'",
+        ));
+    }
+
+    Ok(())
 }
 
 /// CRUD operation types for permission rules

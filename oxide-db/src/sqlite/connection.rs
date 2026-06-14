@@ -9,6 +9,7 @@ use oxide_core::{
 use rusqlite::Connection;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use tokio::task::spawn_blocking;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
@@ -40,6 +41,7 @@ impl SqliteDb {
     ) -> Result<Self, AppError> {
         let connection = Connection::open(database_path)
             .map_err(|e| AppError::database(format!("Failed to open SQLite database: {}", e)))?;
+        configure_connection(&connection, database_path)?;
 
         Ok(Self {
             connection: Arc::new(Mutex::new(connection)),
@@ -1178,6 +1180,28 @@ impl SqliteDb {
 
         Ok(activities)
     }
+}
+
+fn configure_connection(connection: &Connection, database_path: &str) -> Result<(), AppError> {
+    connection
+        .busy_timeout(Duration::from_secs(5))
+        .map_err(|e| AppError::database(format!("Failed to set SQLite busy timeout: {}", e)))?;
+
+    connection
+        .pragma_update(None, "foreign_keys", "ON")
+        .map_err(|e| AppError::database(format!("Failed to enable SQLite foreign keys: {}", e)))?;
+
+    if database_path != ":memory:" {
+        connection
+            .pragma_update(None, "journal_mode", "WAL")
+            .map_err(|e| AppError::database(format!("Failed to enable SQLite WAL: {}", e)))?;
+    }
+
+    connection
+        .pragma_update(None, "synchronous", "NORMAL")
+        .map_err(|e| AppError::database(format!("Failed to set SQLite synchronous mode: {}", e)))?;
+
+    Ok(())
 }
 
 fn ensure_dashboard_activities_table(conn: &Connection) -> Result<(), AppError> {

@@ -1,7 +1,11 @@
 //! Authentication-related operations for SQLite database
 
-use super::connection::SqliteDb;
-use crate::db::{AuthRequest, AuthResponse, Db, ListParams, RefreshTokenRecord, RegisterRequest};
+use super::{
+    connection::SqliteDb, hooks::ensure_before_handlers_succeeded, schema_adapter::quote_identifier,
+};
+use crate::db::{
+    AuthRequest, AuthResponse, Db, RefreshTokenRecord, RegisterRequest, SchemaAdapter,
+};
 use oxide_core::{
     auth::{AuthCollectionConfig, AuthTokens},
     AfterEventContext, AfterEventType, AppError, BeforeEventContext, BeforeEventType,
@@ -42,9 +46,11 @@ impl SqliteDb {
         );
 
         // Dispatch BeforeUserAuth event
-        self.event_bus
+        let before_results = self
+            .event_bus
             .dispatch_before(BeforeEventType::UserAuth, &mut auth_context)
             .await?;
+        ensure_before_handlers_succeeded(&before_results)?;
 
         // Verify credential - hash is stored in the credential field
         let credential_hash = user_record
@@ -237,19 +243,50 @@ impl SqliteDb {
         identifier_field: &str,
         identifier_value: &str,
     ) -> Result<crate::Record, AppError> {
-        let records = <Self as Db>::list_records(self, collection, ListParams::default()).await?;
-
-        for record in records {
-            if let Some(user_identifier) =
-                record.data.get(identifier_field).and_then(|e| e.as_str())
-            {
-                if user_identifier == identifier_value {
-                    return Ok(record);
-                }
-            }
+        let schema = self.get_collection_schema(collection).await?;
+        if !schema.fields.contains_key(identifier_field) {
+            return Err(AppError::validation(
+                "identifier_field".to_string(),
+                format!(
+                    "Identifier field '{}' does not exist in collection '{}'",
+                    identifier_field, collection
+                ),
+            ));
         }
 
-        Err(AppError::not_found("user", identifier_value))
+        let table_name = self.schema_adapter.get_table_name(&schema.name);
+        let collection_name = collection.to_string();
+        let identifier_field = identifier_field.to_string();
+        let identifier_value = identifier_value.to_string();
+        let connection = self.connection.clone();
+
+        spawn_blocking(move || {
+            let conn = connection
+                .lock()
+                .map_err(|_| AppError::database("Failed to acquire database lock"))?;
+
+            let query = format!(
+                "SELECT * FROM {} WHERE {} = ?1 LIMIT 1",
+                quote_identifier(&table_name),
+                quote_identifier(&identifier_field)
+            );
+
+            let mut stmt = conn.prepare(&query).map_err(|e| {
+                AppError::database(format!("Failed to prepare auth lookup statement: {}", e))
+            })?;
+
+            stmt.query_row([&identifier_value], |row| {
+                Self::sql_row_to_record(row, &collection_name, &schema)
+            })
+            .map_err(|e| match e {
+                rusqlite::Error::QueryReturnedNoRows => {
+                    AppError::not_found("user", identifier_value.as_str())
+                }
+                _ => AppError::database(format!("Failed to query auth user: {}", e)),
+            })
+        })
+        .await
+        .map_err(|e| AppError::internal(format!("Task join error: {}", e)))?
     }
 
     /// List all auth collections

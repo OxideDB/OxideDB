@@ -22,7 +22,9 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Instant;
 use tracing::{debug, error, info, warn};
-use wasmtime::{Engine, ExternType, Instance, Linker, Module, Store};
+use wasmtime::{Config, Engine, ExternType, Instance, Linker, Module, Store};
+
+const DEFAULT_PLUGIN_FUEL_PER_MILLISECOND: u64 = 10_000;
 
 /// Wasmtime-based implementation of the PluginRuntime trait
 pub struct WasmtimePluginRuntime {
@@ -35,10 +37,18 @@ pub struct WasmtimePluginRuntime {
     database: Arc<dyn Db>,
 }
 
+fn configured_engine() -> PluginResult<Engine> {
+    let mut config = Config::new();
+    config.consume_fuel(true);
+    Engine::new(&config).map_err(|e| {
+        PluginError::InitializationFailed(format!("Failed to initialize Wasmtime engine: {}", e))
+    })
+}
+
 impl WasmtimePluginRuntime {
     /// Create a new Wasmtime plugin runtime with database
     pub fn new(database: Arc<dyn Db>) -> PluginResult<Self> {
-        let engine = Engine::default();
+        let engine = configured_engine()?;
         let linker = Linker::new(&engine);
         let host_state = Arc::new(Mutex::new(HostState::default()));
         let store = Store::new(&engine, host_state);
@@ -66,7 +76,7 @@ impl WasmtimePluginRuntime {
         database: Arc<dyn Db>,
         policies: SecurityPolicies,
     ) -> PluginResult<Self> {
-        let engine = Engine::default();
+        let engine = configured_engine()?;
         let linker = Linker::new(&engine);
         let host_state = Arc::new(Mutex::new(HostState::default()));
         let store = Store::new(&engine, host_state);
@@ -237,6 +247,7 @@ impl WasmtimePluginRuntime {
 
     fn initialize_plugin(&mut self, name: &str) -> PluginResult<()> {
         let result = (|| {
+            self.reset_execution_budget(name)?;
             let instance = self
                 .instances
                 .get(name)
@@ -315,6 +326,7 @@ impl WasmtimePluginRuntime {
         }
 
         let result = (|| {
+            self.reset_execution_budget(plugin_name)?;
             let instance = self
                 .instances
                 .get(plugin_name)
@@ -608,6 +620,26 @@ impl WasmtimePluginRuntime {
         Ok(())
     }
 
+    fn reset_execution_budget(&mut self, plugin_name: &str) -> PluginResult<()> {
+        let execution_time_limit = self
+            .security_manager
+            .get_context(plugin_name)
+            .map(|context| context.resource_limits.max_execution_time)
+            .unwrap_or_else(|| {
+                self.security_manager
+                    .policies()
+                    .default_resource_limits
+                    .max_execution_time
+            });
+        let fuel = execution_time_limit
+            .saturating_mul(DEFAULT_PLUGIN_FUEL_PER_MILLISECOND)
+            .max(DEFAULT_PLUGIN_FUEL_PER_MILLISECOND);
+
+        self.store
+            .set_fuel(fuel)
+            .map_err(|e| PluginError::ExecutionFailed(format!("Failed to set plugin fuel: {}", e)))
+    }
+
     /// Record elapsed execution telemetry after a plugin call completes.
     fn record_execution_metrics(&mut self, plugin_name: &str, started_at: Instant, failed: bool) {
         let execution_time_ms = started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
@@ -671,6 +703,7 @@ impl WasmtimePluginRuntime {
             "Handling HTTP request: {}::{}",
             plugin_name, "handle_http_request"
         );
+        self.reset_execution_budget(plugin_name)?;
 
         if self.is_plugin_suspended(plugin_name) {
             return Err(PluginError::SecurityViolation(format!(
@@ -887,6 +920,7 @@ impl PluginRuntime for WasmtimePluginRuntime {
             )?;
 
             // Set the current payload for the plugin to access
+            self.reset_execution_budget(plugin_name)?;
             self.set_current_payload(payload)?;
 
             // Clear previous state and set current plugin context

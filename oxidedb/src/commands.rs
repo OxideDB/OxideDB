@@ -5,9 +5,9 @@
 
 use crate::{
     config::{
-        AnalyzePluginArgs, InstallPluginArgs, IssueLicenseArgs, LicenseArgs, LicenseEdition,
-        LicenseSubcommands, ManagePluginsArgs, PluginNameArgs, PluginSubcommands,
-        RegisterSuperuserArgs, SignPluginArgs, StartArgs,
+        auth_service_config_from_env, AnalyzePluginArgs, InstallPluginArgs, IssueLicenseArgs,
+        LicenseArgs, LicenseEdition, LicenseSubcommands, ManagePluginsArgs, PluginNameArgs,
+        PluginSubcommands, RegisterSuperuserArgs, SignPluginArgs, StartArgs,
     },
     startup::ApplicationBootstrap,
     OxideDbConfig, Result,
@@ -90,9 +90,7 @@ impl RegisterSuperuserCommand {
     async fn initialize_minimal_services(args: &RegisterSuperuserArgs) -> Result<MinimalServices> {
         let event_bus: Arc<dyn EventBus> = Arc::new(InMemoryEventBus::new());
 
-        let jwt_secret = std::env::var("JWT_SECRET")
-            .unwrap_or_else(|_| "dev_secret_key_change_in_production".to_string());
-        let auth_config = oxide_core::auth::AuthServiceConfig::new(jwt_secret);
+        let auth_config = auth_service_config_from_env()?;
         let auth_service = Arc::new(AuthService::new(auth_config));
 
         // Resolve database path
@@ -422,9 +420,7 @@ impl ManagePluginsCommand {
     async fn initialize_services(args: &ManagePluginsArgs) -> Result<PluginManagementServices> {
         let event_bus: Arc<dyn EventBus> = Arc::new(InMemoryEventBus::new());
 
-        let jwt_secret = std::env::var("JWT_SECRET")
-            .unwrap_or_else(|_| "dev_secret_key_change_in_production".to_string());
-        let auth_config = oxide_core::auth::AuthServiceConfig::new(jwt_secret);
+        let auth_config = auth_service_config_from_env()?;
         let auth_service = Arc::new(AuthService::new(auth_config));
 
         // Resolve database path

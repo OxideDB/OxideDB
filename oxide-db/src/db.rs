@@ -11,6 +11,12 @@ use oxide_core::site_settings::SiteSettingsService;
 use oxide_core::user_preferences::UserPreferencesService;
 use oxide_core::{AppError, CollectionPermissions, CollectionSchema};
 
+/// Default number of records returned by list endpoints when no limit is supplied.
+pub const DEFAULT_LIST_LIMIT: usize = 50;
+
+/// Maximum number of records that a single list query may return.
+pub const MAX_LIST_LIMIT: usize = 500;
+
 /// Parameters for listing records
 #[derive(Debug, Clone, Default, serde::Deserialize)]
 pub struct ListParams {
@@ -35,6 +41,25 @@ pub struct ListParams {
     pub filter_value: Option<String>,
     /// Search text across id and text-like fields.
     pub search: Option<String>,
+}
+
+impl ListParams {
+    /// Return a copy with a default limit and the production maximum applied.
+    pub fn bounded(mut self) -> Self {
+        self.limit = Some(self.effective_limit());
+        self.offset = Some(self.effective_offset());
+        self
+    }
+
+    /// Return the effective list limit after applying default and maximum bounds.
+    pub fn effective_limit(&self) -> usize {
+        self.limit.unwrap_or(DEFAULT_LIST_LIMIT).min(MAX_LIST_LIMIT)
+    }
+
+    /// Return the effective list offset.
+    pub fn effective_offset(&self) -> usize {
+        self.offset.unwrap_or(0)
+    }
 }
 
 /// Supported record list filter operations.

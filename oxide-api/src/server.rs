@@ -3,6 +3,7 @@
 //! This module contains the core HTTP server implementation for the OxideDB API.
 //! The server is built on top of Axum and provides a REST API interface.
 
+use crate::middleware::RateLimiter;
 use crate::services::{
     plugin_config_service::PluginConfigService, DatabasePermissionService, LoggingApiService,
 };
@@ -28,6 +29,7 @@ pub struct AppState {
     pub database_permission_service: Arc<DatabasePermissionService>,
     pub plugin_config_service: Arc<PluginConfigService>,
     pub vfs_service: Option<Arc<dyn oxide_core::VirtualFileSystem>>,
+    pub rate_limiter: Arc<RateLimiter>,
     pub started_at: Instant,
 }
 
@@ -197,10 +199,7 @@ impl ApiServer {
 
         let database_permission_service =
             Arc::new(DatabasePermissionService::new(Arc::clone(&self.db)));
-        // Default plugins directory
-        let plugins_dir = std::env::current_dir()
-            .unwrap_or_else(|_| std::path::PathBuf::from("."))
-            .join("oxide-plugins");
+        let plugins_dir = config.plugin_dir.clone();
         let plugin_config_service =
             Arc::new(PluginConfigService::new(Arc::clone(&self.db), plugins_dir));
 
@@ -214,6 +213,7 @@ impl ApiServer {
             database_permission_service,
             plugin_config_service,
             vfs_service,
+            rate_limiter: Arc::new(RateLimiter::new()),
             started_at: Instant::now(),
         };
 

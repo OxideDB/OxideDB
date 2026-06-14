@@ -758,8 +758,10 @@ impl PluginEventBridge {
                 let mut runtime_guard = match runtime.try_lock() {
                     Ok(guard) => guard,
                     Err(_) => {
-                        info!("🔌 Plugin '{}' is already executing, skipping BeforeRecordCreate event to avoid deadlock", plugin_name);
-                        return Ok(());
+                        return Err(AppError::plugin(
+                            plugin_name.clone(),
+                            "Plugin runtime is busy; before hook failed closed".to_string(),
+                        ));
                     }
                 };
 
