@@ -252,6 +252,7 @@ impl WasmtimePluginRuntime {
 
     fn initialize_plugin(&mut self, name: &str) -> PluginResult<()> {
         let result = (|| {
+            self.reset_execution_metrics()?;
             self.reset_execution_budget(name)?;
             let instance = self
                 .instances
@@ -282,6 +283,7 @@ impl WasmtimePluginRuntime {
                     name, e
                 ))
             })?;
+            self.ensure_no_host_security_error()?;
 
             if code != 0 {
                 return Err(PluginError::InitializationFailed(format!(
@@ -331,6 +333,7 @@ impl WasmtimePluginRuntime {
         }
 
         let result = (|| {
+            self.reset_execution_metrics()?;
             self.reset_execution_budget(plugin_name)?;
             let instance = self
                 .instances
@@ -361,6 +364,7 @@ impl WasmtimePluginRuntime {
                     plugin_name, e
                 ))
             })?;
+            self.ensure_no_host_security_error()?;
 
             if code != 0 {
                 return Err(PluginError::ExecutionFailed(format!(
@@ -621,6 +625,7 @@ impl WasmtimePluginRuntime {
     fn reset_execution_metrics(&mut self) -> PluginResult<()> {
         let mut state = self.host_state("resetting plugin execution metrics")?;
         state.current_execution_host_calls = 0;
+        state.host_security_error = None;
         state.result_buffer.clear();
         state.db_result_buffer.clear();
         state.clear_function_results();
@@ -648,6 +653,10 @@ impl WasmtimePluginRuntime {
     fn reset_execution_budget(&mut self, plugin_name: &str) -> PluginResult<()> {
         let limits = self.resource_limits_for_plugin(plugin_name);
         self.set_active_memory_limit(&limits);
+        {
+            let mut state = self.host_state("setting plugin host call budget")?;
+            state.set_max_host_calls_per_execution(limits.max_host_calls);
+        }
         let fuel = limits
             .max_execution_time
             .saturating_mul(DEFAULT_PLUGIN_FUEL_PER_MILLISECOND)
@@ -656,6 +665,15 @@ impl WasmtimePluginRuntime {
         self.store
             .set_fuel(fuel)
             .map_err(|e| PluginError::ExecutionFailed(format!("Failed to set plugin fuel: {}", e)))
+    }
+
+    fn ensure_no_host_security_error(&self) -> PluginResult<()> {
+        let state = self.host_state("checking plugin host security state")?;
+        if let Some(message) = &state.host_security_error {
+            return Err(PluginError::SecurityViolation(message.clone()));
+        }
+
+        Ok(())
     }
 
     /// Record elapsed execution telemetry after a plugin call completes.
@@ -766,6 +784,7 @@ impl WasmtimePluginRuntime {
         let result = func.call(&mut self.store, ()).map_err(|e| {
             PluginError::ExecutionFailed(format!("HTTP handler call failed: {}", e))
         })?;
+        self.ensure_no_host_security_error()?;
 
         if result != 0 {
             return Err(PluginError::ExecutionFailed(format!(
@@ -796,6 +815,7 @@ impl WasmtimePluginRuntime {
             state.current_http_request = None;
             state.http_response_buffer.clear();
             state.current_plugin = None;
+            state.host_security_error = None;
             state.set_execution_context(ExecutionContext::Idle);
             state.exit_database_operation();
         }
@@ -835,6 +855,7 @@ impl WasmtimePluginRuntime {
             state.db_result_buffer.clear();
             state.log_messages.clear();
             state.error_message = None;
+            state.host_security_error = None;
             state.current_plugin = None;
             state.clear_function_results();
             state.set_execution_context(ExecutionContext::Idle);
@@ -1005,6 +1026,7 @@ impl PluginRuntime for WasmtimePluginRuntime {
             let result = func.call(&mut self.store, ()).map_err(|e| {
                 PluginError::ExecutionFailed(format!("Function call failed: {}", e))
             })?;
+            self.ensure_no_host_security_error()?;
 
             debug!(
                 "Plugin function call completed with result: {} for {}::{}",
@@ -1191,6 +1213,63 @@ mod tests {
             runtime.get_plugin_memory_usage("memory-plugin"),
             one_wasm_page
         );
+    }
+
+    #[test]
+    fn plugin_host_call_limit_is_enforced_during_call() {
+        let mut runtime = test_runtime();
+        let wasm = br#"
+            (module
+              (import "env" "get_event_payload" (func $get_event_payload (result i32)))
+              (memory (export "memory") 1)
+              (func (export "plugin_init") (result i32)
+                i32.const 0)
+              (func (export "on_before_create") (result i32)
+                call $get_event_payload
+                drop
+                call $get_event_payload
+                drop
+                i32.const 0)
+              (func (export "get_response_len") (result i32)
+                i32.const 0)
+              (func (export "get_response_ptr") (result i32)
+                i32.const 0))
+        "#;
+
+        runtime
+            .load_plugin_with_trust(
+                "host-call-plugin",
+                wasm,
+                PluginTrustLevel::PartiallyTrusted,
+                vec![PluginCapability::ReadEventData],
+                ResourceLimits {
+                    max_memory: 64 * 1024,
+                    max_execution_time: 1_000,
+                    max_host_calls: 1,
+                    rate_limit: 60,
+                },
+            )
+            .unwrap();
+
+        let payload = EventPayload {
+            event_type: "BeforeRecordCreate".to_string(),
+            collection: "posts".to_string(),
+            data: "{}".to_string(),
+            metadata: serde_json::Value::Null,
+        };
+
+        let error = runtime
+            .call_plugin_function("host-call-plugin", "on_before_create", &payload)
+            .unwrap_err();
+
+        assert!(
+            matches!(error, PluginError::SecurityViolation(message) if message.contains("host function call limit exceeded"))
+        );
+        let stats = runtime
+            .get_plugin_stats("host-call-plugin")
+            .expect("plugin stats should be recorded");
+        assert_eq!(stats.host_function_calls, 2);
+        assert_eq!(stats.failed_executions, 1);
     }
 
     #[test]

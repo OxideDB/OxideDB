@@ -95,14 +95,13 @@ pub fn lock_host_state<'a>(
     }
 }
 
-/// Record a host function call, returning false if host state is unavailable.
+/// Record a host function call, returning false if state is unavailable or the budget is exhausted.
 pub fn record_host_call(state: &HostStateRef, action: &str) -> bool {
     let Some(mut guard) = lock_host_state(state, action) else {
         return false;
     };
 
-    guard.record_host_call();
-    true
+    guard.record_host_call()
 }
 
 /// Execution context for tracking plugin call stack
@@ -167,6 +166,12 @@ pub struct HostState {
     /// Host functions called during the current plugin execution
     pub current_execution_host_calls: u64,
 
+    /// Maximum host functions allowed during the current plugin execution
+    pub max_host_calls_per_execution: u64,
+
+    /// Security error raised by host-side resource enforcement
+    pub host_security_error: Option<String>,
+
     /// Granted capabilities for loaded plugins, mirrored from the runtime
     /// security manager for host function authorization.
     pub plugin_capabilities: HashMap<String, Vec<PluginCapability>>,
@@ -193,6 +198,8 @@ impl Default for HostState {
             function_results: std::collections::HashMap::new(),
             function_errors: std::collections::HashMap::new(),
             current_execution_host_calls: 0,
+            max_host_calls_per_execution: u64::MAX,
+            host_security_error: None,
             plugin_capabilities: HashMap::new(),
         }
     }
@@ -269,9 +276,24 @@ impl HostState {
         self.function_errors.remove(function_name);
     }
 
+    /// Set the host function call budget for the active plugin execution.
+    pub fn set_max_host_calls_per_execution(&mut self, max_host_calls: u32) {
+        self.max_host_calls_per_execution = u64::from(max_host_calls);
+    }
+
     /// Increment host function calls for the active plugin execution.
-    pub fn record_host_call(&mut self) {
+    pub fn record_host_call(&mut self) -> bool {
         self.current_execution_host_calls = self.current_execution_host_calls.saturating_add(1);
+
+        if self.current_execution_host_calls > self.max_host_calls_per_execution {
+            self.host_security_error = Some(format!(
+                "Plugin host function call limit exceeded: max {}, attempted {}",
+                self.max_host_calls_per_execution, self.current_execution_host_calls
+            ));
+            return false;
+        }
+
+        true
     }
 
     /// Mirror a plugin's current capabilities into host state.
