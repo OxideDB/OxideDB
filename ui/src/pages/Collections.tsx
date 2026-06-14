@@ -3,10 +3,13 @@ import { Link, useNavigate } from 'react-router-dom';
 import { Plus, Trash2, Database, Shield, AlertTriangle, Search, MoreHorizontal, Edit } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import PageLayout from '@/components/PageLayout';
+import { AdminState, LoadingState } from '@/components/admin/AdminState';
+import { StatusIndicator } from '@/components/admin/StatusIndicator';
+import { Alert, AlertDescription } from '@/components/ui/alert';
+import { cn } from '@/lib/utils';
 import { apiService } from '../services/api';
 import type { CollectionStats, CollectionSchema } from '../types/api';
 
@@ -76,22 +79,20 @@ const Collections: React.FC = () => {
   if (loading) {
     return (
       <PageLayout title="Collections" description="Manage your database collections">
-        <div className="flex items-center justify-center h-64">
-          <div className="text-muted-foreground">Loading collections...</div>
-        </div>
+        <LoadingState label="Loading collections" />
       </PageLayout>
     );
   }
 
   const headerActions = (
     <>
-      <div className="relative flex-1 max-w-full sm:max-w-sm transition-all duration-300 focus-within:max-w-full focus-within:flex-[2]">
+      <div className="relative min-w-[220px] flex-1 sm:w-80 sm:flex-none">
         <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
         <Input
           placeholder="Search collections..."
           value={searchTerm}
           onChange={(e) => setSearchTerm(e.target.value)}
-          className="pl-10 transition-all duration-300"
+          className="pl-10"
         />
       </div>
 
@@ -112,74 +113,74 @@ const Collections: React.FC = () => {
     >
 
       {error && (
-        <Card className="border-destructive">
-          <CardContent className="p-4">
-            <div className="text-destructive">{error}</div>
+        <Alert variant="destructive">
+          <AlertTriangle className="h-4 w-4" />
+          <AlertDescription>
+            {error}
             <Button
               onClick={() => setError(null)}
               variant="ghost"
               size="sm"
-              className="text-destructive text-sm mt-2 hover:text-destructive/80 p-0 h-auto"
+              className="mt-2 h-auto p-0 text-destructive hover:text-destructive"
             >
               Dismiss
             </Button>
-          </CardContent>
-        </Card>
+          </AlertDescription>
+        </Alert>
       )}
 
       {/* Collections Grid */}
       {filteredCollections.length === 0 ? (
-        <div className="text-center py-12">
-          <Database className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
-          <h3 className="text-lg font-medium mb-2">
-            {searchTerm ? "No collections found" : "No collections"}
-          </h3>
-          <p className="text-muted-foreground mb-4 px-4">
-            {searchTerm 
-              ? "Try adjusting your search terms." 
-              : "Get started by creating a new collection with a defined schema."
-            }
-          </p>
-          {!searchTerm && (
-            <Button asChild>
-              <Link to="/collections/new">
-                <Plus className="h-4 w-4 mr-2" />
-                Create Collection
-              </Link>
-            </Button>
-          )}
-        </div>
+        <AdminState
+          title={searchTerm ? "No collections found" : "No collections"}
+          description={
+            searchTerm
+              ? "Try a different name or clear the search field."
+              : "Create a collection with a schema before adding records."
+          }
+          icon={Database}
+          action={
+            !searchTerm ? (
+              <Button asChild>
+                <Link to="/collections/new">
+                  <Plus className="h-4 w-4" />
+                  Create Collection
+                </Link>
+              </Button>
+            ) : undefined
+          }
+        />
       ) : (
         <div className="grid gap-4 grid-cols-1 md:grid-cols-2 xl:grid-cols-3">
           {filteredCollections.map((collection) => {
             const stats = collectionStats[collection.name];
             const isSystemCollection = apiService.isSystemCollection(collection);
             const isAuthCollection = collection.collection_type === 'auth';
+            const fieldCount = Object.keys(collection.fields ?? {}).length;
             return (
               <Card 
                 key={collection.id} 
-                className={`hover:shadow-md transition-shadow cursor-pointer ${isSystemCollection ? 'border-orange-200' : ''}`}
+                className={cn(
+                  "group cursor-pointer transition-colors hover:border-primary/30 hover:bg-card/95",
+                  isSystemCollection && "border-warning/30 bg-warning/5"
+                )}
                 onClick={() => navigate(`/collections/${encodeURIComponent(collection.name)}`)}
               >
                 <CardHeader className="pb-3">
                   <div className="flex items-start justify-between">
                     <div className="flex items-center gap-2 min-w-0 flex-1">
                       {isSystemCollection ? (
-                        <Shield className="h-5 w-5 text-orange-500 flex-shrink-0" />
+                        <Shield className="h-5 w-5 text-warning flex-shrink-0" />
                       ) : (
-                        <Database className="h-5 w-5 text-blue-500 flex-shrink-0" />
+                        <Database className="h-5 w-5 text-primary flex-shrink-0" />
                       )}
                       <CardTitle className="text-lg truncate">{collection.name}</CardTitle>
                       <div className="flex items-center gap-2 ml-2">
                         {isSystemCollection && (
-                          <Badge variant="outline" className="text-orange-600 border-orange-200">
-                            System
-                          </Badge>
+                          <StatusIndicator label="System" tone="warning" showDot={false} />
                         )}
                         {isAuthCollection && (
-                          <Badge variant="outline" className="text-blue-600 border-blue-200">
-                            Auth
-                          </Badge>
+                          <StatusIndicator label="Auth" tone="info" showDot={false} />
                         )}
                       </div>
                     </div>
@@ -189,6 +190,7 @@ const Collections: React.FC = () => {
                           variant="ghost" 
                           size="sm" 
                           className="flex-shrink-0"
+                          aria-label={`Actions for ${collection.name}`}
                           onClick={(e) => e.stopPropagation()}
                         >
                           <MoreHorizontal className="h-4 w-4" />
@@ -209,7 +211,7 @@ const Collections: React.FC = () => {
                         </DropdownMenuItem>
                         {!isSystemCollection && (
                           <DropdownMenuItem 
-                            className="text-red-600"
+                            className="text-destructive focus:text-destructive"
                             onClick={() => handleDeleteCollection(collection)}
                           >
                             <Trash2 className="h-4 w-4 mr-2" />
@@ -229,32 +231,35 @@ const Collections: React.FC = () => {
                   </CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-3">
-                  {stats && (
-                    <>
-                      <div className="grid grid-cols-2 gap-3 text-sm">
-                        <div className="flex items-center justify-between">
-                          <span className="text-muted-foreground">Records</span>
-                          <span className="font-medium">{stats.record_count.toLocaleString()}</span>
-                        </div>
-                        <div className="flex items-center justify-between">
-                          <span className="text-muted-foreground">Size</span>
-                          <span className="font-medium">
-                            {stats.size_kb < 1024 
-                              ? `${stats.size_kb.toFixed(1)} KB` 
-                              : stats.size_kb < 1024 * 1024 
-                                ? `${(stats.size_kb / 1024).toFixed(1)} MB` 
-                                : `${(stats.size_kb / (1024 * 1024)).toFixed(1)} GB`
-                            }
-                          </span>
-                        </div>
+                  <div className="grid grid-cols-3 gap-2 text-sm">
+                    <div className="rounded-md border bg-muted/30 p-2">
+                      <div className="text-xs text-muted-foreground">Records</div>
+                      <div className="mt-1 font-medium tabular-nums">
+                        {stats ? stats.record_count.toLocaleString() : '-'}
                       </div>
-                      {isSystemCollection && (
-                        <div className="flex items-center gap-1 text-xs text-orange-600 pt-2 border-t">
-                          <AlertTriangle className="h-3 w-3" />
-                          <span>Protected system collection</span>
-                        </div>
-                      )}
-                    </>
+                    </div>
+                    <div className="rounded-md border bg-muted/30 p-2">
+                      <div className="text-xs text-muted-foreground">Fields</div>
+                      <div className="mt-1 font-medium tabular-nums">{fieldCount}</div>
+                    </div>
+                    <div className="rounded-md border bg-muted/30 p-2">
+                      <div className="text-xs text-muted-foreground">Size</div>
+                      <div className="mt-1 truncate font-medium tabular-nums">
+                        {stats
+                          ? stats.size_kb < 1024 
+                            ? `${stats.size_kb.toFixed(1)} KB` 
+                            : stats.size_kb < 1024 * 1024 
+                              ? `${(stats.size_kb / 1024).toFixed(1)} MB` 
+                              : `${(stats.size_kb / (1024 * 1024)).toFixed(1)} GB`
+                          : '-'}
+                      </div>
+                    </div>
+                  </div>
+                  {isSystemCollection && (
+                    <div className="flex items-center gap-1.5 border-t pt-3 text-xs text-warning">
+                      <AlertTriangle className="h-3.5 w-3.5" />
+                      <span>Protected system collection</span>
+                    </div>
                   )}
                 </CardContent>
               </Card>

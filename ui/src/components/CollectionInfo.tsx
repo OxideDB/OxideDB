@@ -1,9 +1,10 @@
 import React from 'react';
 import { Link } from 'react-router-dom';
-import { Database, Edit, Trash2 } from 'lucide-react';
+import { Database, Edit } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { Badge } from '@/components/ui/badge';
+import { StatusIndicator } from '@/components/admin/StatusIndicator';
+import { getStatusTone } from '@/components/admin/statusUtils';
 import type { CollectionSchema } from '../types/api';
 
 interface CollectionInfo {
@@ -51,10 +52,6 @@ export const CollectionInfo: React.FC<CollectionInfoProps> = ({
                 Edit Schema
               </Button>
             </Link>
-            <Button variant="outline" size="sm" className="text-red-600 w-full sm:w-auto">
-              <Trash2 className="h-4 w-4 mr-2" />
-              Delete
-            </Button>
           </div>
         </div>
       </CardHeader>
@@ -71,9 +68,10 @@ export const CollectionInfo: React.FC<CollectionInfoProps> = ({
           <div>
             <span className="text-muted-foreground">Status:</span>
             <div>
-              <Badge className="bg-green-100 text-green-800">
-                {collectionInfo.status}
-              </Badge>
+              <StatusIndicator
+                label={collectionInfo.status}
+                tone={getStatusTone(collectionInfo.status)}
+              />
             </div>
           </div>
           <div>

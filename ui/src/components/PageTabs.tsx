@@ -70,7 +70,21 @@ const PageTabs: React.FC<PageTabsProps> = ({
   );
 };
 
-// Re-export Radix primitives so that consumers can import them from one place.
-export const TabsTrigger = PrimitiveTabsTrigger;
+const TabsTrigger = React.forwardRef<
+  React.ElementRef<typeof PrimitiveTabsTrigger>,
+  React.ComponentPropsWithoutRef<typeof PrimitiveTabsTrigger>
+>(({ className, ...props }, ref) => (
+  <PrimitiveTabsTrigger
+    ref={ref}
+    className={cn(
+      "h-12 rounded-none border-b-2 border-transparent bg-transparent px-4 text-sm font-medium shadow-none transition-colors hover:text-primary/80 data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:text-primary data-[state=active]:shadow-none sm:px-6",
+      className
+    )}
+    {...props}
+  />
+));
+TabsTrigger.displayName = "PageTabsTrigger";
+
 export const TabsContent = PrimitiveTabsContent;
+export { TabsTrigger };
 export default PageTabs; 

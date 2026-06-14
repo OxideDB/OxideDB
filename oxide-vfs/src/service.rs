@@ -9,7 +9,7 @@ use crate::storage::FileSystemStorage;
 use crate::utils::{detect_mime_type, generate_file_id, normalize_path, validate_namespace};
 use oxide_core::event::RequestContext;
 use oxide_core::{
-    AfterEventContext, AfterEventType, BeforeEventContext, BeforeEventType, EventBus,
+    AfterEventContext, AfterEventType, BeforeEventContext, BeforeEventType, EventBus, FileId,
     FileIdentifier, FileListRequest, FileListResponse, FileMetadata, FileMoveRequest,
     FileReadRequest, FileReadResponse, FileWriteRequest, VfsError, VfsNamespace,
     VfsNamespaceConfig, VfsResult, VfsUsageStats, VirtualFileSystem,
@@ -202,6 +202,22 @@ impl VfsService {
         }
     }
 
+    /// Validate a caller-provided file ID before it can reach metadata indexes.
+    fn validate_file_id(&self, file_id: &FileId) -> VfsResult<()> {
+        if file_id.is_empty()
+            || file_id.len() > 128
+            || !file_id
+                .chars()
+                .all(|ch| ch == '_' || ch == '-' || ch == '.' || ch.is_ascii_alphanumeric())
+        {
+            return Err(VfsError::InvalidPath {
+                path: file_id.clone(),
+            });
+        }
+
+        Ok(())
+    }
+
     /// Check namespace quota before writing
     async fn check_quota(&self, namespace: &VfsNamespace, additional_bytes: u64) -> VfsResult<()> {
         let namespaces = self.namespaces.read().await;
@@ -300,8 +316,11 @@ impl VirtualFileSystem for VfsService {
 
         // Validate inputs
         request.path = self.normalize_file_path(&request.path)?;
+        if let Some(file_id) = &request.file_id {
+            self.validate_file_id(file_id)?;
+        }
 
-        let existing_metadata = match self
+        let existing_metadata_by_path = match self
             .storage
             .get_file_metadata(namespace, &FileIdentifier::Path(request.path.clone()))
             .await
@@ -311,11 +330,38 @@ impl VirtualFileSystem for VfsService {
             Err(e) => return Err(e),
         };
 
-        if existing_metadata.is_some() && !request.overwrite {
+        let existing_metadata_by_id = if let Some(file_id) = &request.file_id {
+            match self
+                .storage
+                .get_file_metadata(namespace, &FileIdentifier::Id(file_id.clone()))
+                .await
+            {
+                Ok(metadata) => Some(metadata),
+                Err(VfsError::FileNotFound { .. }) => None,
+                Err(e) => return Err(e),
+            }
+        } else {
+            None
+        };
+
+        if existing_metadata_by_path.is_some() && !request.overwrite {
             return Err(VfsError::FileAlreadyExists {
                 path: request.path.clone(),
             });
         }
+
+        if let Some(existing_by_id) = &existing_metadata_by_id {
+            let same_file_at_path = existing_metadata_by_path
+                .as_ref()
+                .is_some_and(|existing_by_path| existing_by_path.id == existing_by_id.id);
+            if !same_file_at_path && !request.overwrite {
+                return Err(VfsError::FileAlreadyExists {
+                    path: existing_by_id.path.clone(),
+                });
+            }
+        }
+
+        let existing_metadata = existing_metadata_by_path.or(existing_metadata_by_id);
 
         // Check quota before writing
         let new_size = request.content.len() as u64;
@@ -366,6 +412,7 @@ impl VirtualFileSystem for VfsService {
         let file_id = existing_metadata
             .as_ref()
             .map(|existing| existing.id.clone())
+            .or_else(|| request.file_id.clone())
             .unwrap_or_else(generate_file_id);
         let mime_type = request
             .mime_type
@@ -389,8 +436,9 @@ impl VirtualFileSystem for VfsService {
             created_at: existing_metadata
                 .as_ref()
                 .map(|existing| existing.created_at)
+                .or(request.created_at)
                 .unwrap_or(now),
-            modified_at: now,
+            modified_at: request.modified_at.unwrap_or(now),
             custom_metadata: request.custom_metadata.unwrap_or_else(|| {
                 existing_metadata
                     .as_ref()
@@ -988,12 +1036,15 @@ mod tests {
 
         let content = b"Hello, World!";
         let write_request = FileWriteRequest {
+            file_id: None,
             path: "test.txt".to_string(),
             content: content.to_vec(),
             mime_type: Some("text/plain".to_string()),
             custom_metadata: None,
             tags: Some(vec!["test".to_string()]),
             overwrite: false,
+            created_at: None,
+            modified_at: None,
         };
 
         // Write file
@@ -1061,12 +1112,15 @@ mod tests {
 
         let large_content = vec![0u8; 100]; // Larger than quota
         let write_request = FileWriteRequest {
+            file_id: None,
             path: "large.bin".to_string(),
             content: large_content,
             mime_type: None,
             custom_metadata: None,
             tags: None,
             overwrite: false,
+            created_at: None,
+            modified_at: None,
         };
 
         // Should fail due to quota
@@ -1092,12 +1146,15 @@ mod tests {
             .write_file(
                 &namespace,
                 FileWriteRequest {
+                    file_id: None,
                     path: "first.txt".to_string(),
                     content: content.clone(),
                     mime_type: Some("text/plain".to_string()),
                     custom_metadata: None,
                     tags: None,
                     overwrite: false,
+                    created_at: None,
+                    modified_at: None,
                 },
             )
             .await
@@ -1107,12 +1164,15 @@ mod tests {
             .write_file(
                 &namespace,
                 FileWriteRequest {
+                    file_id: None,
                     path: "second.txt".to_string(),
                     content: content.clone(),
                     mime_type: Some("text/plain".to_string()),
                     custom_metadata: None,
                     tags: None,
                     overwrite: false,
+                    created_at: None,
+                    modified_at: None,
                 },
             )
             .await
@@ -1157,12 +1217,15 @@ mod tests {
             .write_file(
                 &namespace,
                 FileWriteRequest {
+                    file_id: None,
                     path: "/uploads/file.txt".to_string(),
                     content: b"old".to_vec(),
                     mime_type: Some("text/plain".to_string()),
                     custom_metadata: None,
                     tags: Some(vec!["old".to_string()]),
                     overwrite: false,
+                    created_at: None,
+                    modified_at: None,
                 },
             )
             .await
@@ -1172,12 +1235,15 @@ mod tests {
             .write_file(
                 &namespace,
                 FileWriteRequest {
+                    file_id: None,
                     path: "uploads/file.txt".to_string(),
                     content: b"replacement".to_vec(),
                     mime_type: Some("text/plain".to_string()),
                     custom_metadata: None,
                     tags: Some(vec!["new".to_string()]),
                     overwrite: true,
+                    created_at: None,
+                    modified_at: None,
                 },
             )
             .await
@@ -1237,12 +1303,15 @@ mod tests {
             .write_file(
                 &namespace,
                 FileWriteRequest {
+                    file_id: None,
                     path: "file.txt".to_string(),
                     content: vec![b'a'; 8],
                     mime_type: Some("text/plain".to_string()),
                     custom_metadata: None,
                     tags: None,
                     overwrite: false,
+                    created_at: None,
+                    modified_at: None,
                 },
             )
             .await
@@ -1252,12 +1321,15 @@ mod tests {
             .write_file(
                 &namespace,
                 FileWriteRequest {
+                    file_id: None,
                     path: "file.txt".to_string(),
                     content: vec![b'b'; 9],
                     mime_type: Some("text/plain".to_string()),
                     custom_metadata: None,
                     tags: None,
                     overwrite: true,
+                    created_at: None,
+                    modified_at: None,
                 },
             )
             .await;
@@ -1283,12 +1355,15 @@ mod tests {
                 .write_file(
                     &namespace,
                     FileWriteRequest {
+                        file_id: None,
                         path: path.to_string(),
                         content: path.as_bytes().to_vec(),
                         mime_type: Some("text/plain".to_string()),
                         custom_metadata: None,
                         tags: None,
                         overwrite: false,
+                        created_at: None,
+                        modified_at: None,
                     },
                 )
                 .await
@@ -1337,12 +1412,15 @@ mod tests {
             .write_file(
                 &namespace,
                 FileWriteRequest {
+                    file_id: None,
                     path: "uploads/report.txt".to_string(),
                     content: b"quarterly results".to_vec(),
                     mime_type: Some("text/plain".to_string()),
                     custom_metadata: None,
                     tags: Some(vec!["finance".to_string()]),
                     overwrite: false,
+                    created_at: None,
+                    modified_at: None,
                 },
             )
             .await
@@ -1410,12 +1488,15 @@ mod tests {
             .write_file(
                 &namespace,
                 FileWriteRequest {
+                    file_id: None,
                     path: "drafts/source.txt".to_string(),
                     content: b"source".to_vec(),
                     mime_type: Some("text/plain".to_string()),
                     custom_metadata: None,
                     tags: None,
                     overwrite: false,
+                    created_at: None,
+                    modified_at: None,
                 },
             )
             .await
@@ -1425,12 +1506,15 @@ mod tests {
             .write_file(
                 &namespace,
                 FileWriteRequest {
+                    file_id: None,
                     path: "published/source.txt".to_string(),
                     content: b"destination".to_vec(),
                     mime_type: Some("text/plain".to_string()),
                     custom_metadata: None,
                     tags: None,
                     overwrite: false,
+                    created_at: None,
+                    modified_at: None,
                 },
             )
             .await

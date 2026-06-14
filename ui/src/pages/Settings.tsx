@@ -171,11 +171,11 @@ const Settings: React.FC = () => {
               onValueChange={setActiveTab}
               tabTriggers={
                 <>
-                  <TabsTrigger value="branding" className="h-12 px-4 sm:px-6 rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:text-primary data-[state=active]:shadow-none bg-transparent transition-all duration-200 text-sm font-medium hover:text-primary/80">Branding</TabsTrigger>
-                  <TabsTrigger value="email" className="h-12 px-4 sm:px-6 rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:text-primary data-[state=active]:shadow-none bg-transparent transition-all duration-200 text-sm font-medium hover:text-primary/80">Email</TabsTrigger>
-                  <TabsTrigger value="system" className="h-12 px-4 sm:px-6 rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:text-primary data-[state=active]:shadow-none bg-transparent transition-all duration-200 text-sm font-medium hover:text-primary/80">System</TabsTrigger>
-                  <TabsTrigger value="general" className="h-12 px-4 sm:px-6 rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:text-primary data-[state=active]:shadow-none bg-transparent transition-all duration-200 text-sm font-medium hover:text-primary/80">General</TabsTrigger>
-                  <TabsTrigger value="security" className="h-12 px-4 sm:px-6 rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:text-primary data-[state=active]:shadow-none bg-transparent transition-all duration-200 text-sm font-medium hover:text-primary/80">Security</TabsTrigger>
+                  <TabsTrigger value="branding">Branding</TabsTrigger>
+                  <TabsTrigger value="email">Email</TabsTrigger>
+                  <TabsTrigger value="system">System</TabsTrigger>
+                  <TabsTrigger value="general">General</TabsTrigger>
+                  <TabsTrigger value="security">Security</TabsTrigger>
                 </>
               }
             >

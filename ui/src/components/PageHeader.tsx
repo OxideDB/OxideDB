@@ -11,10 +11,9 @@ interface PageHeaderProps {
 
 const PageHeader: React.FC<PageHeaderProps> = ({ title, description, children, leftActions }) => {
   return (
-    <header className="flex flex-col gap-3 border-b px-3 py-3 sm:px-4 sm:py-4 lg:flex-row lg:h-16 lg:py-0 lg:gap-2">
-      {/* Top row with sidebar trigger and left actions */}
+    <header className="sticky top-0 z-20 flex min-h-16 flex-col gap-3 border-b bg-background/95 px-3 py-3 backdrop-blur supports-[backdrop-filter]:bg-background/80 sm:px-4 lg:flex-row lg:items-center lg:gap-3 lg:px-6">
       <div className="flex items-center gap-2 lg:gap-3">
-        <SidebarTrigger className="-ml-1 h-8 w-8 sm:h-6 sm:w-6" />
+        <SidebarTrigger className="-ml-1 h-9 w-9" />
         <Separator orientation="vertical" className="mr-1 h-4 sm:mr-2" />
         {leftActions && (
           <>
@@ -26,22 +25,20 @@ const PageHeader: React.FC<PageHeaderProps> = ({ title, description, children, l
         )}
       </div>
       
-      {/* Content area */}
       <div className="flex-1 min-w-0 flex flex-col gap-3 sm:gap-2 lg:flex-row lg:items-center lg:justify-between">
         <div className="min-w-0 flex-1">
-          <h1 className="text-lg font-semibold leading-tight sm:text-xl lg:text-lg truncate" title={title}>
+          <h1 className="truncate text-lg font-semibold leading-tight text-foreground" title={title}>
             {title}
           </h1>
           {description && (
-            <p className="text-sm text-muted-foreground mt-1 sm:mt-0.5 truncate" title={description}>
+            <p className="mt-1 truncate text-sm text-muted-foreground" title={description}>
               {description}
             </p>
           )}
         </div>
         
-        {/* Actions area */}
         {children && (
-          <div className="flex w-full flex-wrap items-center gap-2 lg:ml-4 lg:w-auto lg:flex-nowrap">
+          <div className="flex w-full flex-wrap items-center gap-2 lg:ml-4 lg:w-auto lg:flex-nowrap lg:justify-end">
             {children}
           </div>
         )}

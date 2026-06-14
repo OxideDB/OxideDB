@@ -374,34 +374,19 @@ const Logs: React.FC = () => {
           onValueChange={setActiveTab}
           tabTriggers={
             <>
-              <TabsTrigger
-                value="dashboard"
-                className="h-12 px-4 sm:px-6 rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:text-primary data-[state=active]:shadow-none bg-transparent transition-all duration-200 text-sm font-medium hover:text-primary/80"
-              >
+              <TabsTrigger value="dashboard">
                 Dashboard
               </TabsTrigger>
-              <TabsTrigger
-                value="logs"
-                className="h-12 px-4 sm:px-6 rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:text-primary data-[state=active]:shadow-none bg-transparent transition-all duration-200 text-sm font-medium hover:text-primary/80"
-              >
+              <TabsTrigger value="logs">
                 Logs
               </TabsTrigger>
-              <TabsTrigger
-                value="audit"
-                className="h-12 px-4 sm:px-6 rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:text-primary data-[state=active]:shadow-none bg-transparent transition-all duration-200 text-sm font-medium hover:text-primary/80"
-              >
+              <TabsTrigger value="audit">
                 Audit Events
               </TabsTrigger>
-              <TabsTrigger
-                value="retention"
-                className="h-12 px-4 sm:px-6 rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:text-primary data-[state=active]:shadow-none bg-transparent transition-all duration-200 text-sm font-medium hover:text-primary/80"
-              >
+              <TabsTrigger value="retention">
                 Retention
               </TabsTrigger>
-              <TabsTrigger
-                value="search"
-                className="h-12 px-4 sm:px-6 rounded-none border-b-2 border-transparent data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:text-primary data-[state=active]:shadow-none bg-transparent transition-all duration-200 text-sm font-medium hover:text-primary/80"
-              >
+              <TabsTrigger value="search">
                 Search
               </TabsTrigger>
             </>

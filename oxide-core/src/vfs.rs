@@ -152,6 +152,9 @@ pub struct VfsBackupConfig {
 /// Request to create or update a file
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileWriteRequest {
+    /// Optional stable file ID to preserve during trusted imports.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_id: Option<FileId>,
     /// Virtual path for the file
     pub path: VfsPath,
     /// File content as bytes
@@ -164,6 +167,12 @@ pub struct FileWriteRequest {
     pub tags: Option<Vec<String>>,
     /// Whether to overwrite if file exists
     pub overwrite: bool,
+    /// Optional original creation timestamp to preserve during trusted imports.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<u64>,
+    /// Optional original modification timestamp to preserve during trusted imports.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub modified_at: Option<u64>,
 }
 
 /// Request to move or rename an existing file without rewriting its content

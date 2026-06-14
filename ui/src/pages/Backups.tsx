@@ -6,6 +6,7 @@ import {
   Database,
   Download,
   FileJson,
+  Files,
   HardDrive,
   RefreshCw,
   RotateCcw,
@@ -47,6 +48,8 @@ const formatSize = (sizeKb: number) => {
 
   return `${sizeKb.toFixed(1)} KB`;
 };
+
+const formatBytes = (bytes: number) => formatSize(bytes / 1024);
 
 const formatDateTime = (value?: string) => {
   if (!value) return 'Not generated';
@@ -90,6 +93,7 @@ const restoreStatusVariant = (
 const Backups: React.FC = () => {
   const [manifest, setManifest] = useState<BackupManifestResponse | null>(null);
   const [includeSystem, setIncludeSystem] = useState(false);
+  const [includeVfs, setIncludeVfs] = useState(false);
   const [selectedCollections, setSelectedCollections] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [exporting, setExporting] = useState(false);
@@ -97,6 +101,7 @@ const Backups: React.FC = () => {
   const [restoreSnapshot, setRestoreSnapshot] = useState<BackupExportResponse | null>(null);
   const [restoreFileName, setRestoreFileName] = useState<string | null>(null);
   const [restoreIncludeSystem, setRestoreIncludeSystem] = useState(false);
+  const [restoreIncludeVfs, setRestoreIncludeVfs] = useState(true);
   const [replaceExisting, setReplaceExisting] = useState(false);
   const [restorePreview, setRestorePreview] = useState<BackupRestoreResponse | null>(null);
   const [restoreLoading, setRestoreLoading] = useState(false);
@@ -106,18 +111,22 @@ const Backups: React.FC = () => {
 
   const backupOptions = useMemo(() => ({
     include_system: includeSystem,
+    include_vfs: includeVfs,
     collections: selectedCollections.length ? selectedCollections : undefined,
-  }), [includeSystem, selectedCollections]);
+  }), [includeSystem, includeVfs, selectedCollections]);
 
   const restoreRequestOptions = useMemo(() => ({
     include_system: restoreIncludeSystem,
+    include_vfs: restoreIncludeVfs,
     replace_existing: replaceExisting,
-  }), [restoreIncludeSystem, replaceExisting]);
+  }), [restoreIncludeSystem, restoreIncludeVfs, replaceExisting]);
 
   const selectedSet = useMemo(
     () => new Set(selectedCollections),
     [selectedCollections],
   );
+  const restoreSnapshotVfsFiles = restoreSnapshot?.total_vfs_files || 0;
+  const restoreSnapshotHasVfs = restoreSnapshotVfsFiles > 0;
 
   const loadManifest = useCallback(async () => {
     try {
@@ -197,7 +206,7 @@ const Backups: React.FC = () => {
       toast({
         title: 'Backup exported',
         description: manifest
-          ? `${manifest.included_collections} collections and ${manifest.total_records.toLocaleString()} records downloaded.`
+          ? `${manifest.included_collections} collections, ${manifest.total_records.toLocaleString()} records, and ${manifest.total_vfs_files.toLocaleString()} VFS files downloaded.`
           : `Backup downloaded (${formatSize(blob.size / 1024)}).`,
       });
     } catch (err) {
@@ -226,10 +235,11 @@ const Backups: React.FC = () => {
 
       setRestoreSnapshot(parsed);
       setRestoreFileName(file.name);
+      setRestoreIncludeVfs((parsed.vfs_namespaces?.length || 0) > 0);
 
       toast({
         title: 'Backup file loaded',
-        description: `${parsed.total_collections.toLocaleString()} collections and ${parsed.total_records.toLocaleString()} records found.`,
+        description: `${parsed.total_collections.toLocaleString()} collections, ${parsed.total_records.toLocaleString()} records, and ${(parsed.total_vfs_files || 0).toLocaleString()} VFS files found.`,
       });
     } catch (err) {
       setRestoreSnapshot(null);
@@ -260,7 +270,7 @@ const Backups: React.FC = () => {
       setRestorePreview(response);
       toast({
         title: 'Restore preview ready',
-        description: `${response.created_records.toLocaleString()} records to create, ${response.skipped_records.toLocaleString()} to skip.`,
+        description: `${response.created_records.toLocaleString()} records and ${response.created_vfs_files.toLocaleString()} VFS files to create.`,
       });
     } catch (err) {
       setRestoreError(err instanceof Error ? err.message : 'Failed to preview restore');
@@ -291,7 +301,7 @@ const Backups: React.FC = () => {
       await loadManifest();
       toast({
         title: 'Backup restored',
-        description: `${response.created_records.toLocaleString()} records restored across ${response.collections.length.toLocaleString()} collections.`,
+        description: `${response.created_records.toLocaleString()} records and ${response.created_vfs_files.toLocaleString()} VFS files restored.`,
       });
     } catch (err) {
       setRestoreError(err instanceof Error ? err.message : 'Failed to restore backup');
@@ -311,6 +321,11 @@ const Backups: React.FC = () => {
     setRestorePreview(null);
   };
 
+  const updateRestoreIncludeVfs = (checked: boolean) => {
+    setRestoreIncludeVfs(checked);
+    setRestorePreview(null);
+  };
+
   const updateReplaceExisting = (checked: boolean) => {
     setReplaceExisting(checked);
     setRestorePreview(null);
@@ -319,6 +334,7 @@ const Backups: React.FC = () => {
   const clearRestoreSnapshot = () => {
     setRestoreSnapshot(null);
     setRestoreFileName(null);
+    setRestoreIncludeVfs(true);
     setRestorePreview(null);
     setRestoreError(null);
   };
@@ -352,7 +368,7 @@ const Backups: React.FC = () => {
         </Alert>
       )}
 
-      <div className="grid gap-4 md:grid-cols-3">
+      <div className="grid gap-4 md:grid-cols-4">
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-sm font-medium">Collections</CardTitle>
@@ -378,6 +394,21 @@ const Backups: React.FC = () => {
               {manifest?.total_records.toLocaleString() || 0}
             </div>
             <p className="text-xs text-muted-foreground">included in export</p>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+            <CardTitle className="text-sm font-medium">VFS Files</CardTitle>
+            <Files className="h-4 w-4 text-muted-foreground" />
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl font-bold">
+              {manifest?.total_vfs_files.toLocaleString() || 0}
+            </div>
+            <p className="text-xs text-muted-foreground">
+              {includeVfs ? formatBytes(manifest?.total_vfs_size_bytes || 0) : 'not included'}
+            </p>
           </CardContent>
         </Card>
 
@@ -417,6 +448,17 @@ const Backups: React.FC = () => {
               />
               <Label htmlFor="include-system" className="cursor-pointer text-sm">
                 Include system
+              </Label>
+            </div>
+            <div className="flex items-center gap-2">
+              <Switch
+                id="include-vfs"
+                checked={includeVfs}
+                onCheckedChange={setIncludeVfs}
+                disabled={loading || exporting}
+              />
+              <Label htmlFor="include-vfs" className="cursor-pointer text-sm">
+                Include VFS
               </Label>
             </div>
             <Button
@@ -580,6 +622,17 @@ const Backups: React.FC = () => {
             </div>
             <div className="flex items-center gap-2">
               <Switch
+                id="restore-include-vfs"
+                checked={restoreIncludeVfs && restoreSnapshotHasVfs}
+                onCheckedChange={updateRestoreIncludeVfs}
+                disabled={restoreLoading || !restoreSnapshotHasVfs}
+              />
+              <Label htmlFor="restore-include-vfs" className="cursor-pointer text-sm">
+                Include VFS
+              </Label>
+            </div>
+            <div className="flex items-center gap-2">
+              <Switch
                 id="replace-existing"
                 checked={replaceExisting}
                 onCheckedChange={updateReplaceExisting}
@@ -601,7 +654,7 @@ const Backups: React.FC = () => {
           )}
 
           {restoreSnapshot && (
-            <div className="grid gap-4 rounded-md border p-4 md:grid-cols-3">
+            <div className="grid gap-4 rounded-md border p-4 md:grid-cols-4">
               <div>
                 <div className="text-sm font-medium">Backup Date</div>
                 <div className="mt-1 text-sm text-muted-foreground">
@@ -620,12 +673,18 @@ const Backups: React.FC = () => {
                   {restoreSnapshot.total_records.toLocaleString()}
                 </div>
               </div>
+              <div>
+                <div className="text-sm font-medium">VFS Files</div>
+                <div className="mt-1 text-sm text-muted-foreground">
+                  {restoreSnapshotVfsFiles.toLocaleString()}
+                </div>
+              </div>
             </div>
           )}
 
           {restorePreview && (
             <div className="space-y-4">
-              <div className="grid gap-4 rounded-md border p-4 md:grid-cols-4">
+              <div className="grid gap-4 rounded-md border p-4 md:grid-cols-5">
                 <div>
                   <div className="text-sm font-medium">
                     {restorePreview.dry_run ? 'Would Create' : 'Created'}
@@ -646,6 +705,12 @@ const Backups: React.FC = () => {
                   <div className="text-sm font-medium">Skipped</div>
                   <div className="mt-1 text-sm text-muted-foreground">
                     {restorePreview.skipped_records.toLocaleString()} records
+                  </div>
+                </div>
+                <div>
+                  <div className="text-sm font-medium">VFS Files</div>
+                  <div className="mt-1 text-sm text-muted-foreground">
+                    {restorePreview.created_vfs_files.toLocaleString()} created
                   </div>
                 </div>
                 <div>
@@ -711,6 +776,51 @@ const Backups: React.FC = () => {
                   </TableBody>
                 </Table>
               </div>
+
+              {restorePreview.vfs_namespaces.length > 0 && (
+                <div className="overflow-x-auto rounded-md border">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Namespace</TableHead>
+                        <TableHead>Status</TableHead>
+                        <TableHead className="text-right">Source</TableHead>
+                        <TableHead className="text-right">
+                          {restorePreview.dry_run ? 'Create' : 'Created'}
+                        </TableHead>
+                        <TableHead className="text-right">Skipped</TableHead>
+                        <TableHead>Warnings</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {restorePreview.vfs_namespaces.map((namespace) => (
+                        <TableRow key={namespace.namespace}>
+                          <TableCell>
+                            <div className="font-medium">{namespace.namespace}</div>
+                          </TableCell>
+                          <TableCell>
+                            <Badge variant={restoreStatusVariant(namespace.status)}>
+                              {restoreStatusLabel(namespace.status)}
+                            </Badge>
+                          </TableCell>
+                          <TableCell className="text-right">
+                            {namespace.source_files.toLocaleString()}
+                          </TableCell>
+                          <TableCell className="text-right">
+                            {namespace.files_created.toLocaleString()}
+                          </TableCell>
+                          <TableCell className="text-right">
+                            {namespace.files_skipped.toLocaleString()}
+                          </TableCell>
+                          <TableCell className="max-w-sm text-sm text-muted-foreground">
+                            {namespace.warnings.join(' ') || 'None'}
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
+              )}
             </div>
           )}
         </CardContent>

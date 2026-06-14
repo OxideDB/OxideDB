@@ -5,6 +5,8 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import { AdminState } from '@/components/admin/AdminState';
+import { StatusIndicator } from '@/components/admin/StatusIndicator';
 
 interface SchemaField {
   name: string;
@@ -47,13 +49,13 @@ export const SchemaDisplay: React.FC<SchemaDisplayProps> = ({
                     </div>
                     <div className="flex flex-wrap gap-2">
                       {field.required && (
-                        <Badge className="bg-red-100 text-red-800 text-xs">Required</Badge>
+                        <StatusIndicator label="Required" tone="warning" showDot={false} />
                       )}
                       {field.unique && (
-                        <Badge className="bg-blue-100 text-blue-800 text-xs">Unique</Badge>
+                        <StatusIndicator label="Unique" tone="info" showDot={false} />
                       )}
                       {field.indexed && (
-                        <Badge className="bg-green-100 text-green-800 text-xs">Indexed</Badge>
+                        <StatusIndicator label="Indexed" tone="success" showDot={false} />
                       )}
                     </div>
                   </div>
@@ -82,21 +84,21 @@ export const SchemaDisplay: React.FC<SchemaDisplayProps> = ({
                       </TableCell>
                       <TableCell>
                         {field.required ? (
-                          <Badge className="bg-red-100 text-red-800">Required</Badge>
+                          <StatusIndicator label="Required" tone="warning" showDot={false} />
                         ) : (
                           <Badge variant="secondary">Optional</Badge>
                         )}
                       </TableCell>
                       <TableCell>
                         {field.unique ? (
-                          <Badge className="bg-blue-100 text-blue-800">Unique</Badge>
+                          <StatusIndicator label="Unique" tone="info" showDot={false} />
                         ) : (
                           <span className="text-muted-foreground">-</span>
                         )}
                       </TableCell>
                       <TableCell>
                         {field.indexed ? (
-                          <Badge className="bg-green-100 text-green-800">Indexed</Badge>
+                          <StatusIndicator label="Indexed" tone="success" showDot={false} />
                         ) : (
                           <span className="text-muted-foreground">-</span>
                         )}
@@ -108,19 +110,19 @@ export const SchemaDisplay: React.FC<SchemaDisplayProps> = ({
             </div>
           </>
         ) : (
-          <div className="text-center py-8">
-            <Database className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
-            <h3 className="text-lg font-medium mb-2">No schema defined</h3>
-            <p className="text-muted-foreground mb-4">
-              Define a schema to structure your collection data
-            </p>
-            <Link to={`/collections/${encodeURIComponent(collection)}/edit`}>
-              <Button>
-                <Edit className="h-4 w-4 mr-2" />
-                Define Schema
+          <AdminState
+            title="No schema defined"
+            description="Define a schema to structure your collection data."
+            icon={Database}
+            action={
+              <Button asChild>
+                <Link to={`/collections/${encodeURIComponent(collection)}/edit`}>
+                  <Edit className="h-4 w-4" />
+                  Define Schema
+                </Link>
               </Button>
-            </Link>
-          </div>
+            }
+          />
         )}
       </CardContent>
     </Card>

@@ -103,11 +103,28 @@ impl FileSystemStorage {
             }
         }
 
-        let replaced_metadata = self
+        let replaced_by_path = self
             .metadata_store
             .get_metadata(namespace, &FileIdentifier::Path(metadata.path.clone()))
             .await
             .ok();
+        let replaced_by_id = self
+            .metadata_store
+            .get_metadata(namespace, &FileIdentifier::Id(metadata.id.clone()))
+            .await
+            .ok();
+        let mut replaced_metadata = Vec::new();
+        if let Some(replaced) = replaced_by_path {
+            replaced_metadata.push(replaced);
+        }
+        if let Some(replaced) = replaced_by_id {
+            if replaced_metadata
+                .iter()
+                .all(|existing: &FileMetadata| existing.id != replaced.id)
+            {
+                replaced_metadata.push(replaced);
+            }
+        }
 
         let content_hash = calculate_content_hash(content);
         let content_path = self.get_content_path(&content_hash);
@@ -195,17 +212,19 @@ impl FileSystemStorage {
         metadata.size = content.len() as u64;
         metadata.compressed = compressed;
         metadata.compression_type = compression_type;
-        metadata.modified_at = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
+        if metadata.modified_at == 0 {
+            metadata.modified_at = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+        }
 
         // Store metadata in high-performance LMDB backend
         self.metadata_store
             .store_metadata(namespace, &metadata)
             .await?;
 
-        if let Some(replaced) = replaced_metadata {
+        for replaced in replaced_metadata {
             if replaced.content_hash != content_hash {
                 self.remove_content_if_unreferenced(&replaced.content_hash)
                     .await?;

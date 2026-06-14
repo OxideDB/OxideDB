@@ -591,6 +591,10 @@ class ApiService {
       searchParams.set('include_system', options.include_system.toString());
     }
 
+    if (options?.include_vfs !== undefined) {
+      searchParams.set('include_vfs', options.include_vfs.toString());
+    }
+
     if (options?.collections?.length) {
       searchParams.set('collections', options.collections.join(','));
     }

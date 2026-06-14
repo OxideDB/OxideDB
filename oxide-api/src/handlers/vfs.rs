@@ -358,12 +358,15 @@ pub async fn upload_file(
 
     // Prepare file write request
     let write_request = FileWriteRequest {
+        file_id: None,
         path: file_path.clone(),
         content: file_data,
         mime_type: Some(mime_type.clone()),
         custom_metadata,
         tags,
         overwrite,
+        created_at: None,
+        modified_at: None,
     };
 
     // Write file to VFS

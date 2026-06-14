@@ -22,6 +22,7 @@ import { Separator } from "@/components/ui/separator"
 import { ThemeToggle } from "@/components/theme-toggle"
 import { useAuth } from "@/hooks/useAuth"
 import { apiService } from "@/services/api"
+import { cn } from "@/lib/utils"
 import type { CollectionSchema, CollectionStats } from "@/types/api"
 
 const staticNavigationItems = [
@@ -156,29 +157,45 @@ export function AppSidebar() {
     }
   };
 
+  const isRouteActive = (url: string) => {
+    if (url === "/") {
+      return location.pathname === "/" || location.pathname === "/dashboard";
+    }
+
+    return location.pathname === url || location.pathname.startsWith(`${url}/`);
+  };
+
   return (
-    <Sidebar>
-      <SidebarHeader className="border-b border-sidebar-border">
-        <div className="flex items-center justify-between px-4 py-2">
-          <div className="flex items-center gap-2">
-            <Database className="h-6 w-6 text-orange-500" />
-            <span className="font-semibold text-lg">OxideDB</span>
+    <Sidebar collapsible="icon" className="border-r border-sidebar-border">
+      <SidebarHeader className="border-b border-sidebar-border px-2 py-3">
+        <div className="flex items-center justify-between gap-2 px-2">
+          <div className="flex min-w-0 items-center gap-2">
+            <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-primary text-primary-foreground shadow-sm">
+              <Database className="h-4 w-4" />
+            </div>
+            <div className="min-w-0 group-data-[collapsible=icon]:hidden">
+              <div className="truncate text-sm font-semibold leading-5">OxideDB</div>
+              <div className="text-xs text-sidebar-foreground/60">Admin console</div>
+            </div>
           </div>
-          <ThemeToggle />
+          <div className="group-data-[collapsible=icon]:hidden">
+            <ThemeToggle />
+          </div>
         </div>
       </SidebarHeader>
-      <SidebarContent>
+      <SidebarContent className="gap-1 py-2">
         {staticNavigationItems.map((section) => (
-          <SidebarGroup key={section.title}>
-            <SidebarGroupLabel>{section.title}</SidebarGroupLabel>
+          <SidebarGroup key={section.title} className="px-2 py-1">
+            <SidebarGroupLabel className="px-2 text-[0.68rem] font-semibold uppercase tracking-wide text-sidebar-foreground/55">
+              {section.title}
+            </SidebarGroupLabel>
             <SidebarGroupContent>
               <SidebarMenu>
                 {section.items.map((item) => {
-                  const isActive = location.pathname === item.url || 
-                                 (item.url === '/collections' && location.pathname.startsWith('/collections'));
+                  const isActive = isRouteActive(item.url);
                   return (
                     <SidebarMenuItem key={item.title}>
-                      <SidebarMenuButton asChild isActive={isActive}>
+                      <SidebarMenuButton asChild isActive={isActive} tooltip={item.title}>
                         <Link to={item.url}>
                           <item.icon className="h-4 w-4" />
                           <span>{item.title}</span>
@@ -193,16 +210,18 @@ export function AppSidebar() {
         ))}
 
         {/* Collections Section */}
-        <SidebarGroup>
+        <SidebarGroup className="px-2 py-1">
           <SidebarGroupLabel className="flex items-center justify-between">
-            <span>Collections</span>
-            <div className="flex items-center space-x-1">
+            <span className="text-[0.68rem] font-semibold uppercase tracking-wide text-sidebar-foreground/55">
+              Collections
+            </span>
+            <div className="flex items-center space-x-1 group-data-[collapsible=icon]:hidden">
               <Button
                 variant="ghost"
                 size="sm"
                 onClick={fetchCollections}
                 disabled={loading}
-                className="h-6 w-6 p-0"
+                className="h-6 w-6 p-0 text-sidebar-foreground/70 hover:bg-sidebar-accent"
                 title="Refresh collections"
               >
                 <RefreshCw className={`h-3 w-3 ${loading ? 'animate-spin' : ''}`} />
@@ -220,36 +239,38 @@ export function AppSidebar() {
           </SidebarGroupLabel>
           <SidebarGroupContent>
             {error && (
-              <div className="px-2 py-1 text-xs text-red-500 bg-red-50 dark:bg-red-950 rounded mb-2">
+              <div className="mb-2 rounded-md border border-destructive/20 bg-destructive/10 px-2 py-1.5 text-xs text-destructive group-data-[collapsible=icon]:hidden">
                 {error}
               </div>
             )}
             {loading && collections.length === 0 ? (
-              <div className="px-2 py-1 text-xs text-muted-foreground">
+              <div className="px-2 py-1.5 text-xs text-sidebar-foreground/60 group-data-[collapsible=icon]:hidden">
                 Loading collections...
               </div>
             ) : (
               <SidebarMenu>
                 {collectionsToShow.length === 0 ? (
-                  <div className="px-2 py-1 text-xs text-muted-foreground">
+                  <div className="px-2 py-1.5 text-xs text-sidebar-foreground/60 group-data-[collapsible=icon]:hidden">
                     {showSystemCollections ? 'No collections found' : 'No user collections'}
                   </div>
                 ) : (
                   collectionsToShow.map((collection) => {
                     const isSystemCollection = apiService.isSystemCollection(collection.schema)
+                    const collectionUrl = `/collections/${encodeURIComponent(collection.schema.name)}`;
+                    const isActive = location.pathname === collectionUrl || location.pathname.startsWith(`${collectionUrl}/`);
                     return (
                       <SidebarMenuItem key={collection.schema.id}>
-                        <SidebarMenuButton asChild>
-                          <Link to={`/collections/${encodeURIComponent(collection.schema.name)}`}>
+                        <SidebarMenuButton asChild isActive={isActive} tooltip={collection.schema.name}>
+                          <Link to={collectionUrl}>
                             {isSystemCollection ? (
-                              <Shield className="h-4 w-4 text-orange-500" />
+                              <Shield className="h-4 w-4 text-warning" />
                             ) : (
                               <FileText className="h-4 w-4" />
                             )}
-                            <span className={isSystemCollection ? "text-muted-foreground" : ""}>
+                            <span className={cn(isSystemCollection && "text-sidebar-foreground/70")}>
                               {collection.schema.name}
                             </span>
-                            <span className="ml-auto text-xs text-muted-foreground">
+                            <span className="ml-auto text-xs tabular-nums text-sidebar-foreground/55 group-data-[collapsible=icon]:hidden">
                               {collection.stats?.record_count.toLocaleString() || '?'}
                             </span>
                           </Link>
@@ -267,21 +288,19 @@ export function AppSidebar() {
       {/* User Info and Logout */}
       <div className="mt-auto border-t border-sidebar-border">
         {user && (
-          <div className="p-3">
-            <div className="flex items-center space-x-3 p-2 rounded-lg bg-muted/50">
-              <div className="flex-shrink-0">
-                <div className="w-8 h-8 bg-primary/10 rounded-full flex items-center justify-center">
-                  <User className="h-4 w-4 text-primary" />
-                </div>
+          <div className="p-2">
+            <div className="flex items-center gap-3 rounded-lg border border-sidebar-border bg-sidebar-accent/70 p-2">
+              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary">
+                <User className="h-4 w-4" />
               </div>
-              <div className="flex-1 min-w-0">
-                <p className="text-sm font-medium text-foreground truncate">
+              <div className="min-w-0 flex-1 group-data-[collapsible=icon]:hidden">
+                <p className="truncate text-sm font-medium text-sidebar-foreground">
                   {user.email}
                 </p>
-                <div className="flex items-center space-x-1 mt-1">
+                <div className="mt-1 flex items-center space-x-1">
                   <Badge 
                     variant={user.is_superuser ? "default" : "secondary"}
-                    className="text-xs"
+                    className="text-xs font-medium"
                   >
                     {user.is_superuser ? 'Superuser' : 'User'}
                   </Badge>
@@ -292,14 +311,15 @@ export function AppSidebar() {
         )}
         
         <Separator />
-        <div className="p-3">
+        <div className="p-2">
           <Button
             onClick={handleLogout}
             variant="ghost"
-            className="w-full justify-start text-muted-foreground hover:text-foreground"
+            className="w-full justify-start text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+            title="Logout"
           >
             <LogOut className="mr-3 h-4 w-4" />
-            Logout
+            <span className="group-data-[collapsible=icon]:hidden">Logout</span>
           </Button>
         </div>
       </div>

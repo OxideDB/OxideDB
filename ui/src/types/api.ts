@@ -198,7 +198,11 @@ export interface BackupManifestResponse {
   total_records: number;
   total_size_kb: number;
   include_system: boolean;
+  include_vfs: boolean;
+  total_vfs_files: number;
+  total_vfs_size_bytes: number;
   collections: BackupCollectionSummary[];
+  vfs_namespaces: BackupVfsNamespaceSummary[];
 }
 
 export interface BackupCollectionExport {
@@ -207,17 +211,66 @@ export interface BackupCollectionExport {
   record_count: number;
 }
 
+export interface BackupVfsNamespaceSummary {
+  namespace: string;
+  file_count: number;
+  total_size_bytes: number;
+}
+
+export interface BackupVfsNamespaceConfig {
+  namespace: string;
+  quota_bytes?: number | null;
+  enable_compression: boolean;
+  allowed_mime_types?: string[] | null;
+  max_file_size?: number | null;
+  enable_deduplication: boolean;
+  backup_config?: unknown | null;
+}
+
+export interface BackupVfsFileMetadata {
+  id: string;
+  name: string;
+  path: string;
+  mime_type: string;
+  size: number;
+  content_hash: string;
+  created_at: number;
+  modified_at: number;
+  custom_metadata: Record<string, string>;
+  compressed: boolean;
+  compression_type?: string | null;
+  tags: string[];
+}
+
+export interface BackupVfsFileExport {
+  metadata: BackupVfsFileMetadata;
+  content_encoding: string;
+  content_base64: string;
+}
+
+export interface BackupVfsNamespaceExport {
+  config: BackupVfsNamespaceConfig;
+  files: BackupVfsFileExport[];
+  file_count: number;
+  total_size_bytes: number;
+}
+
 export interface BackupExportResponse {
   format_version: number;
   generated_at: string;
   include_system: boolean;
+  include_vfs?: boolean;
   total_collections: number;
   total_records: number;
+  total_vfs_files?: number;
+  total_vfs_size_bytes?: number;
   collections: BackupCollectionExport[];
+  vfs_namespaces?: BackupVfsNamespaceExport[];
 }
 
 export interface BackupQueryOptions {
   include_system?: boolean;
+  include_vfs?: boolean;
   collections?: string[];
 }
 
@@ -226,6 +279,7 @@ export interface BackupRestoreRequest {
   dry_run?: boolean;
   include_system?: boolean;
   replace_existing?: boolean;
+  include_vfs?: boolean;
 }
 
 export interface BackupRestoreCollectionResult {
@@ -239,21 +293,39 @@ export interface BackupRestoreCollectionResult {
   warnings: string[];
 }
 
+export interface BackupVfsRestoreNamespaceResult {
+  namespace: string;
+  status: string;
+  source_files: number;
+  files_created: number;
+  files_skipped: number;
+  warnings: string[];
+}
+
 export interface BackupRestoreResponse {
   dry_run: boolean;
   generated_at: string;
   source_generated_at: string;
   include_system: boolean;
+  include_vfs: boolean;
   replace_existing: boolean;
   total_collections: number;
   total_records: number;
+  total_vfs_namespaces: number;
+  total_vfs_files: number;
   created_collections: number;
   replaced_collections: number;
   skipped_collections: number;
   created_records: number;
   updated_records: number;
   skipped_records: number;
+  created_vfs_namespaces: number;
+  replaced_vfs_namespaces: number;
+  skipped_vfs_namespaces: number;
+  created_vfs_files: number;
+  skipped_vfs_files: number;
   collections: BackupRestoreCollectionResult[];
+  vfs_namespaces: BackupVfsRestoreNamespaceResult[];
   warnings: string[];
 }
 

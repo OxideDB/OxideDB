@@ -41,7 +41,7 @@ function App() {
                 <ProtectedRoute>
                   <SidebarProvider defaultOpen={true}>
                     <AppSidebar />
-                    <main className="flex-1 min-w-0">
+                    <main className="min-h-svh flex-1 min-w-0 bg-background">
                       <Routes>
                         <Route index element={<Dashboard />} />
                         <Route path="dashboard" element={<Dashboard />} />

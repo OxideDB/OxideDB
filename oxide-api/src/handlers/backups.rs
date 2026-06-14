@@ -11,9 +11,13 @@ use axum::{
     response::Response,
     BoxError, Json,
 };
+use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use bytes::Bytes;
 use futures_util::TryStreamExt;
-use oxide_core::{AppError, CollectionSchema, CollectionType};
+use oxide_core::{
+    AppError, CollectionSchema, CollectionType, FileIdentifier, FileListRequest, FileMetadata,
+    FileReadRequest, FileWriteRequest, VfsError, VfsNamespaceConfig, VirtualFileSystem,
+};
 use oxide_db::{db::ListParams, Db, Record};
 use serde::{Deserialize, Serialize};
 use std::{collections::HashSet, sync::Arc};
@@ -29,10 +33,16 @@ const DEFAULT_EXPORT_RECORD_LIMIT: usize = 100_000;
 const EXPORT_RECORD_LIMIT_ENV: &str = "OXIDEDB_BACKUP_MAX_EXPORT_RECORDS";
 const STREAM_EXPORT_FILE_PREFIX: &str = "oxidedb-backup";
 
+fn default_restore_include_vfs() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct BackupQuery {
     #[serde(default)]
     pub include_system: bool,
+    #[serde(default)]
+    pub include_vfs: bool,
     pub collections: Option<String>,
     pub max_records: Option<usize>,
 }
@@ -56,7 +66,11 @@ pub struct BackupManifestResponse {
     pub total_records: usize,
     pub total_size_kb: f64,
     pub include_system: bool,
+    pub include_vfs: bool,
+    pub total_vfs_files: usize,
+    pub total_vfs_size_bytes: u64,
     pub collections: Vec<BackupCollectionSummary>,
+    pub vfs_namespaces: Vec<BackupVfsNamespaceSummary>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -66,14 +80,57 @@ pub struct BackupCollectionExport {
     pub record_count: usize,
 }
 
+/// VFS namespace summary included in backup manifests.
+#[derive(Debug, Clone, Serialize)]
+pub struct BackupVfsNamespaceSummary {
+    /// Namespace included in the snapshot.
+    pub namespace: String,
+    /// Number of VFS files in the namespace.
+    pub file_count: usize,
+    /// Total logical file size in bytes.
+    pub total_size_bytes: u64,
+}
+
+/// A single VFS file embedded in a JSON backup snapshot.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BackupVfsFileExport {
+    /// Original VFS metadata for the file.
+    pub metadata: FileMetadata,
+    /// Encoding used for the embedded file content.
+    pub content_encoding: String,
+    /// File content encoded as base64.
+    pub content_base64: String,
+}
+
+/// VFS namespace data embedded in a JSON backup snapshot.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BackupVfsNamespaceExport {
+    /// Namespace configuration to recreate on restore.
+    pub config: VfsNamespaceConfig,
+    /// Files included in the namespace.
+    pub files: Vec<BackupVfsFileExport>,
+    /// Number of files reported when the namespace was exported.
+    pub file_count: usize,
+    /// Total logical file size in bytes.
+    pub total_size_bytes: u64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BackupExportResponse {
     pub format_version: u32,
     pub generated_at: String,
     pub include_system: bool,
+    #[serde(default)]
+    pub include_vfs: bool,
     pub total_collections: usize,
     pub total_records: usize,
+    #[serde(default)]
+    pub total_vfs_files: usize,
+    #[serde(default)]
+    pub total_vfs_size_bytes: u64,
     pub collections: Vec<BackupCollectionExport>,
+    #[serde(default)]
+    pub vfs_namespaces: Vec<BackupVfsNamespaceExport>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -85,6 +142,8 @@ pub struct BackupRestoreRequest {
     pub include_system: bool,
     #[serde(default)]
     pub replace_existing: bool,
+    #[serde(default = "default_restore_include_vfs")]
+    pub include_vfs: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -99,30 +158,66 @@ pub struct BackupRestoreCollectionResult {
     pub warnings: Vec<String>,
 }
 
+/// Restore result for one VFS namespace.
+#[derive(Debug, Clone, Serialize)]
+pub struct BackupVfsRestoreNamespaceResult {
+    /// Namespace restored from the snapshot.
+    pub namespace: String,
+    /// Restore status for the namespace.
+    pub status: String,
+    /// Files present in the source snapshot namespace.
+    pub source_files: usize,
+    /// Files written during restore.
+    pub files_created: usize,
+    /// Existing files skipped during merge restore.
+    pub files_skipped: usize,
+    /// Warnings emitted for this namespace.
+    pub warnings: Vec<String>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct BackupRestoreResponse {
     pub dry_run: bool,
     pub generated_at: String,
     pub source_generated_at: String,
     pub include_system: bool,
+    pub include_vfs: bool,
     pub replace_existing: bool,
     pub total_collections: usize,
     pub total_records: usize,
+    pub total_vfs_namespaces: usize,
+    pub total_vfs_files: usize,
     pub created_collections: usize,
     pub replaced_collections: usize,
     pub skipped_collections: usize,
     pub created_records: usize,
     pub updated_records: usize,
     pub skipped_records: usize,
+    pub created_vfs_namespaces: usize,
+    pub replaced_vfs_namespaces: usize,
+    pub skipped_vfs_namespaces: usize,
+    pub created_vfs_files: usize,
+    pub skipped_vfs_files: usize,
     pub collections: Vec<BackupRestoreCollectionResult>,
+    pub vfs_namespaces: Vec<BackupVfsRestoreNamespaceResult>,
     pub warnings: Vec<String>,
 }
 
 struct BackupExportPlan {
     generated_at: String,
     include_system: bool,
+    include_vfs: bool,
     collections: Vec<(CollectionSchema, usize)>,
     total_records: usize,
+    vfs_namespaces: Vec<BackupVfsNamespacePlan>,
+    total_vfs_files: usize,
+    total_vfs_size_bytes: u64,
+}
+
+struct BackupVfsNamespacePlan {
+    config: VfsNamespaceConfig,
+    file_count: usize,
+    total_size_bytes: u64,
 }
 
 pub struct BackupHandlers;
@@ -130,6 +225,7 @@ pub struct BackupHandlers;
 impl BackupHandlers {
     pub async fn manifest(
         db: Arc<dyn Db>,
+        vfs_service: Option<Arc<dyn VirtualFileSystem>>,
         query: BackupQuery,
     ) -> Result<BackupManifestResponse, ApiError> {
         debug!("Building backup manifest");
@@ -137,6 +233,7 @@ impl BackupHandlers {
         let selected_collections = parse_collection_filter(&query.collections);
         let schemas = db.list_collections().await?;
         let mut collections = Vec::with_capacity(schemas.len());
+        let mut included_collection_names = Vec::new();
 
         for schema in schemas {
             let included =
@@ -145,6 +242,10 @@ impl BackupHandlers {
                 excluded_reason(&schema, query.include_system, &selected_collections);
             let record_count = db.count_records(&schema.name).await?;
             let size_kb = db.get_collection_size_kb(&schema.name).await?;
+
+            if included {
+                included_collection_names.push(schema.name.clone());
+            }
 
             collections.push(BackupCollectionSummary {
                 name: schema.name,
@@ -170,6 +271,19 @@ impl BackupHandlers {
             .filter(|entry| entry.included)
             .map(|entry| entry.size_kb)
             .sum();
+        let vfs_namespaces = if query.include_vfs {
+            build_vfs_manifest_summaries(vfs_service, &included_collection_names).await?
+        } else {
+            Vec::new()
+        };
+        let total_vfs_files = vfs_namespaces
+            .iter()
+            .map(|namespace| namespace.file_count)
+            .sum();
+        let total_vfs_size_bytes = vfs_namespaces
+            .iter()
+            .map(|namespace| namespace.total_size_bytes)
+            .sum();
 
         Ok(BackupManifestResponse {
             generated_at: chrono::Utc::now().to_rfc3339(),
@@ -178,17 +292,22 @@ impl BackupHandlers {
             total_records,
             total_size_kb,
             include_system: query.include_system,
+            include_vfs: query.include_vfs,
+            total_vfs_files,
+            total_vfs_size_bytes,
             collections,
+            vfs_namespaces,
         })
     }
 
     pub async fn export(
         db: Arc<dyn Db>,
+        vfs_service: Option<Arc<dyn VirtualFileSystem>>,
         query: BackupQuery,
     ) -> Result<BackupExportResponse, ApiError> {
         debug!("Exporting backup snapshot");
 
-        let plan = build_backup_export_plan(Arc::clone(&db), query).await?;
+        let plan = build_backup_export_plan(Arc::clone(&db), vfs_service.clone(), query).await?;
 
         let mut collections = Vec::with_capacity(plan.collections.len());
         let mut total_records = 0;
@@ -203,62 +322,92 @@ impl BackupHandlers {
                 records,
             });
         }
+        let vfs_namespaces = export_vfs_namespaces(vfs_service, &plan.vfs_namespaces).await?;
 
         info!(
-            "Exported backup snapshot with {} collections and {} records",
+            "Exported backup snapshot with {} collections, {} records, {} VFS namespaces, and {} VFS files",
             collections.len(),
-            total_records
+            total_records,
+            vfs_namespaces.len(),
+            plan.total_vfs_files
         );
 
         Ok(BackupExportResponse {
             format_version: BACKUP_FORMAT_VERSION,
             generated_at: plan.generated_at,
             include_system: plan.include_system,
+            include_vfs: plan.include_vfs,
             total_collections: collections.len(),
             total_records,
+            total_vfs_files: plan.total_vfs_files,
+            total_vfs_size_bytes: plan.total_vfs_size_bytes,
             collections,
+            vfs_namespaces,
         })
     }
 
     pub async fn restore(
         db: Arc<dyn Db>,
+        vfs_service: Option<Arc<dyn VirtualFileSystem>>,
         request: BackupRestoreRequest,
     ) -> Result<BackupRestoreResponse, ApiError> {
         debug!("Restoring backup snapshot");
 
-        if request.snapshot.format_version != BACKUP_FORMAT_VERSION {
+        let snapshot = request.snapshot;
+        if snapshot.format_version != BACKUP_FORMAT_VERSION {
             return Err(ApiError::bad_request(format!(
                 "Unsupported backup format version {}",
-                request.snapshot.format_version
+                snapshot.format_version
             )));
         }
-        validate_restore_snapshot(&request.snapshot, request.include_system)?;
+        validate_restore_snapshot(&snapshot, request.include_system)?;
 
-        let source_generated_at = request.snapshot.generated_at.clone();
+        let source_generated_at = snapshot.generated_at.clone();
+        let total_collections = snapshot.collections.len();
+        let total_records = snapshot
+            .collections
+            .iter()
+            .map(|collection| collection.records.len())
+            .sum();
+        let total_vfs_namespaces = snapshot.vfs_namespaces.len();
+        let total_vfs_files = snapshot
+            .vfs_namespaces
+            .iter()
+            .map(|namespace| namespace.files.len())
+            .sum();
+        let BackupExportResponse {
+            collections: snapshot_collections,
+            vfs_namespaces: snapshot_vfs_namespaces,
+            ..
+        } = snapshot;
         let mut response = BackupRestoreResponse {
             dry_run: request.dry_run,
             generated_at: chrono::Utc::now().to_rfc3339(),
             source_generated_at,
             include_system: request.include_system,
+            include_vfs: request.include_vfs,
             replace_existing: request.replace_existing,
-            total_collections: request.snapshot.collections.len(),
-            total_records: request
-                .snapshot
-                .collections
-                .iter()
-                .map(|collection| collection.records.len())
-                .sum(),
+            total_collections,
+            total_records,
+            total_vfs_namespaces,
+            total_vfs_files,
             created_collections: 0,
             replaced_collections: 0,
             skipped_collections: 0,
             created_records: 0,
             updated_records: 0,
             skipped_records: 0,
+            created_vfs_namespaces: 0,
+            replaced_vfs_namespaces: 0,
+            skipped_vfs_namespaces: 0,
+            created_vfs_files: 0,
+            skipped_vfs_files: 0,
             collections: Vec::new(),
+            vfs_namespaces: Vec::new(),
             warnings: Vec::new(),
         };
 
-        for collection_export in request.snapshot.collections {
+        for collection_export in snapshot_collections {
             let schema = collection_export.schema;
             let collection_name = schema.name.clone();
             let source_records = collection_export.records.len();
@@ -413,6 +562,17 @@ impl BackupHandlers {
             });
         }
 
+        restore_vfs_namespaces(
+            vfs_service,
+            snapshot_vfs_namespaces,
+            request.include_vfs,
+            request.include_system,
+            request.replace_existing,
+            request.dry_run,
+            &mut response,
+        )
+        .await?;
+
         for collection in &response.collections {
             response.warnings.extend(
                 collection
@@ -421,16 +581,25 @@ impl BackupHandlers {
                     .map(|warning| format!("{}: {}", collection.name, warning)),
             );
         }
+        for namespace in &response.vfs_namespaces {
+            response.warnings.extend(
+                namespace
+                    .warnings
+                    .iter()
+                    .map(|warning| format!("{}: {}", namespace.namespace, warning)),
+            );
+        }
 
         info!(
-            "{} backup restore with {} created records and {} skipped records",
+            "{} backup restore with {} created records, {} skipped records, and {} restored VFS files",
             if response.dry_run {
                 "Previewed"
             } else {
                 "Completed"
             },
             response.created_records,
-            response.skipped_records
+            response.skipped_records,
+            response.created_vfs_files
         );
 
         Ok(response)
@@ -444,7 +613,7 @@ pub async fn get_backup_manifest(
 ) -> Result<Json<ApiResponse<BackupManifestResponse>>, ApiError> {
     ensure_superuser(&authenticated_user, "preview backups")?;
 
-    let response = BackupHandlers::manifest(state.db, query).await?;
+    let response = BackupHandlers::manifest(state.db, state.vfs_service, query).await?;
     Ok(Json(ApiResponse::success(response)))
 }
 
@@ -455,7 +624,7 @@ pub async fn export_backup(
 ) -> Result<Json<ApiResponse<BackupExportResponse>>, ApiError> {
     ensure_superuser(&authenticated_user, "export backups")?;
 
-    let response = BackupHandlers::export(state.db, query).await?;
+    let response = BackupHandlers::export(state.db, state.vfs_service, query).await?;
     Ok(Json(ApiResponse::success(response)))
 }
 
@@ -466,9 +635,10 @@ pub async fn export_backup_stream(
 ) -> Result<Response<Body>, ApiError> {
     ensure_superuser(&authenticated_user, "stream export backups")?;
 
-    let plan = build_backup_export_plan(Arc::clone(&state.db), query).await?;
+    let plan =
+        build_backup_export_plan(Arc::clone(&state.db), state.vfs_service.clone(), query).await?;
     let filename = backup_stream_filename(&plan.generated_at);
-    let body = stream_backup_json_body(state.db, plan);
+    let body = stream_backup_json_body(state.db, state.vfs_service, plan);
 
     let mut headers = HeaderMap::new();
     headers.insert(
@@ -498,12 +668,13 @@ pub async fn restore_backup(
 ) -> Result<Json<ApiResponse<BackupRestoreResponse>>, ApiError> {
     ensure_superuser(&authenticated_user, "restore backups")?;
 
-    let response = BackupHandlers::restore(state.db, request).await?;
+    let response = BackupHandlers::restore(state.db, state.vfs_service, request).await?;
     Ok(Json(ApiResponse::success(response)))
 }
 
 async fn build_backup_export_plan(
     db: Arc<dyn Db>,
+    vfs_service: Option<Arc<dyn VirtualFileSystem>>,
     query: BackupQuery,
 ) -> Result<BackupExportPlan, ApiError> {
     let selected_collections = parse_collection_filter(&query.collections);
@@ -526,23 +697,51 @@ async fn build_backup_export_plan(
         ensure_export_record_limit(record_limit, total_records, &schema.name)?;
         collections.push((schema, record_count));
     }
+    let included_collection_names = collections
+        .iter()
+        .map(|(schema, _)| schema.name.clone())
+        .collect::<Vec<_>>();
+    let vfs_namespaces = if query.include_vfs {
+        build_vfs_export_plan(vfs_service, &included_collection_names).await?
+    } else {
+        Vec::new()
+    };
+    let total_vfs_files = vfs_namespaces
+        .iter()
+        .map(|namespace| namespace.file_count)
+        .sum();
+    let total_vfs_size_bytes = vfs_namespaces
+        .iter()
+        .map(|namespace| namespace.total_size_bytes)
+        .sum();
 
     Ok(BackupExportPlan {
         generated_at: chrono::Utc::now().to_rfc3339(),
         include_system: query.include_system,
+        include_vfs: query.include_vfs,
         collections,
         total_records,
+        vfs_namespaces,
+        total_vfs_files,
+        total_vfs_size_bytes,
     })
 }
 
-fn stream_backup_json_body(db: Arc<dyn Db>, plan: BackupExportPlan) -> Body {
+fn stream_backup_json_body(
+    db: Arc<dyn Db>,
+    vfs_service: Option<Arc<dyn VirtualFileSystem>>,
+    plan: BackupExportPlan,
+) -> Body {
     let stream = async_stream::try_stream! {
         let mut header = serde_json::to_vec(&serde_json::json!({
             "format_version": BACKUP_FORMAT_VERSION,
             "generated_at": plan.generated_at,
             "include_system": plan.include_system,
+            "include_vfs": plan.include_vfs,
             "total_collections": plan.collections.len(),
             "total_records": plan.total_records,
+            "total_vfs_files": plan.total_vfs_files,
+            "total_vfs_size_bytes": plan.total_vfs_size_bytes,
         }))
         .map_err(|e| ApiError::internal(format!("Failed to encode backup stream header: {}", e)))?;
         match header.pop() {
@@ -607,6 +806,74 @@ fn stream_backup_json_body(db: Arc<dyn Db>, plan: BackupExportPlan) -> Body {
             yield Bytes::from_static(b"}");
         }
 
+        yield Bytes::from_static(b"],\"vfs_namespaces\":[");
+
+        for (namespace_index, namespace_plan) in plan.vfs_namespaces.into_iter().enumerate() {
+            if namespace_index > 0 {
+                yield Bytes::from_static(b",");
+            }
+
+            let vfs = vfs_service.as_ref().ok_or_else(|| {
+                ApiError::bad_request("VFS service is not available for backup export".to_string())
+            })?;
+            let namespace = namespace_plan.config.namespace.clone();
+
+            yield Bytes::from_static(b"{\"config\":");
+            yield backup_json_chunk(&namespace_plan.config)?;
+            yield Bytes::from_static(b",\"files\":[");
+
+            let mut offset = 0usize;
+            let mut files_written = 0usize;
+            let mut first_file = true;
+
+            loop {
+                let file_list = vfs
+                    .list_files(
+                        &namespace,
+                        FileListRequest {
+                            directory: String::new(),
+                            recursive: true,
+                            mime_filter: None,
+                            tag_filter: None,
+                            offset: Some(offset),
+                            limit: Some(EXPORT_PAGE_SIZE),
+                        },
+                    )
+                    .await
+                    .map_err(|e| vfs_export_error("list VFS files", &namespace, e))?;
+
+                let batch_len = file_list.files.len();
+                if files_written.saturating_add(batch_len) > namespace_plan.file_count {
+                    Err::<(), ApiError>(ApiError::bad_request(format!(
+                        "VFS namespace '{}' changed during backup export; retry the export",
+                        namespace
+                    )))?;
+                }
+
+                for metadata in file_list.files {
+                    if !first_file {
+                        yield Bytes::from_static(b",");
+                    }
+                    first_file = false;
+                    let file_export = export_vfs_file(vfs.as_ref(), &namespace, metadata).await?;
+                    yield backup_json_chunk(&file_export)?;
+                    files_written += 1;
+                }
+
+                if batch_len < EXPORT_PAGE_SIZE {
+                    break;
+                }
+
+                offset += EXPORT_PAGE_SIZE;
+            }
+
+            yield Bytes::from_static(b"],\"file_count\":");
+            yield Bytes::from(files_written.to_string());
+            yield Bytes::from_static(b",\"total_size_bytes\":");
+            yield Bytes::from(namespace_plan.total_size_bytes.to_string());
+            yield Bytes::from_static(b"}");
+        }
+
         yield Bytes::from_static(b"]}");
     };
 
@@ -617,6 +884,496 @@ fn backup_json_chunk<T: Serialize>(value: &T) -> Result<Bytes, ApiError> {
     serde_json::to_vec(value)
         .map(Bytes::from)
         .map_err(|e| ApiError::internal(format!("Failed to encode backup stream: {}", e)))
+}
+
+async fn build_vfs_manifest_summaries(
+    vfs_service: Option<Arc<dyn VirtualFileSystem>>,
+    namespaces: &[String],
+) -> Result<Vec<BackupVfsNamespaceSummary>, ApiError> {
+    let vfs = require_vfs_service(vfs_service)?;
+    let mut summaries = Vec::new();
+
+    for namespace in namespaces {
+        if optional_vfs_namespace_config(vfs.as_ref(), namespace)
+            .await?
+            .is_none()
+        {
+            continue;
+        }
+
+        let stats = vfs
+            .get_usage_stats(namespace)
+            .await
+            .map_err(|e| vfs_export_error("read VFS usage stats", namespace, e))?;
+        summaries.push(BackupVfsNamespaceSummary {
+            namespace: namespace.clone(),
+            file_count: stats.file_count,
+            total_size_bytes: stats.storage_used,
+        });
+    }
+
+    Ok(summaries)
+}
+
+async fn build_vfs_export_plan(
+    vfs_service: Option<Arc<dyn VirtualFileSystem>>,
+    namespaces: &[String],
+) -> Result<Vec<BackupVfsNamespacePlan>, ApiError> {
+    let vfs = require_vfs_service(vfs_service)?;
+    let mut plans = Vec::new();
+
+    for namespace in namespaces {
+        let Some(config) = optional_vfs_namespace_config(vfs.as_ref(), namespace).await? else {
+            continue;
+        };
+        let stats = vfs
+            .get_usage_stats(namespace)
+            .await
+            .map_err(|e| vfs_export_error("read VFS usage stats", namespace, e))?;
+
+        plans.push(BackupVfsNamespacePlan {
+            config,
+            file_count: stats.file_count,
+            total_size_bytes: stats.storage_used,
+        });
+    }
+
+    Ok(plans)
+}
+
+async fn export_vfs_namespaces(
+    vfs_service: Option<Arc<dyn VirtualFileSystem>>,
+    plans: &[BackupVfsNamespacePlan],
+) -> Result<Vec<BackupVfsNamespaceExport>, ApiError> {
+    if plans.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let vfs = require_vfs_service(vfs_service)?;
+    let mut namespaces = Vec::with_capacity(plans.len());
+
+    for plan in plans {
+        let files =
+            export_vfs_namespace_files(vfs.as_ref(), &plan.config.namespace, plan.file_count)
+                .await?;
+        let total_size_bytes = files.iter().map(|file| file.metadata.size).sum();
+        namespaces.push(BackupVfsNamespaceExport {
+            config: plan.config.clone(),
+            file_count: files.len(),
+            total_size_bytes,
+            files,
+        });
+    }
+
+    Ok(namespaces)
+}
+
+async fn export_vfs_namespace_files(
+    vfs: &dyn VirtualFileSystem,
+    namespace: &str,
+    expected_files: usize,
+) -> Result<Vec<BackupVfsFileExport>, ApiError> {
+    let mut files = Vec::with_capacity(expected_files);
+    let mut offset = 0usize;
+
+    loop {
+        let file_list = vfs
+            .list_files(
+                &namespace.to_string(),
+                FileListRequest {
+                    directory: String::new(),
+                    recursive: true,
+                    mime_filter: None,
+                    tag_filter: None,
+                    offset: Some(offset),
+                    limit: Some(EXPORT_PAGE_SIZE),
+                },
+            )
+            .await
+            .map_err(|e| vfs_export_error("list VFS files", namespace, e))?;
+
+        let batch_len = file_list.files.len();
+        if files.len().saturating_add(batch_len) > expected_files {
+            return Err(ApiError::bad_request(format!(
+                "VFS namespace '{}' changed during backup export; retry the export",
+                namespace
+            )));
+        }
+
+        for metadata in file_list.files {
+            files.push(export_vfs_file(vfs, namespace, metadata).await?);
+        }
+
+        if batch_len < EXPORT_PAGE_SIZE {
+            break;
+        }
+
+        offset += EXPORT_PAGE_SIZE;
+    }
+
+    Ok(files)
+}
+
+async fn export_vfs_file(
+    vfs: &dyn VirtualFileSystem,
+    namespace: &str,
+    metadata: FileMetadata,
+) -> Result<BackupVfsFileExport, ApiError> {
+    let response = vfs
+        .read_file(
+            &namespace.to_string(),
+            FileReadRequest {
+                identifier: FileIdentifier::Id(metadata.id),
+                include_content: true,
+            },
+        )
+        .await
+        .map_err(|e| vfs_export_error("read VFS file", namespace, e))?;
+    let content = response.content.ok_or_else(|| {
+        ApiError::internal(format!(
+            "VFS read for namespace '{}' did not return file content",
+            namespace
+        ))
+    })?;
+
+    Ok(BackupVfsFileExport {
+        metadata: response.metadata,
+        content_encoding: "base64".to_string(),
+        content_base64: BASE64_STANDARD.encode(content),
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn restore_vfs_namespaces(
+    vfs_service: Option<Arc<dyn VirtualFileSystem>>,
+    namespaces: Vec<BackupVfsNamespaceExport>,
+    include_vfs: bool,
+    include_system: bool,
+    replace_existing: bool,
+    dry_run: bool,
+    response: &mut BackupRestoreResponse,
+) -> Result<(), ApiError> {
+    if namespaces.is_empty() {
+        return Ok(());
+    }
+
+    if !include_vfs {
+        for namespace_export in namespaces {
+            let namespace_name = namespace_export.config.namespace;
+            let source_files = namespace_export.files.len();
+            response.skipped_vfs_namespaces += 1;
+            response.skipped_vfs_files += source_files;
+            response
+                .vfs_namespaces
+                .push(BackupVfsRestoreNamespaceResult {
+                    namespace: namespace_name,
+                    status: "skipped_vfs_disabled".to_string(),
+                    source_files,
+                    files_created: 0,
+                    files_skipped: source_files,
+                    warnings: vec![
+                        "VFS files skipped; enable include_vfs to restore them".to_string()
+                    ],
+                });
+        }
+        return Ok(());
+    }
+
+    let vfs = require_vfs_service(vfs_service)?;
+
+    for namespace_export in namespaces {
+        let namespace_name = namespace_export.config.namespace.clone();
+        let source_files = namespace_export.files.len();
+        let mut warnings = Vec::new();
+
+        if namespace_export.file_count != source_files {
+            warnings.push(format!(
+                "Snapshot file_count was {}, but {} files were present",
+                namespace_export.file_count, source_files
+            ));
+        }
+
+        if is_system_collection(&namespace_name) && !include_system {
+            response.skipped_vfs_namespaces += 1;
+            response.skipped_vfs_files += source_files;
+            warnings.push(
+                "System VFS namespace skipped; enable include_system to restore it".to_string(),
+            );
+            response
+                .vfs_namespaces
+                .push(BackupVfsRestoreNamespaceResult {
+                    namespace: namespace_name,
+                    status: "skipped_system".to_string(),
+                    source_files,
+                    files_created: 0,
+                    files_skipped: source_files,
+                    warnings,
+                });
+            continue;
+        }
+
+        for file in &namespace_export.files {
+            validate_vfs_file_export(&namespace_name, file)?;
+        }
+
+        let namespace_exists = optional_vfs_namespace_config(vfs.as_ref(), &namespace_name)
+            .await?
+            .is_some();
+        let mut status = if namespace_exists {
+            "merged".to_string()
+        } else if dry_run {
+            "would_create".to_string()
+        } else {
+            vfs.create_namespace(namespace_export.config.clone())
+                .await
+                .map_err(|e| vfs_restore_error("create VFS namespace", &namespace_name, e))?;
+            response.created_vfs_namespaces += 1;
+            "created".to_string()
+        };
+
+        if namespace_exists && replace_existing {
+            status = if dry_run {
+                "would_replace".to_string()
+            } else {
+                vfs.delete_namespace(&namespace_name)
+                    .await
+                    .map_err(|e| vfs_restore_error("delete VFS namespace", &namespace_name, e))?;
+                vfs.create_namespace(namespace_export.config.clone())
+                    .await
+                    .map_err(|e| vfs_restore_error("create VFS namespace", &namespace_name, e))?;
+                "replaced".to_string()
+            };
+            response.replaced_vfs_namespaces += 1;
+        } else if !namespace_exists && dry_run {
+            response.created_vfs_namespaces += 1;
+        }
+
+        let mut files_created = 0usize;
+        let mut files_skipped = 0usize;
+
+        if namespace_exists && !replace_existing {
+            for file in namespace_export.files {
+                if vfs_file_exists(vfs.as_ref(), &namespace_name, &file.metadata).await? {
+                    files_skipped += 1;
+                    continue;
+                }
+
+                if !dry_run {
+                    write_vfs_file_export(vfs.as_ref(), &namespace_name, file).await?;
+                }
+                files_created += 1;
+            }
+        } else {
+            files_created = source_files;
+            if !dry_run {
+                for file in namespace_export.files {
+                    write_vfs_file_export(vfs.as_ref(), &namespace_name, file).await?;
+                }
+            }
+        }
+
+        response.created_vfs_files += files_created;
+        response.skipped_vfs_files += files_skipped;
+        response
+            .vfs_namespaces
+            .push(BackupVfsRestoreNamespaceResult {
+                namespace: namespace_name,
+                status,
+                source_files,
+                files_created,
+                files_skipped,
+                warnings,
+            });
+    }
+
+    Ok(())
+}
+
+async fn vfs_file_exists(
+    vfs: &dyn VirtualFileSystem,
+    namespace: &str,
+    metadata: &FileMetadata,
+) -> Result<bool, ApiError> {
+    match vfs
+        .read_file(
+            &namespace.to_string(),
+            FileReadRequest {
+                identifier: FileIdentifier::Id(metadata.id.clone()),
+                include_content: false,
+            },
+        )
+        .await
+    {
+        Ok(_) => return Ok(true),
+        Err(VfsError::FileNotFound { .. }) => {}
+        Err(e) => return Err(vfs_restore_error("read VFS file metadata", namespace, e)),
+    }
+
+    match vfs
+        .read_file(
+            &namespace.to_string(),
+            FileReadRequest {
+                identifier: FileIdentifier::Path(metadata.path.clone()),
+                include_content: false,
+            },
+        )
+        .await
+    {
+        Ok(_) => Ok(true),
+        Err(VfsError::FileNotFound { .. }) => Ok(false),
+        Err(e) => Err(vfs_restore_error("read VFS file metadata", namespace, e)),
+    }
+}
+
+async fn write_vfs_file_export(
+    vfs: &dyn VirtualFileSystem,
+    namespace: &str,
+    file: BackupVfsFileExport,
+) -> Result<(), ApiError> {
+    let content = decode_vfs_file_content(namespace, &file)?;
+    let metadata = file.metadata;
+
+    vfs.write_file(
+        &namespace.to_string(),
+        FileWriteRequest {
+            file_id: Some(metadata.id),
+            path: metadata.path,
+            content,
+            mime_type: Some(metadata.mime_type),
+            custom_metadata: Some(metadata.custom_metadata),
+            tags: Some(metadata.tags),
+            overwrite: false,
+            created_at: Some(metadata.created_at),
+            modified_at: Some(metadata.modified_at),
+        },
+    )
+    .await
+    .map_err(|e| vfs_restore_error("write VFS file", namespace, e))?;
+
+    Ok(())
+}
+
+fn decode_vfs_file_content(
+    namespace: &str,
+    file: &BackupVfsFileExport,
+) -> Result<Vec<u8>, ApiError> {
+    validate_vfs_file_export(namespace, file)?;
+    let content = BASE64_STANDARD
+        .decode(file.content_base64.as_bytes())
+        .map_err(|e| {
+            ApiError::bad_request(format!(
+                "Invalid base64 content for VFS file '{}' in namespace '{}': {}",
+                file.metadata.path, namespace, e
+            ))
+        })?;
+
+    if content.len() as u64 != file.metadata.size {
+        return Err(ApiError::bad_request(format!(
+            "VFS file '{}' in namespace '{}' has {} decoded bytes but metadata declares {}",
+            file.metadata.path,
+            namespace,
+            content.len(),
+            file.metadata.size
+        )));
+    }
+
+    Ok(content)
+}
+
+fn validate_vfs_file_export(namespace: &str, file: &BackupVfsFileExport) -> Result<(), ApiError> {
+    if !file.content_encoding.eq_ignore_ascii_case("base64") {
+        return Err(ApiError::bad_request(format!(
+            "Unsupported VFS content encoding '{}' for namespace '{}'",
+            file.content_encoding, namespace
+        )));
+    }
+
+    if file.metadata.id.trim().is_empty() {
+        return Err(ApiError::bad_request(format!(
+            "VFS file in namespace '{}' is missing an id",
+            namespace
+        )));
+    }
+
+    if file.metadata.path.trim().is_empty() {
+        return Err(ApiError::bad_request(format!(
+            "VFS file '{}' in namespace '{}' has an empty path",
+            file.metadata.id, namespace
+        )));
+    }
+
+    Ok(())
+}
+
+async fn optional_vfs_namespace_config(
+    vfs: &dyn VirtualFileSystem,
+    namespace: &str,
+) -> Result<Option<VfsNamespaceConfig>, ApiError> {
+    match vfs.get_namespace_config(&namespace.to_string()).await {
+        Ok(config) => Ok(Some(config)),
+        Err(VfsError::AccessDenied { .. } | VfsError::FileNotFound { .. }) => Ok(None),
+        Err(e) => Err(vfs_export_error("read VFS namespace config", namespace, e)),
+    }
+}
+
+fn require_vfs_service(
+    vfs_service: Option<Arc<dyn VirtualFileSystem>>,
+) -> Result<Arc<dyn VirtualFileSystem>, ApiError> {
+    vfs_service.ok_or_else(|| {
+        ApiError::bad_request("VFS service is not available for this backup operation".to_string())
+    })
+}
+
+fn vfs_export_error(action: &str, namespace: &str, error: VfsError) -> ApiError {
+    match error {
+        VfsError::InvalidPath { .. } => ApiError::bad_request(format!(
+            "Invalid VFS namespace or path while attempting to {} for '{}'",
+            action, namespace
+        )),
+        VfsError::AccessDenied { .. } | VfsError::FileNotFound { .. } => {
+            ApiError::bad_request(format!(
+                "VFS namespace '{}' changed while attempting to {}; retry the export",
+                namespace, action
+            ))
+        }
+        VfsError::QuotaExceeded { .. } => ApiError::bad_request(format!(
+            "VFS quota prevented backup export while attempting to {} for '{}'",
+            action, namespace
+        )),
+        other => ApiError::internal(format!(
+            "Failed to {} for VFS namespace '{}': {}",
+            action, namespace, other
+        )),
+    }
+}
+
+fn vfs_restore_error(action: &str, namespace: &str, error: VfsError) -> ApiError {
+    match error {
+        VfsError::InvalidPath { .. } => ApiError::bad_request(format!(
+            "Invalid VFS data while attempting to {} for '{}'",
+            action, namespace
+        )),
+        VfsError::FileAlreadyExists { .. } => ApiError::conflict(format!(
+            "VFS file already exists while attempting to {} for '{}'",
+            action, namespace
+        )),
+        VfsError::QuotaExceeded { .. } => ApiError::bad_request(format!(
+            "VFS quota exceeded while attempting to {} for '{}'",
+            action, namespace
+        )),
+        VfsError::AccessDenied { .. } => ApiError::forbidden(format!(
+            "VFS access denied while attempting to {} for '{}'",
+            action, namespace
+        )),
+        VfsError::FileNotFound { .. } => ApiError::not_found(format!(
+            "VFS file not found while attempting to {} for '{}'",
+            action, namespace
+        )),
+        other => ApiError::internal(format!(
+            "Failed to {} for VFS namespace '{}': {}",
+            action, namespace, other
+        )),
+    }
 }
 
 fn backup_stream_filename(generated_at: &str) -> String {
@@ -822,9 +1579,11 @@ mod tests {
     use super::*;
     use oxide_core::{
         auth::{AuthService, AuthServiceConfig},
-        CollectionType, FieldDefinition, FieldType, InMemoryEventBus,
+        CollectionType, FieldDefinition, FieldType, FileIdentifier, FileReadRequest,
+        FileWriteRequest, InMemoryEventBus, VfsNamespaceConfig, VirtualFileSystem,
     };
     use oxide_db::SqliteDb;
+    use oxide_vfs::VfsService;
 
     fn test_db() -> Arc<dyn Db> {
         let event_bus = Arc::new(InMemoryEventBus::new());
@@ -851,8 +1610,10 @@ mod tests {
 
         let snapshot = BackupHandlers::export(
             Arc::clone(&db),
+            None,
             BackupQuery {
                 include_system: false,
+                include_vfs: false,
                 collections: Some("articles".to_string()),
                 max_records: None,
             },
@@ -864,11 +1625,13 @@ mod tests {
 
         let preview = BackupHandlers::restore(
             Arc::clone(&db),
+            None,
             BackupRestoreRequest {
                 snapshot: snapshot.clone(),
                 dry_run: true,
                 include_system: false,
                 replace_existing: false,
+                include_vfs: true,
             },
         )
         .await
@@ -880,11 +1643,13 @@ mod tests {
 
         let restored_summary = BackupHandlers::restore(
             Arc::clone(&db),
+            None,
             BackupRestoreRequest {
                 snapshot,
                 dry_run: false,
                 include_system: false,
                 replace_existing: false,
+                include_vfs: true,
             },
         )
         .await
@@ -901,6 +1666,109 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn export_and_restore_include_vfs_files_with_stable_ids(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let db = test_db();
+        db.initialize().await?;
+
+        let mut schema = CollectionSchema::new("articles".to_string(), CollectionType::Base);
+        schema.add_field("title".to_string(), FieldDefinition::new(FieldType::Text));
+        db.create_collection(schema).await?;
+
+        let source_path = std::env::temp_dir().join(format!(
+            "oxidedb-backup-vfs-source-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let target_path = std::env::temp_dir().join(format!(
+            "oxidedb-backup-vfs-target-{}",
+            uuid::Uuid::new_v4()
+        ));
+
+        let source_vfs = Arc::new(VfsService::new(source_path.clone(), None)?);
+        source_vfs.initialize().await?;
+        source_vfs
+            .create_namespace(VfsNamespaceConfig {
+                namespace: "articles".to_string(),
+                ..Default::default()
+            })
+            .await?;
+        let original_file = source_vfs
+            .write_file(
+                &"articles".to_string(),
+                FileWriteRequest {
+                    file_id: Some("stable-file-id".to_string()),
+                    path: "uploads/original.txt".to_string(),
+                    content: b"portable file content".to_vec(),
+                    mime_type: Some("text/plain".to_string()),
+                    custom_metadata: None,
+                    tags: Some(vec!["backup".to_string()]),
+                    overwrite: false,
+                    created_at: Some(123),
+                    modified_at: Some(456),
+                },
+            )
+            .await?;
+
+        let source_vfs_trait: Arc<dyn VirtualFileSystem> = source_vfs.clone();
+        let snapshot = BackupHandlers::export(
+            Arc::clone(&db),
+            Some(source_vfs_trait),
+            BackupQuery {
+                include_system: false,
+                include_vfs: true,
+                collections: Some("articles".to_string()),
+                max_records: None,
+            },
+        )
+        .await?;
+
+        assert_eq!(snapshot.total_vfs_files, 1);
+        assert_eq!(snapshot.vfs_namespaces.len(), 1);
+
+        let target_vfs = Arc::new(VfsService::new(target_path.clone(), None)?);
+        target_vfs.initialize().await?;
+        let target_vfs_trait: Arc<dyn VirtualFileSystem> = target_vfs.clone();
+        let restored_summary = BackupHandlers::restore(
+            Arc::clone(&db),
+            Some(target_vfs_trait),
+            BackupRestoreRequest {
+                snapshot,
+                dry_run: false,
+                include_system: false,
+                replace_existing: false,
+                include_vfs: true,
+            },
+        )
+        .await?;
+
+        assert_eq!(restored_summary.created_vfs_namespaces, 1);
+        assert_eq!(restored_summary.created_vfs_files, 1);
+
+        let restored_file = target_vfs
+            .read_file(
+                &"articles".to_string(),
+                FileReadRequest {
+                    identifier: FileIdentifier::Id(original_file.id.clone()),
+                    include_content: true,
+                },
+            )
+            .await?;
+
+        assert_eq!(restored_file.metadata.id, original_file.id);
+        assert_eq!(restored_file.metadata.created_at, 123);
+        assert_eq!(restored_file.metadata.modified_at, 456);
+        assert_eq!(
+            restored_file.content.unwrap_or_default(),
+            b"portable file content".to_vec()
+        );
+
+        let _ = tokio::fs::remove_dir_all(source_path).await;
+        let _ = tokio::fs::remove_dir_all(target_path).await;
+
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn export_rejects_snapshots_above_requested_record_limit() {
         let db = test_db();
         db.initialize().await.unwrap();
@@ -914,8 +1782,10 @@ mod tests {
 
         let error = BackupHandlers::export(
             Arc::clone(&db),
+            None,
             BackupQuery {
                 include_system: false,
+                include_vfs: false,
                 collections: Some("articles".to_string()),
                 max_records: Some(0),
             },

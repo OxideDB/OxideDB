@@ -8,6 +8,7 @@ import type { DbRecord, CollectionSchema, FieldType, FileReference, FieldDefinit
 import type { FieldCustomization } from '../types/fieldCustomization';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { apiService } from '../services/api';
+import { StatusIndicator } from '@/components/admin/StatusIndicator';
 
 interface RecordTableProps {
   records: DbRecord[];
@@ -115,6 +116,7 @@ export const RecordTable: React.FC<RecordTableProps> = ({
             size="sm"
             className="h-6 w-6 p-0"
             onClick={() => downloadFile(fileRef)}
+            aria-label={`Download ${fileRef.name}`}
           >
             <Download className="h-3 w-3" />
           </Button>
@@ -138,6 +140,7 @@ export const RecordTable: React.FC<RecordTableProps> = ({
                 size="sm"
                 className="h-4 w-4 p-0"
                 onClick={() => downloadFile(fileRef)}
+                aria-label={`Download ${fileRef.name}`}
               >
                 <Download className="h-2 w-2" />
               </Button>
@@ -168,9 +171,11 @@ export const RecordTable: React.FC<RecordTableProps> = ({
     
     if (typeof value === 'boolean') {
       return (
-        <Badge variant={value ? "default" : "secondary"} className="text-xs">
-          {value ? 'true' : 'false'}
-        </Badge>
+        <StatusIndicator
+          tone={value ? "success" : "neutral"}
+          showDot={false}
+          label={value ? "true" : "false"}
+        />
       );
     }
     
@@ -295,13 +300,15 @@ export const RecordTable: React.FC<RecordTableProps> = ({
                 >
                   <Link to={`/collections/${encodeURIComponent(collection)}/edit/${record.id}`}>
                     <Edit className="h-3 w-3" />
+                    <span className="sr-only">Edit record</span>
                   </Link>
                 </Button>
                 <Button
                   onClick={() => onDelete(record.id)}
                   variant="ghost"
                   size="icon"
-                  className="h-8 w-8 text-destructive hover:text-destructive/80"
+                  className="h-8 w-8 text-destructive hover:bg-destructive/10 hover:text-destructive"
+                  aria-label="Delete record"
                 >
                   <Trash2 className="h-3 w-3" />
                 </Button>

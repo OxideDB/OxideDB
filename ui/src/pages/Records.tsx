@@ -1,12 +1,14 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
-import { ArrowLeft, Plus, Download, Upload, Settings, Database, Search, X } from 'lucide-react';
+import { ArrowLeft, Plus, Download, Upload, Settings, Database, Search, X, AlertTriangle } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Alert, AlertDescription } from '@/components/ui/alert';
 import { RecordTable } from '@/components/RecordTable';
 import PageLayout from '@/components/PageLayout';
+import { AdminState, LoadingState } from '@/components/admin/AdminState';
 import { apiService } from '../services/api';
 import type { RecordFilterOp, RecordQueryParams } from '../services/api';
 import { useFieldCustomization } from '../hooks/useFieldCustomization';
@@ -233,20 +235,21 @@ const Records: React.FC = () => {
   // Early returns for edge cases
   if (!collection) {
     return (
-      <Card className="border-destructive">
-        <CardContent className="p-6">
-          <div className="text-destructive">Collection parameter is missing</div>
-        </CardContent>
-      </Card>
+      <PageLayout title="Collection" description="Manage records and collection settings">
+        <AdminState
+          title="Collection parameter is missing"
+          description="Open a collection from the sidebar or collections page."
+          icon={Database}
+          tone="danger"
+        />
+      </PageLayout>
     );
   }
 
   if (loading) {
     return (
       <PageLayout title="Loading..." description="Loading collection data...">
-        <div className="flex items-center justify-center h-64">
-          <div className="text-muted-foreground">Loading records...</div>
-        </div>
+        <LoadingState label="Loading records" />
       </PageLayout>
     );
   }
@@ -269,19 +272,20 @@ const Records: React.FC = () => {
     >
       {/* Error Display */}
       {error && (
-        <Card className="border-destructive">
-          <CardContent className="p-4">
-            <div className="text-destructive">{error}</div>
+        <Alert variant="destructive">
+          <AlertTriangle className="h-4 w-4" />
+          <AlertDescription>
+            {error}
             <Button
               onClick={handleDismissError}
               variant="ghost"
               size="sm"
-              className="text-destructive text-sm mt-2 hover:text-destructive/80 p-0 h-auto"
+              className="mt-2 h-auto p-0 text-destructive hover:text-destructive"
             >
               Dismiss
             </Button>
-          </CardContent>
-        </Card>
+          </AlertDescription>
+        </Alert>
       )}
 
       {/* Collection Overview */}
@@ -342,7 +346,7 @@ const Records: React.FC = () => {
       />
 
       {/* Recent Records */}
-      <Card>
+      <Card className="overflow-hidden">
         <CardHeader>
           <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
             <div>
@@ -373,7 +377,7 @@ const Records: React.FC = () => {
               </Button>
             </div>
           </div>
-          <div className="grid gap-2 pt-2 md:grid-cols-[minmax(180px,1fr)_minmax(140px,180px)_minmax(112px,140px)_minmax(160px,1fr)_40px]">
+          <div className="grid gap-2 border-t pt-4 md:grid-cols-[minmax(180px,1fr)_minmax(140px,180px)_minmax(112px,140px)_minmax(160px,1fr)_40px]">
             <div className="relative">
               <Search className="pointer-events-none absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
               <Input
@@ -445,26 +449,27 @@ const Records: React.FC = () => {
           )}
 
           {records.length === 0 ? (
-            <div className="text-center py-12">
-              <Database className="mx-auto h-12 w-12 text-muted-foreground" />
-              <CardTitle className="mt-4 text-lg">
-                {hasActiveRecordFilters ? 'No matching records' : 'No records'}
-              </CardTitle>
-              <CardDescription className="mt-2">
-                {hasActiveRecordFilters ? 'Try another search or filter.' : 'Get started by creating a new record.'}
-              </CardDescription>
-              <div className="mt-6">
-                {hasActiveRecordFilters ? (
+            <AdminState
+              title={hasActiveRecordFilters ? 'No matching records' : 'No records'}
+              description={
+                hasActiveRecordFilters
+                  ? 'Try another search or filter.'
+                  : 'Create the first record for this collection.'
+              }
+              icon={Database}
+              action={
+                hasActiveRecordFilters ? (
                   <Button variant="outline" onClick={handleClearRecordFilters}>
                     Clear filters
                   </Button>
                 ) : (
                   <Button onClick={handleCreateRecord}>
+                    <Plus className="h-4 w-4" />
                     Create Record
                   </Button>
-                )}
-              </div>
-            </div>
+                )
+              }
+            />
           ) : (
             <RecordTable
               records={records}

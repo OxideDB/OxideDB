@@ -7,6 +7,14 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import {
   Database,
   Users,
   Activity,
@@ -15,6 +23,10 @@ import {
   BarChart2,
 } from "lucide-react";
 import PageLayout from "@/components/PageLayout";
+import { AdminState, ErrorState, LoadingState } from "@/components/admin/AdminState";
+import { MetricCard } from "@/components/admin/MetricCard";
+import { StatusDot, StatusIndicator } from "@/components/admin/StatusIndicator";
+import { getStatusTone } from "@/components/admin/statusUtils";
 import { apiService } from "@/services/api";
 import type { DashboardStats } from "@/types/api";
 
@@ -44,13 +56,8 @@ const Dashboard: React.FC = () => {
   // Show loading state
   if (loading) {
     return (
-      <PageLayout title="Dashboard">
-        <div className="flex items-center justify-center min-h-[400px]">
-          <div className="text-center">
-            <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-gray-900 mx-auto mb-4"></div>
-            <p className="text-gray-600">Loading dashboard data...</p>
-          </div>
-        </div>
+      <PageLayout title="Dashboard" description="Operational overview for OxideDB">
+        <LoadingState label="Loading dashboard data" />
       </PageLayout>
     );
   }
@@ -58,16 +65,12 @@ const Dashboard: React.FC = () => {
   // Show error state
   if (error) {
     return (
-      <PageLayout title="Dashboard">
-        <div className="flex items-center justify-center min-h-[400px]">
-          <div className="text-center">
-            <div className="text-red-500 mb-4">
-              <Server className="h-12 w-12 mx-auto mb-2" />
-            </div>
-            <h3 className="text-lg font-semibold text-gray-900 mb-2">Error Loading Dashboard</h3>
-            <p className="text-gray-600">{error}</p>
-          </div>
-        </div>
+      <PageLayout title="Dashboard" description="Operational overview for OxideDB">
+        <ErrorState
+          title="Error loading dashboard"
+          description={error}
+          onRetry={() => window.location.reload()}
+        />
       </PageLayout>
     );
   }
@@ -75,14 +78,12 @@ const Dashboard: React.FC = () => {
   // Show dashboard with real data
   if (!dashboardData) {
     return (
-      <PageLayout title="Dashboard">
-        <div className="flex min-h-[400px] items-center justify-center rounded-lg border border-dashed">
-          <div className="text-center">
-            <Server className="mx-auto mb-3 h-10 w-10 text-muted-foreground" />
-            <h3 className="text-lg font-semibold">No dashboard data</h3>
-            <p className="text-sm text-muted-foreground">The server returned an empty dashboard response.</p>
-          </div>
-        </div>
+      <PageLayout title="Dashboard" description="Operational overview for OxideDB">
+        <AdminState
+          title="No dashboard data"
+          description="The server returned an empty dashboard response."
+          icon={Server}
+        />
       </PageLayout>
     );
   }
@@ -94,6 +95,7 @@ const Dashboard: React.FC = () => {
       description: "Active database collections",
       icon: Database,
       trend: `+${dashboardData.system_stats.trends.collections_this_month} this month`,
+      tone: "info" as const,
     },
     {
       title: "Total Records",
@@ -101,6 +103,7 @@ const Dashboard: React.FC = () => {
       description: "Records across all collections",
       icon: Activity,
       trend: `+${dashboardData.system_stats.trends.records_growth_percent.toFixed(1)}% from last month`,
+      tone: "success" as const,
     },
     {
       title: "Active Users",
@@ -108,6 +111,7 @@ const Dashboard: React.FC = () => {
       description: "Users with database access",
       icon: Users,
       trend: `+${dashboardData.system_stats.trends.new_users_count} new users`,
+      tone: "warning" as const,
     },
     {
       title: "API Requests",
@@ -115,6 +119,7 @@ const Dashboard: React.FC = () => {
       description: "Requests in the last 24h",
       icon: TrendingUp,
       trend: `+${dashboardData.system_stats.trends.api_growth_percent.toFixed(1)}% from yesterday`,
+      tone: "info" as const,
     },
   ];
 
@@ -133,16 +138,6 @@ const Dashboard: React.FC = () => {
     return `${diffInDays} day${diffInDays === 1 ? '' : 's'} ago`;
   };
 
-  const getHealthStatusColor = (status: string): string => {
-    switch (status) {
-      case 'Healthy': return 'bg-green-500';
-      case 'Warning': return 'bg-yellow-500';
-      case 'Degraded': return 'bg-orange-500';
-      case 'Unhealthy': return 'bg-red-500';
-      default: return 'bg-gray-500';
-    }
-  };
-
   const getHealthStatusText = (status: string): string => {
     switch (status) {
       case 'Healthy': return 'Healthy';
@@ -153,28 +148,29 @@ const Dashboard: React.FC = () => {
     }
   };
 
-  const getHealthStatusTextColor = (status: string): string => {
-    switch (status) {
-      case 'Healthy': return 'text-green-600';
-      case 'Warning': return 'text-yellow-600';
-      case 'Degraded': return 'text-orange-600';
-      case 'Unhealthy': return 'text-red-600';
-      default: return 'text-gray-600';
+  const formatStorageSize = (bytes: string | number | bigint): string => {
+    try {
+      const value = Number(bytes);
+      if (!Number.isFinite(value) || value <= 0) return "0 B";
+
+      const units = ["B", "KB", "MB", "GB", "TB"];
+      const exponent = Math.min(Math.floor(Math.log(value) / Math.log(1024)), units.length - 1);
+      const normalized = value / Math.pow(1024, exponent);
+
+      return `${normalized.toFixed(normalized >= 10 || exponent === 0 ? 0 : 1)} ${units[exponent]}`;
+    } catch (error) {
+      console.warn('Error formatting storage size:', error);
+      return '0 B';
     }
   };
 
-  const formatStorageSize = (bytes: string | number | bigint): string => {
-    try {
-      // Convert to BigInt regardless of input type
-      const bigIntBytes = typeof bytes === 'bigint' ? bytes : BigInt(bytes.toString());
-      const gbInBytes = 1073741824n; // 1024^3 as BigInt literal
-      const gb = bigIntBytes / gbInBytes;
-      return gb.toString();
-    } catch (error) {
-      console.warn('Error formatting storage size:', error);
-      return '0';
-    }
-  };
+  const healthRows = [
+    ["Database Connection", dashboardData.system_health.database_status],
+    ["API Endpoints", dashboardData.system_health.api_status],
+    ["Authentication Service", dashboardData.system_health.auth_status],
+    ["Plugin Runtime", dashboardData.system_health.plugin_status],
+    ["Virtual File System", dashboardData.system_health.vfs_status],
+  ];
 
   const formatDuration = (seconds: number): string => {
     if (seconds < 60) return `${seconds}s`;
@@ -188,25 +184,19 @@ const Dashboard: React.FC = () => {
   };
 
   return (
-    <PageLayout title="Dashboard">
+    <PageLayout title="Dashboard" description="Operational overview for OxideDB">
       {/* Stats Grid */}
       <div className="grid gap-3 md:gap-4 grid-cols-1 sm:grid-cols-2 lg:grid-cols-4">
         {stats.map((stat) => (
-          <Card key={stat.title}>
-            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-              <CardTitle className="text-sm font-medium">
-                {stat.title}
-              </CardTitle>
-              <stat.icon className="h-4 w-4 text-muted-foreground" />
-            </CardHeader>
-            <CardContent>
-              <div className="text-2xl font-bold">{stat.value}</div>
-              <p className="text-xs text-muted-foreground">
-                {stat.description}
-              </p>
-              <p className="text-xs text-green-600 mt-1">{stat.trend}</p>
-            </CardContent>
-          </Card>
+          <MetricCard
+            key={stat.title}
+            title={stat.title}
+            value={stat.value}
+            description={stat.description}
+            trend={stat.trend}
+            icon={stat.icon}
+            tone={stat.tone}
+          />
         ))}
       </div>
 
@@ -220,60 +210,24 @@ const Dashboard: React.FC = () => {
             </CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
-            <div className="flex items-center justify-between">
-              <span className="text-sm">Database Connection</span>
-              <div className="flex items-center gap-2">
-                <div className={`h-2 w-2 rounded-full ${getHealthStatusColor(dashboardData.system_health.database_status)}`}></div>
-                <span className={`text-sm ${getHealthStatusTextColor(dashboardData.system_health.database_status)}`}>
-                  {getHealthStatusText(dashboardData.system_health.database_status)}
-                </span>
+            {healthRows.map(([label, status]) => (
+              <div key={label} className="flex items-center justify-between gap-4">
+                <span className="text-sm text-muted-foreground">{label}</span>
+                <StatusIndicator
+                  label={getHealthStatusText(status)}
+                  tone={getStatusTone(status)}
+                />
               </div>
-            </div>
-            <div className="flex items-center justify-between">
-              <span className="text-sm">API Endpoints</span>
-              <div className="flex items-center gap-2">
-                <div className={`h-2 w-2 rounded-full ${getHealthStatusColor(dashboardData.system_health.api_status)}`}></div>
-                <span className={`text-sm ${getHealthStatusTextColor(dashboardData.system_health.api_status)}`}>
-                  {getHealthStatusText(dashboardData.system_health.api_status)}
-                </span>
-              </div>
-            </div>
-            <div className="flex items-center justify-between">
-              <span className="text-sm">Authentication Service</span>
-              <div className="flex items-center gap-2">
-                <div className={`h-2 w-2 rounded-full ${getHealthStatusColor(dashboardData.system_health.auth_status)}`}></div>
-                <span className={`text-sm ${getHealthStatusTextColor(dashboardData.system_health.auth_status)}`}>
-                  {getHealthStatusText(dashboardData.system_health.auth_status)}
-                </span>
-              </div>
-            </div>
-            <div className="flex items-center justify-between">
-              <span className="text-sm">Storage Usage</span>
-              <span className="text-sm">
-                {formatStorageSize(dashboardData.system_health.storage_usage.used_bytes)} GB / {formatStorageSize(dashboardData.system_health.storage_usage.total_bytes)} GB
+            ))}
+            <div className="flex items-center justify-between gap-4 border-t pt-4">
+              <span className="text-sm text-muted-foreground">Storage Usage</span>
+              <span className="text-sm font-medium tabular-nums">
+                {formatStorageSize(dashboardData.system_health.storage_usage.used_bytes)} / {formatStorageSize(dashboardData.system_health.storage_usage.total_bytes)}
               </span>
             </div>
             <div className="flex items-center justify-between">
-              <span className="text-sm">Plugin Runtime</span>
-              <div className="flex items-center gap-2">
-                <div className={`h-2 w-2 rounded-full ${getHealthStatusColor(dashboardData.system_health.plugin_status)}`}></div>
-                <span className={`text-sm ${getHealthStatusTextColor(dashboardData.system_health.plugin_status)}`}>
-                  {getHealthStatusText(dashboardData.system_health.plugin_status)}
-                </span>
-              </div>
-            </div>
-            <div className="flex items-center justify-between">
-              <span className="text-sm">Virtual File System</span>
-              <div className="flex items-center gap-2">
-                <div className={`h-2 w-2 rounded-full ${getHealthStatusColor(dashboardData.system_health.vfs_status)}`}></div>
-                <span className={`text-sm ${getHealthStatusTextColor(dashboardData.system_health.vfs_status)}`}>
-                  {getHealthStatusText(dashboardData.system_health.vfs_status)}
-                </span>
-              </div>
-            </div>
-            <div className="flex items-center justify-between">
-              <span className="text-sm">Uptime</span>
-              <span className="text-sm">{formatDuration(Number(dashboardData.system_health.uptime_seconds))}</span>
+              <span className="text-sm text-muted-foreground">Uptime</span>
+              <span className="text-sm font-medium tabular-nums">{formatDuration(Number(dashboardData.system_health.uptime_seconds))}</span>
             </div>
           </CardContent>
         </Card>
@@ -286,25 +240,27 @@ const Dashboard: React.FC = () => {
             </CardTitle>
             <CardDescription>Record distribution</CardDescription>
           </CardHeader>
-          <CardContent className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="text-muted-foreground text-xs text-left">
-                  <th className="pb-1 pr-2">Name</th>
-                  <th className="pb-1 pr-2">Records</th>
-                  <th className="pb-1 pr-2 hidden md:table-cell">Size (KB)</th>
-                </tr>
-              </thead>
-              <tbody>
+          <CardContent>
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Name</TableHead>
+                  <TableHead>Records</TableHead>
+                  <TableHead className="hidden md:table-cell">Size</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
                 {dashboardData.collection_stats.slice(0, 6).map((col) => (
-                  <tr key={col.name} className="border-t last:border-b-0">
-                    <td className="py-1 pr-2 font-medium break-all">{col.name}</td>
-                    <td className="py-1 pr-2">{col.record_count.toLocaleString()}</td>
-                    <td className="py-1 pr-2 hidden md:table-cell">{Math.round(Number(col.size_bytes) / 1024).toLocaleString()}</td>
-                  </tr>
+                  <TableRow key={col.name}>
+                    <TableCell className="font-medium break-all">{col.name}</TableCell>
+                    <TableCell className="tabular-nums">{col.record_count.toLocaleString()}</TableCell>
+                    <TableCell className="hidden tabular-nums md:table-cell">
+                      {formatStorageSize(col.size_bytes)}
+                    </TableCell>
+                  </TableRow>
                 ))}
-              </tbody>
-            </table>
+              </TableBody>
+            </Table>
           </CardContent>
         </Card>
 
@@ -319,9 +275,9 @@ const Dashboard: React.FC = () => {
           <CardContent>
             <div className="space-y-3">
               {dashboardData.user_stats.top_active_users.map((u, idx) => (
-                <div key={idx} className="flex items-center justify-between text-sm">
+                <div key={idx} className="flex items-center justify-between gap-4 rounded-md border bg-muted/20 px-3 py-2 text-sm">
                   <span className="truncate max-w-[140px]" title={u.username}>{u.username}</span>
-                  <span className="text-muted-foreground">{u.action_count.toLocaleString()}</span>
+                  <span className="text-muted-foreground tabular-nums">{u.action_count.toLocaleString()}</span>
                 </div>
               ))}
             </div>
@@ -337,24 +293,24 @@ const Dashboard: React.FC = () => {
             <CardDescription>Last 24 hours</CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
-            <div className="grid grid-cols-2 gap-2 text-sm">
+            <div className="grid grid-cols-2 gap-x-4 gap-y-3 text-sm">
               <span className="text-muted-foreground">Requests (24h)</span>
-              <span>{dashboardData.api_stats.requests_24h.toLocaleString()}</span>
+              <span className="text-right font-medium tabular-nums">{dashboardData.api_stats.requests_24h.toLocaleString()}</span>
               <span className="text-muted-foreground">Requests (7d)</span>
-              <span>{dashboardData.api_stats.requests_7d.toLocaleString()}</span>
+              <span className="text-right font-medium tabular-nums">{dashboardData.api_stats.requests_7d.toLocaleString()}</span>
               <span className="text-muted-foreground">Avg Response (ms)</span>
-              <span>{dashboardData.api_stats.avg_response_time_ms.toFixed(1)}</span>
+              <span className="text-right font-medium tabular-nums">{dashboardData.api_stats.avg_response_time_ms.toFixed(1)}</span>
               <span className="text-muted-foreground">Error Rate</span>
-              <span>{dashboardData.api_stats.error_rate_percent.toFixed(2)}%</span>
+              <span className="text-right font-medium tabular-nums">{dashboardData.api_stats.error_rate_percent.toFixed(2)}%</span>
             </div>
-            <hr className="my-2" />
+            <hr className="my-2 border-border" />
             <div>
               <p className="text-xs text-muted-foreground mb-1">Top Endpoints</p>
               <ul className="space-y-1 text-xs">
                 {dashboardData.api_stats.top_endpoints.slice(0, 5).map((ep, idx) => (
                   <li key={idx} className="flex items-center justify-between">
-                    <span className="truncate max-w-[120px]" title={`${ep.method} ${ep.path}`}>{ep.method} {ep.path}</span>
-                    <span>{ep.request_count}</span>
+                    <span className="truncate max-w-[160px]" title={`${ep.method} ${ep.path}`}>{ep.method} {ep.path}</span>
+                    <span className="font-medium tabular-nums">{ep.request_count}</span>
                   </li>
                 ))}
               </ul>
@@ -371,8 +327,8 @@ const Dashboard: React.FC = () => {
           <CardContent>
             <div className="space-y-4">
               {dashboardData.recent_activity.map((activity, index) => (
-                <div key={index} className="flex items-start space-x-3">
-                  <div className="h-2 w-2 bg-blue-500 rounded-full mt-2"></div>
+                <div key={index} className="flex items-start space-x-3 rounded-md border bg-muted/20 p-3">
+                  <StatusDot tone="info" className="mt-2" />
                   <div className="flex-1 space-y-1 min-w-0">
                     <p className="text-sm break-words">{activity.description}</p>
                     <div className="flex flex-col sm:flex-row sm:items-center gap-1 sm:gap-2 text-xs text-muted-foreground">
