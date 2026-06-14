@@ -3,11 +3,10 @@
 //! These functions provide logging capabilities for plugins to communicate
 //! with the host system and report errors or information.
 
-use crate::host_state::{lock_host_state, record_host_call, HostState};
+use crate::host_state::{lock_host_state, record_host_call, PluginStoreData};
 use crate::utils::read_string_from_plugin_memory;
 use oxide_core::plugin_api::{host_functions, PluginError};
 use oxide_core::plugin_security::PluginCapability;
-use std::sync::{Arc, Mutex};
 use tracing::{error, info, warn};
 use wasmtime::{Caller, Linker};
 
@@ -17,15 +16,13 @@ use wasmtime::{Caller, Linker};
 /// - `log_info(ptr, len)`: Log an informational message
 /// - `log_error(ptr, len)`: Log an error message
 /// - `set_error(ptr, len)`: Set an error message for the current operation
-pub fn define_logging_functions(
-    linker: &mut Linker<Arc<Mutex<HostState>>>,
-) -> Result<(), PluginError> {
+pub fn define_logging_functions(linker: &mut Linker<PluginStoreData>) -> Result<(), PluginError> {
     // log_info(ptr: *const u8, len: usize)
     linker
         .func_wrap(
             "env",
             host_functions::LOG_INFO,
-            |mut caller: Caller<'_, Arc<Mutex<HostState>>>, ptr: i32, len: i32| {
+            |mut caller: Caller<'_, PluginStoreData>, ptr: i32, len: i32| {
                 if !record_host_call(caller.data(), "recording log_info host call") {
                     return;
                 }
@@ -70,7 +67,7 @@ pub fn define_logging_functions(
         .func_wrap(
             "env",
             host_functions::LOG_ERROR,
-            |mut caller: Caller<'_, Arc<Mutex<HostState>>>, ptr: i32, len: i32| {
+            |mut caller: Caller<'_, PluginStoreData>, ptr: i32, len: i32| {
                 if !record_host_call(caller.data(), "recording log_error host call") {
                     return;
                 }
@@ -115,7 +112,7 @@ pub fn define_logging_functions(
         .func_wrap(
             "env",
             host_functions::SET_ERROR,
-            |mut caller: Caller<'_, Arc<Mutex<HostState>>>, ptr: i32, len: i32| {
+            |mut caller: Caller<'_, PluginStoreData>, ptr: i32, len: i32| {
                 if !record_host_call(caller.data(), "recording set_error host call") {
                     return;
                 }

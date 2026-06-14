@@ -12,12 +12,74 @@ use oxide_core::{
 use oxide_logging::LogServiceBridge;
 use std::{
     collections::HashMap,
+    ops::{Deref, DerefMut},
     sync::{Arc, Mutex, MutexGuard},
 };
 use tracing::error;
+use wasmtime::ResourceLimiter;
 
 /// Type alias for shared host state reference
 pub type HostStateRef = Arc<Mutex<HostState>>;
+
+/// Store data shared with Wasmtime host functions and resource limiting.
+pub struct PluginStoreData {
+    host_state: HostStateRef,
+    max_memory_bytes: usize,
+}
+
+impl PluginStoreData {
+    /// Create store data with default host state and no active memory cap.
+    pub fn new(host_state: HostStateRef) -> Self {
+        Self {
+            host_state,
+            max_memory_bytes: usize::MAX,
+        }
+    }
+
+    /// Return the shared host state used by host functions.
+    pub fn host_state(&self) -> &HostStateRef {
+        &self.host_state
+    }
+
+    /// Update the active WebAssembly linear-memory cap.
+    pub fn set_max_memory_bytes(&mut self, max_memory_bytes: u64) {
+        self.max_memory_bytes = usize::try_from(max_memory_bytes).unwrap_or(usize::MAX);
+    }
+}
+
+impl Deref for PluginStoreData {
+    type Target = HostStateRef;
+
+    fn deref(&self) -> &Self::Target {
+        &self.host_state
+    }
+}
+
+impl DerefMut for PluginStoreData {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.host_state
+    }
+}
+
+impl ResourceLimiter for PluginStoreData {
+    fn memory_growing(
+        &mut self,
+        _current: usize,
+        desired: usize,
+        _maximum: Option<usize>,
+    ) -> wasmtime::Result<bool> {
+        Ok(desired <= self.max_memory_bytes)
+    }
+
+    fn table_growing(
+        &mut self,
+        _current: u32,
+        desired: u32,
+        maximum: Option<u32>,
+    ) -> wasmtime::Result<bool> {
+        Ok(maximum.map(|max| desired <= max).unwrap_or(true))
+    }
+}
 
 /// Acquire host state without panicking if a previous plugin call poisoned the lock.
 pub fn lock_host_state<'a>(

@@ -3,11 +3,10 @@
 //! These functions handle event payload management and result buffer access
 //! for plugin communication during event processing.
 
-use crate::host_state::{lock_host_state, record_host_call, HostState};
+use crate::host_state::{lock_host_state, record_host_call, PluginStoreData};
 use crate::utils::allocate_plugin_memory_and_copy;
 use oxide_core::plugin_api::{host_functions, PluginError};
 use oxide_core::plugin_security::PluginCapability;
-use std::sync::{Arc, Mutex};
 use wasmtime::{Caller, Linker};
 
 /// Define event-related host functions in the linker.
@@ -16,15 +15,13 @@ use wasmtime::{Caller, Linker};
 /// - `get_event_payload()`: Returns event payload data to the plugin
 /// - `get_result_ptr()`: Returns pointer to result data in plugin memory
 /// - `get_result_len()`: Returns length of result data
-pub fn define_event_functions(
-    linker: &mut Linker<Arc<Mutex<HostState>>>,
-) -> Result<(), PluginError> {
+pub fn define_event_functions(linker: &mut Linker<PluginStoreData>) -> Result<(), PluginError> {
     // get_event_payload() -> i32 (returns length, copies data to plugin memory)
     linker
         .func_wrap(
             "env",
             host_functions::GET_EVENT_PAYLOAD,
-            |mut caller: Caller<'_, Arc<Mutex<HostState>>>| -> i32 {
+            |mut caller: Caller<'_, PluginStoreData>| -> i32 {
                 if !record_host_call(caller.data(), "recording get_event_payload host call") {
                     return -1;
                 }
@@ -76,7 +73,7 @@ pub fn define_event_functions(
         .func_wrap(
             "env",
             "get_result_ptr",
-            |caller: Caller<'_, Arc<Mutex<HostState>>>| -> i32 {
+            |caller: Caller<'_, PluginStoreData>| -> i32 {
                 if !record_host_call(caller.data(), "recording get_result_ptr host call") {
                     return 0;
                 }
@@ -106,7 +103,7 @@ pub fn define_event_functions(
         .func_wrap(
             "env",
             "get_result_len",
-            |caller: Caller<'_, Arc<Mutex<HostState>>>| -> i32 {
+            |caller: Caller<'_, PluginStoreData>| -> i32 {
                 if !record_host_call(caller.data(), "recording get_result_len host call") {
                     return 0;
                 }

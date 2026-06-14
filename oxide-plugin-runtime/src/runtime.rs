@@ -7,7 +7,7 @@ use crate::host_functions::{
     define_database_functions, define_event_functions, define_http_functions,
     define_logging_functions, register_vfs_functions,
 };
-use crate::host_state::{ExecutionContext, HostState};
+use crate::host_state::{ExecutionContext, HostState, PluginStoreData};
 use oxide_core::{
     plugin_api::{
         plugin_exports, EventPayload, PluginError, PluginResponse, PluginResult, PluginRuntime,
@@ -29,8 +29,8 @@ const DEFAULT_PLUGIN_FUEL_PER_MILLISECOND: u64 = 10_000;
 /// Wasmtime-based implementation of the PluginRuntime trait
 pub struct WasmtimePluginRuntime {
     engine: Engine,
-    linker: Linker<Arc<Mutex<HostState>>>,
-    store: Store<Arc<Mutex<HostState>>>,
+    linker: Linker<PluginStoreData>,
+    store: Store<PluginStoreData>,
     modules: HashMap<String, Module>,
     instances: HashMap<String, Instance>,
     security_manager: PluginSecurityManager,
@@ -45,13 +45,19 @@ fn configured_engine() -> PluginResult<Engine> {
     })
 }
 
+fn configured_store(engine: &Engine) -> Store<PluginStoreData> {
+    let host_state = Arc::new(Mutex::new(HostState::default()));
+    let mut store = Store::new(engine, PluginStoreData::new(host_state));
+    store.limiter(|state| state);
+    store
+}
+
 impl WasmtimePluginRuntime {
     /// Create a new Wasmtime plugin runtime with database
     pub fn new(database: Arc<dyn Db>) -> PluginResult<Self> {
         let engine = configured_engine()?;
         let linker = Linker::new(&engine);
-        let host_state = Arc::new(Mutex::new(HostState::default()));
-        let store = Store::new(&engine, host_state);
+        let store = configured_store(&engine);
 
         // Create security manager with default policies
         let security_manager = PluginSecurityManager::new();
@@ -78,8 +84,7 @@ impl WasmtimePluginRuntime {
     ) -> PluginResult<Self> {
         let engine = configured_engine()?;
         let linker = Linker::new(&engine);
-        let host_state = Arc::new(Mutex::new(HostState::default()));
-        let store = Store::new(&engine, host_state);
+        let store = configured_store(&engine);
 
         // Create security manager with custom policies
         let security_manager = PluginSecurityManager::with_policies(policies);
@@ -127,7 +132,7 @@ impl WasmtimePluginRuntime {
     }
 
     fn host_state(&self, action: &str) -> PluginResult<MutexGuard<'_, HostState>> {
-        self.store.data().lock().map_err(|_| {
+        self.store.data().host_state().lock().map_err(|_| {
             PluginError::ExecutionFailed(format!(
                 "Plugin host state lock was poisoned while {}",
                 action
@@ -136,7 +141,7 @@ impl WasmtimePluginRuntime {
     }
 
     fn try_host_state(&self, action: &str) -> Option<MutexGuard<'_, HostState>> {
-        match self.store.data().lock() {
+        match self.store.data().host_state().lock() {
             Ok(state) => Some(state),
             Err(_) => {
                 error!("Plugin host state lock was poisoned while {}", action);
@@ -147,7 +152,7 @@ impl WasmtimePluginRuntime {
 
     /// Get the current host state (for testing)
     pub fn get_host_state(&self) -> Arc<Mutex<HostState>> {
-        self.store.data().clone()
+        self.store.data().host_state().clone()
     }
 
     /// Get the error message set by the plugin (for testing)
@@ -415,6 +420,8 @@ impl WasmtimePluginRuntime {
             PluginError::InitializationFailed(format!("Failed to compile module: {}", e))
         })?;
 
+        self.set_active_memory_limit(&limits);
+
         // Instantiate the module
         let instance = self
             .linker
@@ -620,18 +627,29 @@ impl WasmtimePluginRuntime {
         Ok(())
     }
 
-    fn reset_execution_budget(&mut self, plugin_name: &str) -> PluginResult<()> {
-        let execution_time_limit = self
-            .security_manager
+    fn resource_limits_for_plugin(&self, plugin_name: &str) -> ResourceLimits {
+        self.security_manager
             .get_context(plugin_name)
-            .map(|context| context.resource_limits.max_execution_time)
+            .map(|context| context.resource_limits.clone())
             .unwrap_or_else(|| {
                 self.security_manager
                     .policies()
                     .default_resource_limits
-                    .max_execution_time
-            });
-        let fuel = execution_time_limit
+                    .clone()
+            })
+    }
+
+    fn set_active_memory_limit(&mut self, limits: &ResourceLimits) {
+        self.store
+            .data_mut()
+            .set_max_memory_bytes(limits.max_memory);
+    }
+
+    fn reset_execution_budget(&mut self, plugin_name: &str) -> PluginResult<()> {
+        let limits = self.resource_limits_for_plugin(plugin_name);
+        self.set_active_memory_limit(&limits);
+        let fuel = limits
+            .max_execution_time
             .saturating_mul(DEFAULT_PLUGIN_FUEL_PER_MILLISECOND)
             .max(DEFAULT_PLUGIN_FUEL_PER_MILLISECOND);
 
@@ -833,6 +851,13 @@ impl PluginRuntime for WasmtimePluginRuntime {
         let module = Module::new(&self.engine, wasm_bytes).map_err(|e| {
             PluginError::InitializationFailed(format!("Failed to compile module: {}", e))
         })?;
+
+        let limits = self
+            .security_manager
+            .policies()
+            .default_resource_limits
+            .clone();
+        self.set_active_memory_limit(&limits);
 
         // Instantiate the module
         let instance = self
@@ -1114,5 +1139,86 @@ mod tests {
         let routes = runtime.get_registered_routes();
         assert_eq!(routes.len(), 1);
         assert_eq!(routes[0].plugin_name, "other-plugin");
+    }
+
+    #[test]
+    fn plugin_memory_grow_is_limited_during_call() {
+        let mut runtime = test_runtime();
+        let wasm = br#"
+            (module
+              (memory (export "memory") 1)
+              (func (export "plugin_init") (result i32)
+                i32.const 0)
+              (func (export "on_before_create") (result i32)
+                i32.const 1
+                memory.grow
+                drop
+                i32.const 0)
+              (func (export "get_response_len") (result i32)
+                i32.const 0)
+              (func (export "get_response_ptr") (result i32)
+                i32.const 0))
+        "#;
+        let one_wasm_page = 64 * 1024;
+
+        runtime
+            .load_plugin_with_trust(
+                "memory-plugin",
+                wasm,
+                PluginTrustLevel::PartiallyTrusted,
+                vec![PluginCapability::ReadEventData],
+                ResourceLimits {
+                    max_memory: one_wasm_page,
+                    max_execution_time: 1_000,
+                    max_host_calls: 10,
+                    rate_limit: 60,
+                },
+            )
+            .unwrap();
+
+        let payload = EventPayload {
+            event_type: "BeforeRecordCreate".to_string(),
+            collection: "posts".to_string(),
+            data: "{}".to_string(),
+            metadata: serde_json::Value::Null,
+        };
+
+        runtime
+            .call_plugin_function("memory-plugin", "on_before_create", &payload)
+            .unwrap();
+
+        assert_eq!(
+            runtime.get_plugin_memory_usage("memory-plugin"),
+            one_wasm_page
+        );
+    }
+
+    #[test]
+    fn plugin_initial_memory_is_limited_during_load() {
+        let mut runtime = test_runtime();
+        let wasm = br#"
+            (module
+              (memory (export "memory") 2)
+              (func (export "plugin_init") (result i32)
+                i32.const 0))
+        "#;
+
+        let result = runtime.load_plugin_with_trust(
+            "oversized-memory-plugin",
+            wasm,
+            PluginTrustLevel::PartiallyTrusted,
+            vec![PluginCapability::ReadEventData],
+            ResourceLimits {
+                max_memory: 64 * 1024,
+                max_execution_time: 1_000,
+                max_host_calls: 10,
+                rate_limit: 60,
+            },
+        );
+
+        assert!(result.is_err());
+        assert!(!runtime
+            .list_plugins()
+            .contains(&"oversized-memory-plugin".to_string()));
     }
 }

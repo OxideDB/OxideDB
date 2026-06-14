@@ -4,7 +4,7 @@
 //! maintaining security by preventing direct filesystem access.
 
 use crate::{
-    host_state::{lock_host_state, record_host_call, HostStateRef},
+    host_state::{lock_host_state, record_host_call, HostStateRef, PluginStoreData},
     utils::{allocate_plugin_memory_and_copy, read_memory_slice},
 };
 use oxide_core::{
@@ -89,7 +89,7 @@ fn vfs_host_runtime() -> Result<&'static tokio::runtime::Runtime, String> {
 }
 
 fn store_vfs_result(
-    caller: &mut Caller<'_, HostStateRef>,
+    caller: &mut Caller<'_, PluginStoreData>,
     state: &HostStateRef,
     function_name: &str,
     result_json: String,
@@ -119,7 +119,7 @@ fn store_vfs_result(
 
 /// Write a file to the VFS
 pub fn vfs_write_file(
-    mut caller: Caller<'_, HostStateRef>,
+    mut caller: Caller<'_, PluginStoreData>,
     namespace_ptr: i32,
     namespace_len: i32,
     request_ptr: i32,
@@ -146,7 +146,7 @@ pub fn vfs_write_file(
     let namespace_bytes = read_memory_slice(data, namespace_ptr, namespace_len, "namespace")?;
     let namespace = String::from_utf8(namespace_bytes.to_vec())
         .map_err(|e| wasmtime::Error::msg(format!("invalid UTF-8 in namespace: {}", e)))?;
-    let state = caller.data().clone();
+    let state = caller.data().host_state().clone();
     if !ensure_vfs_capability(&state, FUNCTION_NAME, &VfsOperation::Write, &namespace) {
         return Ok(-1);
     }
@@ -206,7 +206,7 @@ pub fn vfs_write_file(
 
 /// Read a file from the VFS
 pub fn vfs_read_file(
-    mut caller: Caller<'_, HostStateRef>,
+    mut caller: Caller<'_, PluginStoreData>,
     namespace_ptr: i32,
     namespace_len: i32,
     request_ptr: i32,
@@ -233,7 +233,7 @@ pub fn vfs_read_file(
     let namespace_bytes = read_memory_slice(data, namespace_ptr, namespace_len, "namespace")?;
     let namespace = String::from_utf8(namespace_bytes.to_vec())
         .map_err(|e| wasmtime::Error::msg(format!("invalid UTF-8 in namespace: {}", e)))?;
-    let state = caller.data().clone();
+    let state = caller.data().host_state().clone();
     if !ensure_vfs_capability(&state, FUNCTION_NAME, &VfsOperation::Read, &namespace) {
         return Ok(-1);
     }
@@ -293,7 +293,7 @@ pub fn vfs_read_file(
 
 /// Move or rename a file in the VFS
 pub fn vfs_move_file(
-    mut caller: Caller<'_, HostStateRef>,
+    mut caller: Caller<'_, PluginStoreData>,
     namespace_ptr: i32,
     namespace_len: i32,
     request_ptr: i32,
@@ -319,7 +319,7 @@ pub fn vfs_move_file(
     let namespace_bytes = read_memory_slice(data, namespace_ptr, namespace_len, "namespace")?;
     let namespace = String::from_utf8(namespace_bytes.to_vec())
         .map_err(|e| wasmtime::Error::msg(format!("invalid UTF-8 in namespace: {}", e)))?;
-    let state = caller.data().clone();
+    let state = caller.data().host_state().clone();
     if !ensure_vfs_capability(&state, FUNCTION_NAME, &VfsOperation::Move, &namespace) {
         return Ok(-1);
     }
@@ -376,7 +376,7 @@ pub fn vfs_move_file(
 
 /// Delete a file from the VFS
 pub fn vfs_delete_file(
-    mut caller: Caller<'_, HostStateRef>,
+    mut caller: Caller<'_, PluginStoreData>,
     namespace_ptr: i32,
     namespace_len: i32,
     identifier_ptr: i32,
@@ -403,7 +403,7 @@ pub fn vfs_delete_file(
     let namespace_bytes = read_memory_slice(data, namespace_ptr, namespace_len, "namespace")?;
     let namespace = String::from_utf8(namespace_bytes.to_vec())
         .map_err(|e| wasmtime::Error::msg(format!("invalid UTF-8 in namespace: {}", e)))?;
-    let state = caller.data().clone();
+    let state = caller.data().host_state().clone();
     if !ensure_vfs_capability(&state, FUNCTION_NAME, &VfsOperation::Delete, &namespace) {
         return Ok(-1);
     }
@@ -457,7 +457,7 @@ pub fn vfs_delete_file(
 
 /// List files in the VFS
 pub fn vfs_list_files(
-    mut caller: Caller<'_, HostStateRef>,
+    mut caller: Caller<'_, PluginStoreData>,
     namespace_ptr: i32,
     namespace_len: i32,
     request_ptr: i32,
@@ -484,7 +484,7 @@ pub fn vfs_list_files(
     let namespace_bytes = read_memory_slice(data, namespace_ptr, namespace_len, "namespace")?;
     let namespace = String::from_utf8(namespace_bytes.to_vec())
         .map_err(|e| wasmtime::Error::msg(format!("invalid UTF-8 in namespace: {}", e)))?;
-    let state = caller.data().clone();
+    let state = caller.data().host_state().clone();
     if !ensure_vfs_capability(&state, FUNCTION_NAME, &VfsOperation::List, &namespace) {
         return Ok(-1);
     }
@@ -544,7 +544,7 @@ pub fn vfs_list_files(
 
 /// Get VFS usage statistics
 pub fn vfs_get_usage_stats(
-    mut caller: Caller<'_, HostStateRef>,
+    mut caller: Caller<'_, PluginStoreData>,
     namespace_ptr: i32,
     namespace_len: i32,
 ) -> wasmtime::Result<i64> {
@@ -569,7 +569,7 @@ pub fn vfs_get_usage_stats(
     let namespace_bytes = read_memory_slice(data, namespace_ptr, namespace_len, "namespace")?;
     let namespace = String::from_utf8(namespace_bytes.to_vec())
         .map_err(|e| wasmtime::Error::msg(format!("invalid UTF-8 in namespace: {}", e)))?;
-    let state = caller.data().clone();
+    let state = caller.data().host_state().clone();
     if !ensure_vfs_capability(&state, FUNCTION_NAME, &VfsOperation::Usage, &namespace) {
         return Ok(-1);
     }
@@ -622,7 +622,7 @@ pub fn vfs_get_usage_stats(
 }
 
 /// Register all VFS host functions with the linker
-pub fn register_vfs_functions(linker: &mut Linker<HostStateRef>) -> wasmtime::Result<()> {
+pub fn register_vfs_functions(linker: &mut Linker<PluginStoreData>) -> wasmtime::Result<()> {
     linker.func_wrap("env", "vfs_write_file", vfs_write_file)?;
     linker.func_wrap("env", "vfs_read_file", vfs_read_file)?;
     linker.func_wrap("env", "vfs_move_file", vfs_move_file)?;

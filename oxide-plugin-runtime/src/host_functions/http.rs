@@ -3,12 +3,11 @@
 //! These functions provide HTTP capabilities for plugins to register routes,
 //! handle HTTP requests, and send HTTP responses.
 
-use crate::host_state::{lock_host_state, record_host_call, HostState};
+use crate::host_state::{lock_host_state, record_host_call, PluginStoreData};
 use crate::utils::{allocate_plugin_memory_and_copy, read_string_from_plugin_memory};
 use oxide_core::plugin_api::{host_functions, HttpResponse, PluginError, RouteRegistration};
 use oxide_core::plugin_security::PluginCapability;
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
 use tracing::{info, warn};
 use wasmtime::{Caller, Linker};
 
@@ -18,15 +17,13 @@ use wasmtime::{Caller, Linker};
 /// - `register_http_route(method_ptr, method_len, path_ptr, path_len, handler_ptr, handler_len)`: Register HTTP route
 /// - `get_http_request()`: Get current HTTP request data
 /// - `set_http_response(status_code, headers_ptr, headers_len, body_ptr, body_len)`: Set HTTP response
-pub fn define_http_functions(
-    linker: &mut Linker<Arc<Mutex<HostState>>>,
-) -> Result<(), PluginError> {
+pub fn define_http_functions(linker: &mut Linker<PluginStoreData>) -> Result<(), PluginError> {
     // register_http_route(method_ptr: *const u8, method_len: usize, path_ptr: *const u8, path_len: usize, handler_ptr: *const u8, handler_len: usize)
     linker
         .func_wrap(
             "env",
             host_functions::REGISTER_HTTP_ROUTE,
-            |mut caller: Caller<'_, Arc<Mutex<HostState>>>,
+            |mut caller: Caller<'_, PluginStoreData>,
              method_ptr: i32,
              method_len: i32,
              path_ptr: i32,
@@ -116,7 +113,7 @@ pub fn define_http_functions(
         .func_wrap(
             "env",
             host_functions::GET_HTTP_REQUEST,
-            |mut caller: Caller<'_, Arc<Mutex<HostState>>>| -> i32 {
+            |mut caller: Caller<'_, PluginStoreData>| -> i32 {
                 if !record_host_call(caller.data(), "recording get_http_request host call") {
                     return -1;
                 }
@@ -172,7 +169,7 @@ pub fn define_http_functions(
         .func_wrap(
             "env",
             host_functions::SET_HTTP_RESPONSE,
-            |mut caller: Caller<'_, Arc<Mutex<HostState>>>,
+            |mut caller: Caller<'_, PluginStoreData>,
              status_code: i32,
              headers_ptr: i32,
              headers_len: i32,

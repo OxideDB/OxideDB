@@ -3,7 +3,7 @@
 //! These functions provide database access capabilities for plugins to perform
 //! CRUD operations on collections within the OxideDB system.
 
-use crate::host_state::{lock_host_state, record_host_call, HostState};
+use crate::host_state::{lock_host_state, record_host_call, PluginStoreData};
 use crate::utils::{
     allocate_plugin_memory_and_copy, create_error_response, create_success_response,
     read_string_from_plugin_memory,
@@ -13,7 +13,7 @@ use oxide_core::event::types::{RecordData, RecordId};
 use oxide_core::plugin_api::{host_functions, PluginError};
 use oxide_db::{db::ListParams, Db};
 use std::future::Future;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, OnceLock};
 use tokio::runtime::RuntimeFlavor;
 use tracing::{debug, error, info};
 use wasmtime::{Caller, Linker};
@@ -28,7 +28,7 @@ static DATABASE_HOST_RUNTIME: OnceLock<Result<tokio::runtime::Runtime, String>> 
 /// - `update_record(collection_ptr, collection_len, record_id_ptr, record_id_len, data_ptr, data_len)`: Update a record
 /// - `delete_record(collection_ptr, collection_len, record_id_ptr, record_id_len)`: Delete a record
 pub fn define_database_functions(
-    linker: &mut Linker<Arc<Mutex<HostState>>>,
+    linker: &mut Linker<PluginStoreData>,
     database: Arc<dyn Db>,
 ) -> Result<(), PluginError> {
     // create_record(collection_ptr: *const u8, collection_len: usize, data_ptr: *const u8, data_len: usize) -> i32
@@ -38,7 +38,7 @@ pub fn define_database_functions(
             .func_wrap(
                 "env",
                 host_functions::CREATE_RECORD,
-                move |mut caller: Caller<'_, Arc<Mutex<HostState>>>,
+                move |mut caller: Caller<'_, PluginStoreData>,
                       collection_ptr: i32,
                       collection_len: i32,
                       data_ptr: i32,
@@ -66,7 +66,7 @@ pub fn define_database_functions(
             .func_wrap(
                 "env",
                 host_functions::READ_RECORDS,
-                move |mut caller: Caller<'_, Arc<Mutex<HostState>>>,
+                move |mut caller: Caller<'_, PluginStoreData>,
                       collection_ptr: i32,
                       collection_len: i32,
                       filter_ptr: i32,
@@ -94,7 +94,7 @@ pub fn define_database_functions(
             .func_wrap(
                 "env",
                 host_functions::UPDATE_RECORD,
-                move |mut caller: Caller<'_, Arc<Mutex<HostState>>>,
+                move |mut caller: Caller<'_, PluginStoreData>,
                       collection_ptr: i32,
                       collection_len: i32,
                       record_id_ptr: i32,
@@ -126,7 +126,7 @@ pub fn define_database_functions(
             .func_wrap(
                 "env",
                 host_functions::DELETE_RECORD,
-                move |mut caller: Caller<'_, Arc<Mutex<HostState>>>,
+                move |mut caller: Caller<'_, PluginStoreData>,
                       collection_ptr: i32,
                       collection_len: i32,
                       record_id_ptr: i32,
@@ -150,13 +150,13 @@ pub fn define_database_functions(
     Ok(())
 }
 
-fn write_error_result(caller: &mut Caller<'_, Arc<Mutex<HostState>>>, message: &str) {
+fn write_error_result(caller: &mut Caller<'_, PluginStoreData>, message: &str) {
     let result_bytes = create_error_response(message);
     let _ = write_bytes_result(caller, &result_bytes, "storing database error result");
 }
 
 fn write_bytes_result(
-    caller: &mut Caller<'_, Arc<Mutex<HostState>>>,
+    caller: &mut Caller<'_, PluginStoreData>,
     result_bytes: &[u8],
     action: &str,
 ) -> bool {
@@ -168,7 +168,7 @@ fn write_bytes_result(
 }
 
 fn write_result_buffer(
-    caller: &mut Caller<'_, Arc<Mutex<HostState>>>,
+    caller: &mut Caller<'_, PluginStoreData>,
     ptr: i32,
     len: i32,
     action: &str,
@@ -190,7 +190,7 @@ fn write_result_buffer(
     false
 }
 
-fn clear_result_buffer(caller: &mut Caller<'_, Arc<Mutex<HostState>>>) -> bool {
+fn clear_result_buffer(caller: &mut Caller<'_, PluginStoreData>) -> bool {
     let Some(mut state) = lock_host_state(caller.data(), "clearing database result buffer") else {
         return false;
     };
@@ -198,13 +198,13 @@ fn clear_result_buffer(caller: &mut Caller<'_, Arc<Mutex<HostState>>>) -> bool {
     true
 }
 
-fn exit_database_operation(caller: &mut Caller<'_, Arc<Mutex<HostState>>>) {
+fn exit_database_operation(caller: &mut Caller<'_, PluginStoreData>) {
     if let Some(mut state) = lock_host_state(caller.data(), "exiting database operation") {
         state.exit_database_operation();
     }
 }
 
-fn enter_database_operation(caller: &mut Caller<'_, Arc<Mutex<HostState>>>) -> bool {
+fn enter_database_operation(caller: &mut Caller<'_, PluginStoreData>) -> bool {
     let already_in_operation = {
         let Some(mut state) = lock_host_state(caller.data(), "entering database operation") else {
             write_error_result(caller, "Plugin host state not available");
@@ -228,7 +228,7 @@ fn enter_database_operation(caller: &mut Caller<'_, Arc<Mutex<HostState>>>) -> b
 }
 
 fn ensure_database_capability(
-    caller: &mut Caller<'_, Arc<Mutex<HostState>>>,
+    caller: &mut Caller<'_, PluginStoreData>,
     operation: CrudOperation,
     collection: &str,
 ) -> bool {
@@ -260,7 +260,7 @@ fn ensure_database_capability(
 }
 
 fn can_perform_database_operations(
-    caller: &mut Caller<'_, Arc<Mutex<HostState>>>,
+    caller: &mut Caller<'_, PluginStoreData>,
     log_context: bool,
 ) -> bool {
     let Some(state) = lock_host_state(caller.data(), "checking database operation context") else {
@@ -314,7 +314,7 @@ fn database_host_runtime() -> Result<&'static tokio::runtime::Runtime, String> {
 
 /// Handle create_record host function call.
 fn handle_create_record(
-    caller: &mut Caller<'_, Arc<Mutex<HostState>>>,
+    caller: &mut Caller<'_, PluginStoreData>,
     db: &Arc<dyn Db>,
     collection_ptr: i32,
     collection_len: i32,
@@ -412,7 +412,7 @@ fn handle_create_record(
 
 /// Handle read_records host function call.
 fn handle_read_records(
-    caller: &mut Caller<'_, Arc<Mutex<HostState>>>,
+    caller: &mut Caller<'_, PluginStoreData>,
     db: &Arc<dyn Db>,
     collection_ptr: i32,
     collection_len: i32,
@@ -519,7 +519,7 @@ fn handle_read_records(
 /// Handle update_record host function call.
 #[allow(clippy::too_many_arguments)]
 fn handle_update_record(
-    caller: &mut Caller<'_, Arc<Mutex<HostState>>>,
+    caller: &mut Caller<'_, PluginStoreData>,
     db: &Arc<dyn Db>,
     collection_ptr: i32,
     collection_len: i32,
@@ -628,7 +628,7 @@ fn handle_update_record(
 
 /// Handle delete_record host function call.
 fn handle_delete_record(
-    caller: &mut Caller<'_, Arc<Mutex<HostState>>>,
+    caller: &mut Caller<'_, PluginStoreData>,
     db: &Arc<dyn Db>,
     collection_ptr: i32,
     collection_len: i32,

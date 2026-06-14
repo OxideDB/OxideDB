@@ -2,8 +2,6 @@
 //!
 //! Shared utility functions used across the plugin runtime implementation.
 
-use crate::host_state::HostState;
-use std::sync::{Arc, Mutex};
 use wasmtime::Caller;
 
 /// Helper function to allocate plugin memory and copy data.
@@ -19,8 +17,8 @@ use wasmtime::Caller;
 /// # Returns
 /// * `Some((ptr, len))` - Success: pointer to allocated memory and length
 /// * `None` - Failure: unable to allocate or copy data
-pub fn allocate_plugin_memory_and_copy(
-    caller: &mut Caller<'_, Arc<Mutex<HostState>>>,
+pub fn allocate_plugin_memory_and_copy<T>(
+    caller: &mut Caller<'_, T>,
     data: &[u8],
 ) -> Option<(i32, i32)> {
     let len = i32::try_from(data.len()).ok()?;
@@ -58,8 +56,8 @@ pub fn allocate_plugin_memory_and_copy(
 /// # Returns
 /// * `Ok(String)` - Successfully read string
 /// * `Err(&str)` - Error message describing the failure
-pub fn read_string_from_plugin_memory(
-    caller: &mut Caller<'_, Arc<Mutex<HostState>>>,
+pub fn read_string_from_plugin_memory<T>(
+    caller: &mut Caller<'_, T>,
     ptr: i32,
     len: i32,
 ) -> Result<String, &'static str> {
