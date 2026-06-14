@@ -11,13 +11,18 @@ use super::{
     permissions::get_plugin_permissions_info,
     types::*,
 };
-use crate::{errors::ApiError, responses::ApiResponse, server::AppState};
+use crate::{
+    errors::ApiError, extractors::AuthenticatedUser, responses::ApiResponse, server::AppState,
+};
 use oxide_core::{auth::PermissionService, plugin_config::PluginStatus as PersistedPluginStatus};
 
 /// List all installed plugins with their status and details
 pub async fn list_plugins(
+    authenticated_user: AuthenticatedUser,
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<Vec<PluginInfo>>>, ApiError> {
+    super::ensure_plugin_superuser(&authenticated_user, "list plugins")?;
+
     // Get plugin configurations from database
     let plugin_configs = state
         .plugin_config_service
@@ -80,9 +85,12 @@ pub async fn list_plugins(
 
 /// Get detailed information about a specific plugin
 pub async fn get_plugin_details(
+    authenticated_user: AuthenticatedUser,
     State(state): State<AppState>,
     Path(plugin_name): Path<String>,
 ) -> Result<Json<ApiResponse<PluginDetails>>, ApiError> {
+    super::ensure_plugin_superuser(&authenticated_user, "view plugin details")?;
+
     // Get plugin configuration from database for complete metadata
     let plugin_config = state
         .plugin_config_service
@@ -141,9 +149,12 @@ pub async fn get_plugin_details(
 
 /// Enable a plugin
 pub async fn enable_plugin(
+    authenticated_user: AuthenticatedUser,
     State(state): State<AppState>,
     Path(plugin_name): Path<String>,
 ) -> Result<Json<ApiResponse<PluginStatus>>, ApiError> {
+    super::ensure_plugin_superuser(&authenticated_user, "enable plugins")?;
+
     let plugin_manager = state
         .plugin_manager
         .as_ref()
@@ -221,9 +232,12 @@ pub async fn enable_plugin(
 
 /// Disable a plugin
 pub async fn disable_plugin(
+    authenticated_user: AuthenticatedUser,
     State(state): State<AppState>,
     Path(plugin_name): Path<String>,
 ) -> Result<Json<ApiResponse<PluginStatus>>, ApiError> {
+    super::ensure_plugin_superuser(&authenticated_user, "disable plugins")?;
+
     let plugin_manager = state
         .plugin_manager
         .as_ref()
@@ -283,9 +297,12 @@ pub async fn disable_plugin(
 
 /// Unregister/Uninstall a plugin
 pub async fn unregister_plugin(
+    authenticated_user: AuthenticatedUser,
     State(state): State<AppState>,
     Path(plugin_name): Path<String>,
 ) -> Result<Json<ApiResponse<String>>, ApiError> {
+    super::ensure_plugin_superuser(&authenticated_user, "uninstall plugins")?;
+
     let plugin_manager = state
         .plugin_manager
         .as_ref()

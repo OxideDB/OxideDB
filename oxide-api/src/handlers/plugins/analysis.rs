@@ -14,13 +14,18 @@ use super::{
     installation::{extract_plugin_package, verify_plugin_signature, TempExtractionGuard},
     types::*,
 };
-use crate::{errors::ApiError, responses::ApiResponse, server::AppState};
+use crate::{
+    errors::ApiError, extractors::AuthenticatedUser, responses::ApiResponse, server::AppState,
+};
 
 /// Analyze a plugin package to extract metadata and capabilities before installation
 pub async fn analyze_plugin(
+    authenticated_user: AuthenticatedUser,
     State(state): State<AppState>,
     mut multipart: Multipart,
 ) -> Result<Json<ApiResponse<PluginAnalysisResult>>, ApiError> {
+    super::ensure_plugin_superuser(&authenticated_user, "analyze plugin packages")?;
+
     debug!("🔍 Analyzing plugin package for capability information");
 
     let mut package_data: Option<Vec<u8>> = None;

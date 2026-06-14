@@ -7,14 +7,19 @@ use axum::{
 use tracing::info;
 
 use super::types::*;
-use crate::{errors::ApiError, responses::ApiResponse, server::AppState};
+use crate::{
+    errors::ApiError, extractors::AuthenticatedUser, responses::ApiResponse, server::AppState,
+};
 use oxide_core::auth::{CollectionPermissions, CrudOperation, PermissionLevel, PermissionService};
 
 /// Get plugin route permissions for a specific plugin
 pub async fn get_plugin_permissions(
+    authenticated_user: AuthenticatedUser,
     State(state): State<AppState>,
     Path(plugin_name): Path<String>,
 ) -> Result<Json<ApiResponse<CollectionPermissions>>, ApiError> {
+    super::ensure_plugin_superuser(&authenticated_user, "view plugin permissions")?;
+
     let plugin_collection = format!("plugin:{}", plugin_name);
 
     let permissions = state
@@ -33,10 +38,13 @@ pub async fn get_plugin_permissions(
 
 /// Update plugin route permissions
 pub async fn update_plugin_permissions(
+    authenticated_user: AuthenticatedUser,
     State(state): State<AppState>,
     Path(plugin_name): Path<String>,
     Json(permissions): Json<CollectionPermissions>,
 ) -> Result<Json<ApiResponse<CollectionPermissions>>, ApiError> {
+    super::ensure_plugin_superuser(&authenticated_user, "update plugin permissions")?;
+
     let plugin_collection = format!("plugin:{}", plugin_name);
 
     // Validate that the collection name matches the plugin
@@ -58,8 +66,11 @@ pub async fn update_plugin_permissions(
 
 /// List all plugin routes and their permissions
 pub async fn list_plugin_routes(
+    authenticated_user: AuthenticatedUser,
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<Vec<PluginRouteInfo>>>, ApiError> {
+    super::ensure_plugin_superuser(&authenticated_user, "list plugin routes")?;
+
     let plugin_manager = state
         .plugin_manager
         .as_ref()

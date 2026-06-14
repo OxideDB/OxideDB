@@ -30,7 +30,6 @@ impl Default for AuthorizationConfig {
             default_auth_required: true,
             bypass_collections: vec![
                 "health".to_string(), // Health checks bypass auth
-                "admin".to_string(),  // Admin UI should be publicly accessible
                 "plugin".to_string(), // Plugin routes perform plugin-specific authorization later
                                       // Note: Auth endpoints are controlled via collection-specific rules
             ],
@@ -266,13 +265,17 @@ impl AuthorizationHook {
             ));
         }
 
-        // Handle admin UI endpoints - these should be publicly accessible
-        if path.starts_with("/admin") {
-            return Ok((
-                "admin".to_string(),
-                Operation::Crud(CrudOperation::Read),
-                None,
-            ));
+        // Admin UI assets bypass this hook in the API middleware. Any admin
+        // path that reaches policy is treated as protected control-plane API.
+        if path == "/admin" || path.starts_with("/admin/") {
+            let operation = match method {
+                "GET" => Operation::Crud(CrudOperation::Read),
+                "POST" => Operation::Crud(CrudOperation::Create),
+                "PUT" | "PATCH" => Operation::Crud(CrudOperation::Update),
+                "DELETE" => Operation::Crud(CrudOperation::Delete),
+                _ => Operation::Crud(CrudOperation::Read),
+            };
+            return Ok(("admin".to_string(), operation, None));
         }
 
         // Plugin management endpoints are protected like any other API surface.
@@ -428,8 +431,8 @@ impl AuthorizationHook {
             .store_permissions(&collections_permissions)
             .await?;
 
-        // Note: Admin UI routes are handled via bypass_collections in AuthorizationConfig
-        // They remain publicly accessible for authentication purposes only
+        // Admin UI routes are bypassed by the API middleware before this hook.
+        // Admin API routes use restrictive runtime defaults unless configured.
 
         // Note: We no longer initialize default permissions for "_users" and "_superusers"
         // collections to allow custom rules to work properly
@@ -759,12 +762,89 @@ mod tests {
         assert_eq!(operation, Operation::Crud(CrudOperation::Read));
         assert_eq!(record_id, None);
 
+        // Test admin APIs are parsed as protected control-plane requests
+        let (collection, operation, record_id) =
+            hook.parse_request_info("PUT", "/admin/settings").unwrap();
+        assert_eq!(collection, "admin");
+        assert_eq!(operation, Operation::Crud(CrudOperation::Update));
+        assert_eq!(record_id, None);
+
+        let (collection, operation, record_id) =
+            hook.parse_request_info("GET", "/adminish").unwrap();
+        assert_eq!(collection, "unknown");
+        assert_eq!(operation, Operation::Crud(CrudOperation::Read));
+        assert_eq!(record_id, None);
+
         let (collection, operation, record_id) = hook
             .parse_request_info("POST", "/plugin/demo/action")
             .unwrap();
         assert_eq!(collection, "plugin");
         assert_eq!(operation, Operation::Crud(CrudOperation::Create));
         assert_eq!(record_id, None);
+    }
+
+    #[tokio::test]
+    async fn test_admin_api_requires_superuser_by_default() {
+        let auth_config = AuthServiceConfig::new("test_secret".to_string());
+        let auth_service = Arc::new(AuthService::new(auth_config));
+        let permission_service = Arc::new(MockPermissionService::new());
+        let hook = AuthorizationHook::new(auth_service, permission_service);
+
+        let mut anonymous_context = BeforeEventContext::new_create(
+            "api".to_string(),
+            serde_json::json!({
+                "method": "GET",
+                "path": "/admin/settings",
+                "headers": {},
+                "claims": serde_json::Value::Null
+            }),
+        );
+        assert!(hook
+            .handle_before_api_request(&mut anonymous_context)
+            .await
+            .is_err());
+
+        let user_claims = Claims::new(
+            "user-1".to_string(),
+            "user@example.com".to_string(),
+            "user".to_string(),
+            "_users".to_string(),
+            1,
+        );
+        let mut user_context = BeforeEventContext::new_create(
+            "api".to_string(),
+            serde_json::json!({
+                "method": "GET",
+                "path": "/admin/settings",
+                "headers": {},
+                "claims": serde_json::to_value(user_claims).unwrap()
+            }),
+        );
+        assert!(hook
+            .handle_before_api_request(&mut user_context)
+            .await
+            .is_err());
+
+        let superuser_claims = Claims::new(
+            "admin-1".to_string(),
+            "admin@example.com".to_string(),
+            "superuser".to_string(),
+            "_superusers".to_string(),
+            1,
+        );
+        let mut superuser_context = BeforeEventContext::new_create(
+            "api".to_string(),
+            serde_json::json!({
+                "method": "GET",
+                "path": "/admin/settings",
+                "headers": {},
+                "claims": serde_json::to_value(superuser_claims).unwrap()
+            }),
+        );
+        assert!(hook
+            .handle_before_api_request(&mut superuser_context)
+            .await
+            .is_ok());
     }
 
     #[test]

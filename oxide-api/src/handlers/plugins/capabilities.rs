@@ -7,7 +7,9 @@ use axum::{
 use tracing::{info, warn};
 
 use super::types::*;
-use crate::{errors::ApiError, responses::ApiResponse, server::AppState};
+use crate::{
+    errors::ApiError, extractors::AuthenticatedUser, responses::ApiResponse, server::AppState,
+};
 use oxide_core::{
     auth::CrudOperation,
     plugin_security::{PluginCapability, PluginTrustLevel, VfsOperation},
@@ -17,10 +19,13 @@ use std::collections::HashMap;
 
 /// Grant a capability to a plugin
 pub async fn grant_plugin_capability(
+    authenticated_user: AuthenticatedUser,
     State(state): State<AppState>,
     Path((plugin_name, capability_name)): Path<(String, String)>,
     Json(capability_config): Json<serde_json::Value>,
 ) -> Result<Json<ApiResponse<Vec<PluginCapability>>>, ApiError> {
+    super::ensure_plugin_superuser(&authenticated_user, "grant plugin capabilities")?;
+
     let plugin_manager = state
         .plugin_manager
         .as_ref()
@@ -71,10 +76,13 @@ pub async fn grant_plugin_capability(
 
 /// Revoke a capability from a plugin
 pub async fn revoke_plugin_capability(
+    authenticated_user: AuthenticatedUser,
     State(state): State<AppState>,
     Path((plugin_name, capability_name)): Path<(String, String)>,
     Json(capability_config): Json<serde_json::Value>,
 ) -> Result<Json<ApiResponse<Vec<PluginCapability>>>, ApiError> {
+    super::ensure_plugin_superuser(&authenticated_user, "revoke plugin capabilities")?;
+
     let plugin_manager = state
         .plugin_manager
         .as_ref()
@@ -125,10 +133,13 @@ pub async fn revoke_plugin_capability(
 
 /// Update plugin trust level
 pub async fn update_plugin_trust_level(
+    authenticated_user: AuthenticatedUser,
     State(state): State<AppState>,
     Path(plugin_name): Path<String>,
     Json(_request): Json<UpdateTrustLevelRequest>,
 ) -> Result<Json<ApiResponse<PluginTrustLevel>>, ApiError> {
+    super::ensure_plugin_superuser(&authenticated_user, "update plugin trust levels")?;
+
     let _plugin_manager = state
         .plugin_manager
         .as_ref()

@@ -26,7 +26,9 @@ use super::{
     },
     types::*,
 };
-use crate::{errors::ApiError, responses::ApiResponse, server::AppState};
+use crate::{
+    errors::ApiError, extractors::AuthenticatedUser, responses::ApiResponse, server::AppState,
+};
 use oxide_core::plugin_security::{PluginCapability, PluginTrustLevel, ResourceLimits};
 
 const TRUSTED_PLUGIN_KEYS_ENV: &str = "OXIDEDB_PLUGIN_TRUSTED_KEYS";
@@ -44,9 +46,12 @@ static TEMP_EXTRACTION_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Register/Install a new plugin from a ZIP package
 pub async fn register_plugin(
+    authenticated_user: AuthenticatedUser,
     State(state): State<AppState>,
     mut multipart: Multipart,
 ) -> Result<Json<ApiResponse<PluginInfo>>, ApiError> {
+    super::ensure_plugin_superuser(&authenticated_user, "install plugins")?;
+
     debug!("🔌 Starting plugin registration from ZIP package");
 
     let plugin_manager = state

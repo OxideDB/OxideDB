@@ -440,14 +440,6 @@ enum PublicEndpointAccess {
     AuthorizeAnonymously,
 }
 
-/// List of public endpoint prefixes that don't require authentication or policy.
-const PUBLIC_ENDPOINT_PREFIXES: &[&str] = &["/admin"]; // Admin UI endpoints should be publicly accessible
-
-/// Admin API prefixes share the `/admin` URL space with the public SPA assets,
-/// but must still pass through the central auth and policy middleware.
-const PROTECTED_ADMIN_API_PREFIXES: &[&str] =
-    &["/admin/api-keys", "/admin/backups", "/admin/settings"];
-
 /// List of public auth endpoints that don't require authentication but do
 /// participate in central authorization policy.
 const PUBLIC_AUTH_ENDPOINTS: &[&str] = &[
@@ -465,20 +457,12 @@ const PUBLIC_AUTH_ENDPOINT_PATTERNS: &[&str] = &[
 ];
 
 fn public_endpoint_access(path: &str) -> Option<PublicEndpointAccess> {
-    if is_protected_admin_api_endpoint(path) {
-        return None;
-    }
-
     // Check exact matches first
     if PUBLIC_ENDPOINTS.contains(&path) {
         return Some(PublicEndpointAccess::BypassAuthorization);
     }
 
-    // Check prefix matches
-    if PUBLIC_ENDPOINT_PREFIXES
-        .iter()
-        .any(|&prefix| path.starts_with(prefix))
-    {
+    if is_public_admin_ui_endpoint(path) {
         return Some(PublicEndpointAccess::BypassAuthorization);
     }
 
@@ -513,11 +497,9 @@ fn public_endpoint_access(path: &str) -> Option<PublicEndpointAccess> {
     None
 }
 
-fn is_protected_admin_api_endpoint(path: &str) -> bool {
-    PROTECTED_ADMIN_API_PREFIXES.iter().any(|prefix| {
-        path.strip_prefix(prefix)
-            .is_some_and(|suffix| suffix.is_empty() || suffix.starts_with('/'))
-    })
+fn is_public_admin_ui_endpoint(path: &str) -> bool {
+    (path == "/admin" || path.starts_with("/admin/"))
+        && !crate::routes::is_registered_protected_admin_api_path(path)
 }
 
 /// Authentication and authorization middleware
@@ -994,7 +976,17 @@ mod tests {
             public_endpoint_access("/health"),
             Some(PublicEndpointAccess::BypassAuthorization)
         );
+        assert_eq!(
+            public_endpoint_access("/admin"),
+            Some(PublicEndpointAccess::BypassAuthorization)
+        );
+        assert_eq!(
+            public_endpoint_access("/admin/assets/app.js"),
+            Some(PublicEndpointAccess::BypassAuthorization)
+        );
         assert_eq!(public_endpoint_access("/admin/api-keys"), None);
+        assert_eq!(public_endpoint_access("/admin/settings/security"), None);
+        assert_eq!(public_endpoint_access("/adminish"), None);
     }
 
     #[tokio::test]

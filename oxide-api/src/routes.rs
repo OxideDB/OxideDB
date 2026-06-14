@@ -10,7 +10,7 @@ use axum::{
     routing::{delete, get, patch, post},
     Router,
 };
-use std::path::PathBuf;
+use std::{path::PathBuf, sync::OnceLock};
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 use tracing::{debug, info, warn};
 
@@ -735,7 +735,7 @@ fn get_static_endpoints(config: &RouteConfig) -> Vec<RegisteredEndpoint> {
             "Register/install new plugin",
         ),
         (
-            "GET",
+            "POST",
             "/plugins/analyze",
             "plugins::analyze_plugin",
             true,
@@ -1034,6 +1034,53 @@ fn get_static_endpoints(config: &RouteConfig) -> Vec<RegisteredEndpoint> {
     }
 
     endpoints
+}
+
+static PROTECTED_ADMIN_API_PATTERNS: OnceLock<Vec<String>> = OnceLock::new();
+
+/// Check whether a path belongs to a registered authenticated admin API route.
+pub(crate) fn is_registered_protected_admin_api_path(path: &str) -> bool {
+    if !is_admin_path(path) {
+        return false;
+    }
+
+    protected_admin_api_patterns()
+        .iter()
+        .any(|pattern| route_pattern_matches(pattern, path))
+}
+
+fn protected_admin_api_patterns() -> &'static [String] {
+    PROTECTED_ADMIN_API_PATTERNS
+        .get_or_init(|| {
+            get_static_endpoints(&RouteConfig::default())
+                .into_iter()
+                .filter(|endpoint| endpoint.auth_required && is_admin_path(&endpoint.path))
+                .map(|endpoint| endpoint.path)
+                .collect()
+        })
+        .as_slice()
+}
+
+fn is_admin_path(path: &str) -> bool {
+    path == "/admin" || path.starts_with("/admin/")
+}
+
+fn route_pattern_matches(pattern: &str, path: &str) -> bool {
+    let pattern_parts: Vec<&str> = pattern.trim_start_matches('/').split('/').collect();
+    let path_parts: Vec<&str> = path.trim_start_matches('/').split('/').collect();
+
+    let mut pattern_iter = pattern_parts.iter();
+    let mut path_iter = path_parts.iter();
+
+    loop {
+        match (pattern_iter.next(), path_iter.next()) {
+            (Some(pattern_part), Some(_)) if pattern_part.starts_with('*') => return true,
+            (Some(pattern_part), Some(_)) if pattern_part.starts_with(':') => continue,
+            (Some(pattern_part), Some(path_part)) if pattern_part == path_part => continue,
+            (None, None) => return true,
+            _ => return false,
+        }
+    }
 }
 
 /// Build the complete router with default configuration and middleware.
@@ -1481,4 +1528,47 @@ pub fn build_router_with_config_and_middleware(config: RouteConfig, state: AppSt
     }
 
     router.with_state(state)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn protected_admin_api_paths_are_matched_from_route_inventory() {
+        assert!(is_registered_protected_admin_api_path("/admin/api-keys"));
+        assert!(is_registered_protected_admin_api_path(
+            "/admin/backups/restore"
+        ));
+        assert!(is_registered_protected_admin_api_path(
+            "/admin/settings/security"
+        ));
+        assert!(is_registered_protected_admin_api_path(
+            "/admin/settings/email/test"
+        ));
+
+        assert!(!is_registered_protected_admin_api_path("/admin"));
+        assert!(!is_registered_protected_admin_api_path(
+            "/admin/assets/app.js"
+        ));
+        assert!(!is_registered_protected_admin_api_path(
+            "/adminish/settings"
+        ));
+    }
+
+    #[test]
+    fn route_pattern_matching_respects_path_segments() {
+        assert!(route_pattern_matches(
+            "/admin/settings/:section",
+            "/admin/settings/auth"
+        ));
+        assert!(!route_pattern_matches(
+            "/admin/settings",
+            "/admin/settings/auth"
+        ));
+        assert!(!route_pattern_matches(
+            "/admin/settings/:section",
+            "/admin/settings/auth/extra"
+        ));
+    }
 }
