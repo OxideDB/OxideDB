@@ -292,6 +292,13 @@ impl Default for CircuitBreakerMiddleware {
 }
 
 impl CircuitBreakerMiddleware {
+    fn lock_error(handler_id: &str, lock_name: &str) -> AppError {
+        AppError::internal(format!(
+            "Circuit breaker for {} could not lock {} state",
+            handler_id, lock_name
+        ))
+    }
+
     async fn execute_with_circuit_breaker<F, Fut, R>(
         &self,
         operation: F,
@@ -303,12 +310,21 @@ impl CircuitBreakerMiddleware {
     {
         // Check circuit state
         let current_state = {
-            let mut state = self.state.state.lock().unwrap();
+            let mut state = self
+                .state
+                .state
+                .lock()
+                .map_err(|_| Self::lock_error(handler_id, "circuit"))?;
             let now = Instant::now();
 
             match *state {
                 CircuitState::Open => {
-                    if let Some(last_failure) = *self.state.last_failure_time.lock().unwrap() {
+                    let last_failure_time = self
+                        .state
+                        .last_failure_time
+                        .lock()
+                        .map_err(|_| Self::lock_error(handler_id, "last failure timestamp"))?;
+                    if let Some(last_failure) = *last_failure_time {
                         if now.duration_since(last_failure) >= self.recovery_timeout {
                             *state = CircuitState::HalfOpen;
                             self.state.half_open_calls.store(0, Ordering::SeqCst);
@@ -352,7 +368,11 @@ impl CircuitBreakerMiddleware {
                 self.state.failure_count.store(0, Ordering::SeqCst);
 
                 if current_state == CircuitState::HalfOpen {
-                    let mut state = self.state.state.lock().unwrap();
+                    let mut state = self
+                        .state
+                        .state
+                        .lock()
+                        .map_err(|_| Self::lock_error(handler_id, "circuit"))?;
                     *state = CircuitState::Closed;
                     debug!("Circuit breaker for {} moved to CLOSED", handler_id);
                 }
@@ -363,10 +383,19 @@ impl CircuitBreakerMiddleware {
                 // Failure - increment count and potentially open circuit
                 let failure_count = self.state.failure_count.fetch_add(1, Ordering::SeqCst) + 1;
 
-                *self.state.last_failure_time.lock().unwrap() = Some(Instant::now());
+                *self
+                    .state
+                    .last_failure_time
+                    .lock()
+                    .map_err(|_| Self::lock_error(handler_id, "last failure timestamp"))? =
+                    Some(Instant::now());
 
                 if failure_count >= self.failure_threshold as u64 {
-                    let mut state = self.state.state.lock().unwrap();
+                    let mut state = self
+                        .state
+                        .state
+                        .lock()
+                        .map_err(|_| Self::lock_error(handler_id, "circuit"))?;
                     *state = CircuitState::Open;
                     warn!(
                         "Circuit breaker for {} moved to OPEN after {} failures",

@@ -1527,6 +1527,10 @@ pub fn build_router_with_config_and_middleware(config: RouteConfig, state: AppSt
         router = router.layer(configured_cors_layer());
     }
 
+    router = router.layer(axum::middleware::from_fn(
+        crate::middleware::request_id_middleware,
+    ));
+
     router.with_state(state)
 }
 

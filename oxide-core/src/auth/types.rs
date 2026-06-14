@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::sync::RwLock;
+use tracing::error;
 use ts_rs::TS;
 
 const DEFAULT_JWT_KEY_ID: &str = "default";
@@ -150,26 +151,47 @@ impl AuthServiceConfig {
 
     /// Add an auth collection configuration
     pub fn add_auth_collection(&self, config: AuthCollectionConfig) {
-        let mut collections = self.auth_collections.write().unwrap();
-        collections.insert(config.collection.clone(), config);
+        match self.auth_collections.write() {
+            Ok(mut collections) => {
+                collections.insert(config.collection.clone(), config);
+            }
+            Err(error) => {
+                error!("Failed to write auth collection config: {}", error);
+            }
+        }
     }
 
     /// Get auth collection configuration
     pub fn get_auth_collection(&self, collection: &str) -> Option<AuthCollectionConfig> {
-        let collections = self.auth_collections.read().unwrap();
-        collections.get(collection).cloned()
+        match self.auth_collections.read() {
+            Ok(collections) => collections.get(collection).cloned(),
+            Err(error) => {
+                error!("Failed to read auth collection config: {}", error);
+                None
+            }
+        }
     }
 
     /// List all auth collection names
     pub fn list_auth_collections(&self) -> Vec<String> {
-        let collections = self.auth_collections.read().unwrap();
-        collections.keys().cloned().collect()
+        match self.auth_collections.read() {
+            Ok(collections) => collections.keys().cloned().collect(),
+            Err(error) => {
+                error!("Failed to list auth collection configs: {}", error);
+                Vec::new()
+            }
+        }
     }
 
     /// Check if a collection is configured for authentication
     pub fn is_auth_collection(&self, collection: &str) -> bool {
-        let collections = self.auth_collections.read().unwrap();
-        collections.contains_key(collection)
+        match self.auth_collections.read() {
+            Ok(collections) => collections.contains_key(collection),
+            Err(error) => {
+                error!("Failed to read auth collection config: {}", error);
+                false
+            }
+        }
     }
 }
 

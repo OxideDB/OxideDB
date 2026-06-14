@@ -328,6 +328,25 @@ impl AuthorizationHook {
         if path_parts.len() >= 2 && path_parts[0] == "collections" {
             let collection = path_parts[1].to_string();
 
+            // Collection file routes share the collection's CRUD permission
+            // surface so file access follows record access policy.
+            if path_parts.len() >= 3 && path_parts[2] == "files" {
+                let record_id = path_parts.get(3).map(|file_id| (*file_id).to_string());
+                let operation = match method {
+                    "GET" if record_id.is_some() => Operation::Crud(CrudOperation::Read),
+                    "GET" => Operation::Crud(CrudOperation::List),
+                    "POST" => Operation::Crud(CrudOperation::Create),
+                    "PUT" | "PATCH" => Operation::Crud(CrudOperation::Update),
+                    "DELETE" => Operation::Crud(CrudOperation::Delete),
+                    _ => Operation::Crud(CrudOperation::Read),
+                };
+                return Ok((collection, operation, record_id));
+            }
+
+            if path_parts.len() >= 4 && path_parts[2] == "vfs" && path_parts[3] == "usage" {
+                return Ok((collection, Operation::Crud(CrudOperation::Read), None));
+            }
+
             // Handle collection-specific permission endpoints
             if path_parts.len() >= 3 && path_parts[2] == "permissions" {
                 return Ok((
@@ -356,6 +375,14 @@ impl AuthorizationHook {
                 };
                 return Ok((collection, operation, None));
             }
+        }
+
+        if path == "/vfs/usage" {
+            return Ok((
+                "vfs".to_string(),
+                Operation::Crud(CrudOperation::Read),
+                None,
+            ));
         }
 
         // Other collection-related endpoints (schema, stats, etc.)
@@ -754,6 +781,55 @@ mod tests {
         assert_eq!(collection, "users");
         assert_eq!(operation, Operation::Crud(CrudOperation::Read));
         assert_eq!(record_id, Some("123".to_string()));
+
+        // Test collection file endpoints are mapped to collection permissions
+        let (collection, operation, record_id) = hook
+            .parse_request_info("POST", "/collections/users/files")
+            .unwrap();
+        assert_eq!(collection, "users");
+        assert_eq!(operation, Operation::Crud(CrudOperation::Create));
+        assert_eq!(record_id, None);
+
+        let (collection, operation, record_id) = hook
+            .parse_request_info("GET", "/collections/users/files")
+            .unwrap();
+        assert_eq!(collection, "users");
+        assert_eq!(operation, Operation::Crud(CrudOperation::List));
+        assert_eq!(record_id, None);
+
+        let (collection, operation, record_id) = hook
+            .parse_request_info("GET", "/collections/users/files/file-123")
+            .unwrap();
+        assert_eq!(collection, "users");
+        assert_eq!(operation, Operation::Crud(CrudOperation::Read));
+        assert_eq!(record_id, Some("file-123".to_string()));
+
+        let (collection, operation, record_id) = hook
+            .parse_request_info("PATCH", "/collections/users/files/file-123")
+            .unwrap();
+        assert_eq!(collection, "users");
+        assert_eq!(operation, Operation::Crud(CrudOperation::Update));
+        assert_eq!(record_id, Some("file-123".to_string()));
+
+        let (collection, operation, record_id) = hook
+            .parse_request_info("DELETE", "/collections/users/files/file-123")
+            .unwrap();
+        assert_eq!(collection, "users");
+        assert_eq!(operation, Operation::Crud(CrudOperation::Delete));
+        assert_eq!(record_id, Some("file-123".to_string()));
+
+        let (collection, operation, record_id) = hook
+            .parse_request_info("GET", "/collections/users/vfs/usage")
+            .unwrap();
+        assert_eq!(collection, "users");
+        assert_eq!(operation, Operation::Crud(CrudOperation::Read));
+        assert_eq!(record_id, None);
+
+        let (collection, operation, record_id) =
+            hook.parse_request_info("GET", "/vfs/usage").unwrap();
+        assert_eq!(collection, "vfs");
+        assert_eq!(operation, Operation::Crud(CrudOperation::Read));
+        assert_eq!(record_id, None);
 
         // Test plugin management is distinct from plugin route execution
         let (collection, operation, record_id) =

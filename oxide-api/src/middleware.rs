@@ -30,7 +30,7 @@ use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
 use crate::{
-    errors::ApiError,
+    errors::{insert_request_id_header, with_request_id, ApiError},
     handlers::auth::{extract_cookie_value, ACCESS_TOKEN_COOKIE, REFRESH_TOKEN_COOKIE},
     server::AppState,
 };
@@ -46,6 +46,29 @@ pub struct RequestStartTime(pub Instant);
 /// Extension key for storing correlation ID
 #[derive(Clone)]
 pub struct CorrelationId(pub String);
+
+/// Attach a request ID to the request context and response headers.
+pub async fn request_id_middleware(mut request: Request, next: Next) -> Response {
+    let request_id =
+        request_id_from_headers(request.headers()).unwrap_or_else(|| Uuid::new_v4().to_string());
+
+    request
+        .extensions_mut()
+        .insert(CorrelationId(request_id.clone()));
+
+    let mut response = with_request_id(request_id.clone(), next.run(request)).await;
+    insert_request_id_header(response.headers_mut(), &request_id);
+    response
+}
+
+fn request_id_from_headers(headers: &HeaderMap) -> Option<String> {
+    headers
+        .get(crate::errors::REQUEST_ID_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+}
 
 /// Shared fixed-window rate limiter for sensitive public endpoints.
 #[derive(Clone)]
@@ -154,7 +177,6 @@ pub async fn request_logging_middleware(
     next: Next,
 ) -> Result<Response, ApiError> {
     let start_time = Instant::now();
-    let correlation_id = Uuid::new_v4().to_string();
 
     // Extract request information
     let method = request.method().clone();
@@ -167,6 +189,12 @@ pub async fn request_logging_middleware(
         .and_then(|h| h.to_str().ok())
         .unwrap_or("unknown");
     let client_ip = extract_client_ip(&headers);
+    let correlation_id = request
+        .extensions()
+        .get::<CorrelationId>()
+        .map(|extension| extension.0.clone())
+        .or_else(|| request_id_from_headers(&headers))
+        .unwrap_or_else(|| Uuid::new_v4().to_string());
 
     // Extract user information if available for context
     let user_id =
@@ -244,7 +272,8 @@ pub async fn request_logging_middleware(
     }
 
     // Process the request
-    let response_result = next.run(request).await;
+    let mut response_result = with_request_id(correlation_id.clone(), next.run(request)).await;
+    insert_request_id_header(response_result.headers_mut(), &correlation_id);
     let duration = start_time.elapsed();
 
     // Extract response information
@@ -862,7 +891,7 @@ mod tests {
     use axum::{
         body::Body,
         http::{HeaderName, HeaderValue, Request},
-        routing::post,
+        routing::{get, post},
         Router,
     };
     use oxide_core::{
@@ -1027,5 +1056,41 @@ mod tests {
             .expect("middleware response should be generated");
 
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    async fn failing_handler() -> Result<&'static str, ApiError> {
+        Err(ApiError::bad_request("boom"))
+    }
+
+    #[tokio::test]
+    async fn request_id_middleware_adds_header_and_error_body_request_id() {
+        let mut app = Router::new()
+            .route("/fail", get(failing_handler))
+            .layer(axum::middleware::from_fn(request_id_middleware));
+
+        let response = app
+            .call(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/fail")
+                    .header("x-request-id", "request-123")
+                    .body(Body::empty())
+                    .expect("test request should build"),
+            )
+            .await
+            .expect("middleware response should be generated");
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            response.headers().get("x-request-id"),
+            Some(&HeaderValue::from_static("request-123"))
+        );
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("response body should be readable");
+        let error_body: serde_json::Value =
+            serde_json::from_slice(&body).expect("error response should be valid JSON");
+        assert_eq!(error_body["request_id"], "request-123");
     }
 }

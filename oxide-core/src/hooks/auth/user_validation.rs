@@ -38,7 +38,7 @@ impl Default for UserValidationConfig {
 /// User validation hook for authentication collections
 pub struct UserValidationHook {
     config: UserValidationConfig,
-    email_regex: Arc<Regex>,
+    email_regex: Option<Arc<Regex>>,
 }
 
 impl UserValidationHook {
@@ -62,7 +62,7 @@ impl UserValidationHook {
 
         Ok(Self {
             config,
-            email_regex,
+            email_regex: Some(email_regex),
         })
     }
 
@@ -142,7 +142,13 @@ impl UserValidationHook {
             ));
         }
 
-        if !self.email_regex.is_match(email) {
+        let Some(email_regex) = &self.email_regex else {
+            return Err(AppError::internal(
+                "User validation email regex is unavailable",
+            ));
+        };
+
+        if !email_regex.is_match(email) {
             warn!("Invalid email format attempted: {}", email);
             return Err(AppError::validation("email", "Invalid email format"));
         }
@@ -228,7 +234,16 @@ impl UserValidationHook {
 
 impl Default for UserValidationHook {
     fn default() -> Self {
-        Self::new().expect("Failed to create default UserValidationHook")
+        match Self::new() {
+            Ok(hook) => hook,
+            Err(error) => {
+                warn!("Failed to create default UserValidationHook: {}", error);
+                Self {
+                    config: UserValidationConfig::default(),
+                    email_regex: None,
+                }
+            }
+        }
     }
 }
 

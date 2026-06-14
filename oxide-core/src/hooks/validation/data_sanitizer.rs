@@ -54,8 +54,8 @@ impl Default for DataSanitizerConfig {
 /// Data sanitizer hook for cleaning input data
 pub struct DataSanitizerHook {
     config: DataSanitizerConfig,
-    html_regex: Arc<Regex>,
-    whitespace_regex: Arc<Regex>,
+    html_regex: Option<Arc<Regex>>,
+    whitespace_regex: Option<Arc<Regex>>,
 }
 
 impl DataSanitizerHook {
@@ -79,8 +79,8 @@ impl DataSanitizerHook {
 
         Ok(Self {
             config,
-            html_regex,
-            whitespace_regex,
+            html_regex: Some(html_regex),
+            whitespace_regex: Some(whitespace_regex),
         })
     }
 
@@ -154,7 +154,11 @@ impl DataSanitizerHook {
 
                 // Strip HTML tags
                 if self.config.strip_html {
-                    sanitized = self.html_regex.replace_all(&sanitized, "").to_string();
+                    if let Some(html_regex) = &self.html_regex {
+                        sanitized = html_regex.replace_all(&sanitized, "").to_string();
+                    } else {
+                        warn!("HTML sanitizer regex unavailable; skipping HTML stripping");
+                    }
                 }
 
                 // Normalize unicode
@@ -230,10 +234,11 @@ impl DataSanitizerHook {
             .collect();
 
         // Normalize excessive whitespace
-        sanitized = self
-            .whitespace_regex
-            .replace_all(&sanitized, " ")
-            .to_string();
+        if let Some(whitespace_regex) = &self.whitespace_regex {
+            sanitized = whitespace_regex.replace_all(&sanitized, " ").to_string();
+        } else {
+            warn!("Whitespace sanitizer regex unavailable; skipping whitespace normalization");
+        }
 
         // Check for suspicious patterns
         if self.contains_suspicious_patterns(&sanitized) {
@@ -307,7 +312,17 @@ pub struct DataSanitizerStats {
 
 impl Default for DataSanitizerHook {
     fn default() -> Self {
-        Self::new().expect("Failed to create default DataSanitizerHook")
+        match Self::new() {
+            Ok(hook) => hook,
+            Err(error) => {
+                warn!("Failed to create default DataSanitizerHook: {}", error);
+                Self {
+                    config: DataSanitizerConfig::default(),
+                    html_regex: None,
+                    whitespace_regex: None,
+                }
+            }
+        }
     }
 }
 

@@ -4,12 +4,45 @@
 //! application errors into appropriate HTTP responses with proper status codes.
 
 use axum::{
-    http::StatusCode,
+    http::{HeaderName, HeaderValue, StatusCode},
     response::{IntoResponse, Json},
 };
 use oxide_core::AppError;
 use serde::Serialize;
+use std::future::Future;
 use tracing::error;
+
+/// HTTP header used to surface request IDs to clients.
+pub const REQUEST_ID_HEADER: &str = "x-request-id";
+
+tokio::task_local! {
+    static REQUEST_ID: String;
+}
+
+/// Run a future with a request ID available to response/error serialization.
+pub async fn with_request_id<F, T>(request_id: String, future: F) -> T
+where
+    F: Future<Output = T>,
+{
+    REQUEST_ID.scope(request_id, future).await
+}
+
+/// Return the request ID associated with the current task, if one is set.
+pub fn current_request_id() -> Option<String> {
+    REQUEST_ID.try_with(Clone::clone).ok()
+}
+
+/// Add the request ID response header when the value is valid for HTTP.
+pub fn insert_request_id_header(headers: &mut axum::http::HeaderMap, request_id: &str) {
+    match HeaderValue::from_str(request_id) {
+        Ok(value) => {
+            headers.insert(HeaderName::from_static(REQUEST_ID_HEADER), value);
+        }
+        Err(error) => {
+            error!("Invalid request ID header value: {}", error);
+        }
+    }
+}
 
 /// API-specific error type that wraps core application errors
 /// and provides HTTP status code mapping
@@ -185,6 +218,7 @@ impl IntoResponse for ApiError {
         let status = self.status_code();
         let error_type = self.error_type();
         let message = self.to_string();
+        let request_id = current_request_id();
 
         // Log internal errors
         if status.is_server_error() {
@@ -195,10 +229,14 @@ impl IntoResponse for ApiError {
             error: error_type.to_string(),
             message,
             details: None,
-            request_id: None, // TODO: Extract from request context
+            request_id: request_id.clone(),
         };
 
-        (status, Json(error_response)).into_response()
+        let mut response = (status, Json(error_response)).into_response();
+        if let Some(request_id) = request_id {
+            insert_request_id_header(response.headers_mut(), &request_id);
+        }
+        response
     }
 }
 
