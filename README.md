@@ -100,6 +100,35 @@ export OXIDEDB_JWT_PREVIOUS_KEYS='{"2026-03-rotation":"old-secret-at-least-32-ch
 
 `JWT_SECRET` is the active signing key. `OXIDEDB_JWT_PREVIOUS_KEYS` is a JSON object of previous key ids to secrets that should remain accepted during the rotation window. Remove old keys after their tokens have expired.
 
+### Container Deployment
+
+The root `Dockerfile` builds the React admin UI and the `oxidedb` binary in separate stages, then ships a slim runtime image. Persistent state is kept outside the image:
+
+- `/data` for SQLite data
+- `/plugins` for installed plugin packages
+- `/logs` for audit/application logs
+
+Run with Compose using an env file based on `.env.production.example`:
+
+```bash
+docker compose --env-file .env.production up -d --build
+```
+
+For a local smoke test without a TLS proxy:
+
+```bash
+docker build -t oxidedb:prod .
+docker run --rm -p 8080:8080 \
+  -e JWT_SECRET="replace-with-a-random-secret-at-least-32-characters" \
+  -e OXIDEDB_REQUIRE_HTTPS=false \
+  -v oxidedb-data:/data \
+  -v oxidedb-plugins:/plugins \
+  -v oxidedb-logs:/logs \
+  oxidedb:prod
+```
+
+The image defaults to `OXIDEDB_ENV=production`, secure cookies, strict plugin policy, and HTTPS enforcement. Keep `OXIDEDB_REQUIRE_HTTPS=true` for internet-exposed deployments behind a TLS proxy that sends `X-Forwarded-Proto: https`.
+
 ### 3. Setup and Run the Frontend
 
 ```bash

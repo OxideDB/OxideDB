@@ -1,0 +1,28 @@
+services:
+  oxidedb:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: oxidedb:local
+    restart: unless-stopped
+    ports:
+      - "${OXIDEDB_PORT:-8080}:8080"
+    environment:
+      OXIDEDB_ENV: production
+      JWT_SECRET: "${JWT_SECRET:?JWT_SECRET must be set to at least 32 characters}"
+      OXIDEDB_JWT_KEY_ID: "${OXIDEDB_JWT_KEY_ID:-active}"
+      OXIDEDB_JWT_PREVIOUS_KEYS: "${OXIDEDB_JWT_PREVIOUS_KEYS:-}"
+      OXIDEDB_REQUIRE_HTTPS: "${OXIDEDB_REQUIRE_HTTPS:-true}"
+      OXIDEDB_COOKIE_SECURE: "${OXIDEDB_COOKIE_SECURE:-true}"
+      OXIDEDB_COOKIE_SAME_SITE: "${OXIDEDB_COOKIE_SAME_SITE:-Lax}"
+      OXIDEDB_MAX_REQUEST_SIZE: "${OXIDEDB_MAX_REQUEST_SIZE:-16777216}"
+      OXIDEDB_CORS_ALLOWED_ORIGINS: "${OXIDEDB_CORS_ALLOWED_ORIGINS:-}"
+    volumes:
+      - oxidedb-data:/data
+      - oxidedb-plugins:/plugins
+      - oxidedb-logs:/logs
+
+volumes:
+  oxidedb-data:
+  oxidedb-plugins:
+  oxidedb-logs:
