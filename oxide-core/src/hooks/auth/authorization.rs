@@ -4,7 +4,7 @@
 //! and user authentication status. It follows the hook-first architecture by
 //! intercepting BeforeApiRequest events and validating permissions.
 
-use crate::auth::types::{AuthOperation, Operation};
+use crate::auth::types::{AuthOperation, Operation, PermissionLevel};
 use crate::auth::PermissionService;
 use crate::{
     AppError, AuthService, BeforeEventContext, Claims, CollectionPermissions, CrudOperation,
@@ -114,7 +114,12 @@ impl AuthorizationHook {
             None => {
                 // For collections without explicit permissions, we need to handle auth collections
                 // specially to allow custom rules to work properly
-                if self.is_auth_collection(&collection) {
+                if self.is_global_auth_collection(&collection, &operation) {
+                    debug!(
+                        "No explicit permissions found for global auth endpoint, using public auth defaults"
+                    );
+                    Self::global_auth_permissions(collection.clone())
+                } else if self.is_auth_collection(&collection) {
                     // For auth collections, default to public permissions to allow login/register, etc.
                     debug!("No explicit permissions found for auth collection '{}', using public defaults", collection);
                     CollectionPermissions::public(collection.clone())
@@ -445,13 +450,23 @@ impl AuthorizationHook {
         // Use the auth service to check if this is a configured auth collection
         self.auth_service.config().is_auth_collection(collection)
     }
+
+    fn is_global_auth_collection(&self, collection: &str, operation: &Operation) -> bool {
+        collection == "auth" && matches!(operation, Operation::Auth(_))
+    }
+
+    fn global_auth_permissions(collection: String) -> CollectionPermissions {
+        let mut permissions = CollectionPermissions::new_for_auth_collection(collection);
+        permissions.set_auth_permission(AuthOperation::Logout, PermissionLevel::Public);
+        permissions
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::{
-        auth::{AuthServiceConfig, PermissionLevel},
+        auth::{AuthCollectionConfig, AuthServiceConfig},
         UserRole,
     };
     use std::collections::HashMap;
@@ -581,6 +596,123 @@ mod tests {
 
         let result = hook.handle_before_api_request(&mut context).await;
         assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_global_auth_defaults_allow_public_flow_but_require_user_for_me() {
+        let auth_config = AuthServiceConfig::new("test_secret".to_string());
+        let auth_service = Arc::new(AuthService::new(auth_config));
+        let permission_service = Arc::new(MockPermissionService::new());
+        let hook = AuthorizationHook::new(auth_service, permission_service);
+
+        let mut refresh_context = BeforeEventContext::new_create(
+            "api".to_string(),
+            serde_json::json!({
+                "method": "POST",
+                "path": "/auth/refresh",
+                "headers": {},
+                "claims": serde_json::Value::Null
+            }),
+        );
+        assert!(hook
+            .handle_before_api_request(&mut refresh_context)
+            .await
+            .is_ok());
+
+        let mut anonymous_me_context = BeforeEventContext::new_create(
+            "api".to_string(),
+            serde_json::json!({
+                "method": "GET",
+                "path": "/auth/me",
+                "headers": {},
+                "claims": serde_json::Value::Null
+            }),
+        );
+        assert!(hook
+            .handle_before_api_request(&mut anonymous_me_context)
+            .await
+            .is_err());
+
+        let claims = Claims::new(
+            "user-1".to_string(),
+            "user@example.com".to_string(),
+            "user".to_string(),
+            "_users".to_string(),
+            1,
+        );
+        let mut authenticated_me_context = BeforeEventContext::new_create(
+            "api".to_string(),
+            serde_json::json!({
+                "method": "GET",
+                "path": "/auth/me",
+                "headers": {},
+                "claims": serde_json::to_value(claims).unwrap()
+            }),
+        );
+        assert!(hook
+            .handle_before_api_request(&mut authenticated_me_context)
+            .await
+            .is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_explicit_collection_auth_permission_blocks_public_login() {
+        let auth_config = AuthServiceConfig::new("test_secret".to_string());
+        auth_config.add_auth_collection(AuthCollectionConfig {
+            collection: "_users".to_string(),
+            ..AuthCollectionConfig::default()
+        });
+        let auth_service = Arc::new(AuthService::new(auth_config));
+        let permission_service = Arc::new(MockPermissionService::new());
+        let hook = AuthorizationHook::new(auth_service, permission_service.clone());
+
+        let mut permissions = CollectionPermissions::new_for_auth_collection("_users".to_string());
+        permissions.set_auth_permission(AuthOperation::Login, PermissionLevel::None);
+        permission_service
+            .store_permissions(&permissions)
+            .await
+            .unwrap();
+
+        let mut context = BeforeEventContext::new_create(
+            "api".to_string(),
+            serde_json::json!({
+                "method": "POST",
+                "path": "/auth/_users/login",
+                "headers": {},
+                "claims": serde_json::Value::Null
+            }),
+        );
+
+        let result = hook.handle_before_api_request(&mut context).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_explicit_global_auth_permission_blocks_public_refresh() {
+        let auth_config = AuthServiceConfig::new("test_secret".to_string());
+        let auth_service = Arc::new(AuthService::new(auth_config));
+        let permission_service = Arc::new(MockPermissionService::new());
+        let hook = AuthorizationHook::new(auth_service, permission_service.clone());
+
+        let mut permissions = CollectionPermissions::public("auth".to_string());
+        permissions.set_auth_permission(AuthOperation::TokenRefresh, PermissionLevel::None);
+        permission_service
+            .store_permissions(&permissions)
+            .await
+            .unwrap();
+
+        let mut context = BeforeEventContext::new_create(
+            "api".to_string(),
+            serde_json::json!({
+                "method": "POST",
+                "path": "/auth/refresh",
+                "headers": {},
+                "claims": serde_json::Value::Null
+            }),
+        );
+
+        let result = hook.handle_before_api_request(&mut context).await;
+        assert!(result.is_err());
     }
 
     #[test]

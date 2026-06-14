@@ -13,7 +13,7 @@
 
 use axum::{
     extract::{Request, State},
-    http::{header, HeaderMap, Method, StatusCode},
+    http::{header, HeaderMap, Method, StatusCode, Uri},
     middleware::Next,
     response::Response,
 };
@@ -432,35 +432,46 @@ fn get_status_class(status: StatusCode) -> &'static str {
 /// List of public endpoints that don't require authentication
 const PUBLIC_ENDPOINTS: &[&str] = &["/health"];
 
-/// List of public endpoint prefixes that don't require authentication
-const PUBLIC_ENDPOINT_PREFIXES: &[&str] = &[
-    "/auth/collections", // List auth collections
-    "/auth/validate",    // Token validation
-    "/auth/logout",      // Logout (though this doesn't need auth anyway)
-    "/auth/refresh",     // Token refresh
-    "/admin",            // Admin UI endpoints should be publicly accessible
-];
+/// Public endpoints can either bypass policy entirely or allow anonymous
+/// requests while still letting authorization hooks enforce configured policy.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PublicEndpointAccess {
+    BypassAuthorization,
+    AuthorizeAnonymously,
+}
+
+/// List of public endpoint prefixes that don't require authentication or policy.
+const PUBLIC_ENDPOINT_PREFIXES: &[&str] = &["/admin"]; // Admin UI endpoints should be publicly accessible
 
 /// Admin API prefixes share the `/admin` URL space with the public SPA assets,
 /// but must still pass through the central auth and policy middleware.
 const PROTECTED_ADMIN_API_PREFIXES: &[&str] =
     &["/admin/api-keys", "/admin/backups", "/admin/settings"];
 
-/// List of public endpoint patterns that don't require authentication
-const PUBLIC_ENDPOINT_PATTERNS: &[&str] = &[
+/// List of public auth endpoints that don't require authentication but do
+/// participate in central authorization policy.
+const PUBLIC_AUTH_ENDPOINTS: &[&str] = &[
+    "/auth/collections", // List auth collections
+    "/auth/validate",    // Token validation
+    "/auth/logout",      // Logout (though this doesn't need auth anyway)
+    "/auth/refresh",     // Token refresh
+];
+
+/// List of public auth endpoint patterns that don't require authentication but
+/// do participate in central authorization policy.
+const PUBLIC_AUTH_ENDPOINT_PATTERNS: &[&str] = &[
     "/auth/*/login",    // Collection-specific login endpoints
     "/auth/*/register", // Collection-specific register endpoints
 ];
 
-/// Check if the given path is a public endpoint
-fn is_public_endpoint(path: &str) -> bool {
+fn public_endpoint_access(path: &str) -> Option<PublicEndpointAccess> {
     if is_protected_admin_api_endpoint(path) {
-        return false;
+        return None;
     }
 
     // Check exact matches first
     if PUBLIC_ENDPOINTS.contains(&path) {
-        return true;
+        return Some(PublicEndpointAccess::BypassAuthorization);
     }
 
     // Check prefix matches
@@ -468,11 +479,15 @@ fn is_public_endpoint(path: &str) -> bool {
         .iter()
         .any(|&prefix| path.starts_with(prefix))
     {
-        return true;
+        return Some(PublicEndpointAccess::BypassAuthorization);
+    }
+
+    if PUBLIC_AUTH_ENDPOINTS.contains(&path) {
+        return Some(PublicEndpointAccess::AuthorizeAnonymously);
     }
 
     // Check pattern matches for parameterized auth routes
-    for pattern in PUBLIC_ENDPOINT_PATTERNS {
+    for pattern in PUBLIC_AUTH_ENDPOINT_PATTERNS {
         if pattern.contains('*') {
             // Simple pattern matching for /auth/*/login and /auth/*/register
             let pattern_parts: Vec<&str> = pattern.split('/').collect();
@@ -487,15 +502,15 @@ fn is_public_endpoint(path: &str) -> bool {
                     }
                 }
                 if matches {
-                    return true;
+                    return Some(PublicEndpointAccess::AuthorizeAnonymously);
                 }
             }
         } else if path == *pattern {
-            return true;
+            return Some(PublicEndpointAccess::AuthorizeAnonymously);
         }
     }
 
-    false
+    None
 }
 
 fn is_protected_admin_api_endpoint(path: &str) -> bool {
@@ -522,15 +537,6 @@ pub async fn auth_middleware(
         validate_cookie_auth_request(&method, &headers)?;
     }
 
-    // Check if this is a public endpoint that doesn't require authentication
-    if is_public_endpoint(path) {
-        debug!("🌐 Public endpoint accessed: {} {}", method, path);
-        // Still extract claims if present (for optional authentication)
-        let claims = extract_user_claims(&headers, &state.auth_service);
-        request.extensions_mut().insert(ClaimsExtension(claims));
-        return Ok(next.run(request).await);
-    }
-
     // Extract user claims from headers and store in request extensions
     let claims = extract_user_claims(&headers, &state.auth_service);
 
@@ -539,7 +545,31 @@ pub async fn auth_middleware(
         .extensions_mut()
         .insert(ClaimsExtension(claims.clone()));
 
-    let claims_json = match &claims {
+    // Public endpoints may still need central policy checks. Health and static
+    // admin UI routes bypass policy, while public auth routes are authorized
+    // anonymously so configured auth-operation permissions are honored.
+    if let Some(access) = public_endpoint_access(path) {
+        debug!("🌐 Public endpoint accessed: {} {}", method, path);
+        if access == PublicEndpointAccess::AuthorizeAnonymously {
+            authorize_api_request(&state, &method, &uri, path, &headers, &claims).await?;
+        }
+        return Ok(next.run(request).await);
+    }
+
+    authorize_api_request(&state, &method, &uri, path, &headers, &claims).await?;
+
+    Ok(next.run(request).await)
+}
+
+async fn authorize_api_request(
+    state: &AppState,
+    method: &Method,
+    uri: &Uri,
+    path: &str,
+    headers: &HeaderMap,
+    claims: &Option<Claims>,
+) -> Result<(), ApiError> {
+    let claims_json = match claims {
         Some(claims) => serde_json::to_value(claims).map_err(|e| {
             ApiError::internal(format!("Failed to serialize authenticated claims: {}", e))
         })?,
@@ -547,7 +577,7 @@ pub async fn auth_middleware(
     };
 
     // Convert headers to JSON for event dispatch
-    let headers_json = headers_to_json(&headers);
+    let headers_json = headers_to_json(headers);
 
     // Create context for BeforeApiRequest event (this will trigger authorization)
     let mut context = BeforeEventContext::new_create(
@@ -584,54 +614,56 @@ pub async fn auth_middleware(
 
             // Authorization passed, continue with the request
             debug!("✅ Authorization passed for {} {}", method, uri);
-            Ok(next.run(request).await)
+            Ok(())
         }
         Err(err) => {
             // Authorization failed
             warn!("🚫 Authorization failed for {} {}: {}", method, uri, err);
 
-            // Convert AppError to appropriate ApiError with detailed information
-            use oxide_core::AppError;
-            let api_error = match &err {
-                AppError::Auth { message } => {
-                    warn!("Authentication error: {}", message);
-                    ApiError::Core(err)
-                }
-                AppError::NotFound {
-                    resource_type,
-                    identifier,
-                } => {
-                    warn!(
-                        "Not found error: {} with identifier '{}'",
-                        resource_type, identifier
-                    );
-                    ApiError::Core(err)
-                }
-                AppError::Validation { field, message } => {
-                    warn!("Validation error in field '{}': {}", field, message);
-                    ApiError::Core(err)
-                }
-                AppError::Conflict { message } => {
-                    warn!("Conflict error: {}", message);
-                    ApiError::Core(err)
-                }
-                AppError::RateLimit { message } => {
-                    warn!("Rate limit error: {}", message);
-                    ApiError::Core(err)
-                }
-                _ => {
-                    // For other errors, log detailed information and check message for backward compatibility
-                    warn!("Internal error in auth middleware: {:?}", err);
-                    let err_msg = err.to_string().to_lowercase();
-                    if err_msg.contains("permission") || err_msg.contains("forbidden") {
-                        ApiError::forbidden(err.to_string())
-                    } else {
-                        ApiError::Core(err)
-                    }
-                }
-            };
+            Err(app_error_to_api_error(err))
+        }
+    }
+}
 
-            Err(api_error)
+fn app_error_to_api_error(err: oxide_core::AppError) -> ApiError {
+    use oxide_core::AppError;
+
+    match &err {
+        AppError::Auth { message } => {
+            warn!("Authentication error: {}", message);
+            ApiError::Core(err)
+        }
+        AppError::NotFound {
+            resource_type,
+            identifier,
+        } => {
+            warn!(
+                "Not found error: {} with identifier '{}'",
+                resource_type, identifier
+            );
+            ApiError::Core(err)
+        }
+        AppError::Validation { field, message } => {
+            warn!("Validation error in field '{}': {}", field, message);
+            ApiError::Core(err)
+        }
+        AppError::Conflict { message } => {
+            warn!("Conflict error: {}", message);
+            ApiError::Core(err)
+        }
+        AppError::RateLimit { message } => {
+            warn!("Rate limit error: {}", message);
+            ApiError::Core(err)
+        }
+        _ => {
+            // For other errors, log detailed information and check message for backward compatibility
+            warn!("Internal error in auth middleware: {:?}", err);
+            let err_msg = err.to_string().to_lowercase();
+            if err_msg.contains("permission") || err_msg.contains("forbidden") {
+                ApiError::forbidden(err.to_string())
+            } else {
+                ApiError::Core(err)
+            }
         }
     }
 }
@@ -844,7 +876,48 @@ fn forwarded_header_proto(headers: &HeaderMap) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::http::{HeaderName, HeaderValue};
+    use crate::services::{DatabasePermissionService, PluginConfigService};
+    use axum::{
+        body::Body,
+        http::{HeaderName, HeaderValue, Request},
+        routing::post,
+        Router,
+    };
+    use oxide_core::{
+        auth::AuthServiceConfig, AppError, EventBus, HandlerMetadata, InMemoryEventBus,
+    };
+    use oxide_db::{Db, SqliteDb};
+    use std::{path::PathBuf, sync::Arc, time::Instant};
+    use tower::Service;
+
+    fn test_state(event_bus: Arc<dyn EventBus>) -> AppState {
+        let auth_service = Arc::new(AuthService::new(AuthServiceConfig::new(
+            "test_secret".to_string(),
+        )));
+        let db: Arc<dyn Db> = Arc::new(
+            SqliteDb::new(":memory:", event_bus.clone(), auth_service.clone())
+                .expect("test database should initialize"),
+        );
+        let database_permission_service = Arc::new(DatabasePermissionService::new(Arc::clone(&db)));
+        let plugin_config_service = Arc::new(PluginConfigService::new(
+            Arc::clone(&db),
+            PathBuf::from("target/test-plugins"),
+        ));
+
+        AppState {
+            db,
+            event_bus,
+            auth_service,
+            logging_service: None,
+            logging_api_service: None,
+            plugin_manager: None,
+            database_permission_service,
+            plugin_config_service,
+            vfs_service: None,
+            rate_limiter: Arc::new(RateLimiter::new()),
+            started_at: Instant::now(),
+        }
+    }
 
     #[test]
     fn forwarded_header_proto_handles_case_quotes_and_proxy_hops() {
@@ -901,5 +974,66 @@ mod tests {
         );
 
         assert!(validate_cookie_auth_request(&Method::POST, &headers).is_ok());
+    }
+
+    #[test]
+    fn auth_public_endpoints_are_policy_aware() {
+        assert_eq!(
+            public_endpoint_access("/auth/_users/login"),
+            Some(PublicEndpointAccess::AuthorizeAnonymously)
+        );
+        assert_eq!(
+            public_endpoint_access("/auth/_users/register"),
+            Some(PublicEndpointAccess::AuthorizeAnonymously)
+        );
+        assert_eq!(
+            public_endpoint_access("/auth/refresh"),
+            Some(PublicEndpointAccess::AuthorizeAnonymously)
+        );
+        assert_eq!(
+            public_endpoint_access("/health"),
+            Some(PublicEndpointAccess::BypassAuthorization)
+        );
+        assert_eq!(public_endpoint_access("/admin/api-keys"), None);
+    }
+
+    #[tokio::test]
+    async fn public_auth_route_dispatches_authorization_policy() {
+        let event_bus = Arc::new(InMemoryEventBus::new());
+        event_bus
+            .subscribe_before(
+                BeforeEventType::ApiRequest.name(),
+                Arc::new(|context| {
+                    assert_eq!(
+                        context.data.get("path").and_then(|value| value.as_str()),
+                        Some("/auth/_users/login")
+                    );
+                    Box::pin(async { Err(AppError::auth("blocked by test policy")) })
+                }),
+                HandlerMetadata::new(
+                    "deny-public-auth".to_string(),
+                    "Deny public auth".to_string(),
+                ),
+            )
+            .await
+            .expect("test handler should register");
+
+        let state = test_state(event_bus);
+        let mut app = Router::new()
+            .route("/auth/:collection/login", post(|| async { StatusCode::OK }))
+            .route_layer(axum::middleware::from_fn_with_state(state, auth_middleware));
+
+        let response = app
+            .call(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/auth/_users/login")
+                    .body(Body::empty())
+                    .expect("test request should build"),
+            )
+            .await
+            .expect("middleware response should be generated");
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 }
