@@ -253,6 +253,11 @@ is_system: boolean, };
 export type CollectionType = "base" | "auth";
 
 /**
+ * Collection management operations that can be granted to plugins.
+ */
+export type CollectionOperation = "Create" | "Read" | "Update" | "Delete" | "List" | "Exists" | "Stats";
+
+/**
  * CRUD operation types for permission rules
  */
 export type CrudOperation = "create" | "read" | "update" | "delete" | "list";
@@ -590,7 +595,15 @@ collections: Array<string>, } } | { "DeleteRecords": {
 /**
  * Collections the plugin can delete from
  */
-collections: Array<string>, } } | "HandleHttpRequests";
+collections: Array<string>, } } | { "ManageCollections": {
+/**
+ * Collection names or patterns the plugin can manage
+ */
+collections: Array<string>,
+/**
+ * Collection management operations allowed on those collections
+ */
+operations: Array<CollectionOperation>, } } | "HandleHttpRequests";
 
 /**
  * Complete plugin configuration that can be persisted to the database

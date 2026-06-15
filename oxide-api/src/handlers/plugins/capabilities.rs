@@ -12,7 +12,7 @@ use crate::{
 };
 use oxide_core::{
     auth::CrudOperation,
-    plugin_security::{PluginCapability, PluginTrustLevel, VfsOperation},
+    plugin_security::{CollectionOperation, PluginCapability, PluginTrustLevel, VfsOperation},
 };
 use serde_json::Value;
 use std::collections::HashMap;
@@ -238,6 +238,14 @@ fn parse_capability_from_request(
         "DeleteRecords" => Ok(PluginCapability::DeleteRecords {
             collections: json_string_array(&config, "collections", vec!["*".to_string()])?,
         }),
+        "ManageCollections" => Ok(PluginCapability::ManageCollections {
+            collections: json_string_array(&config, "collections", vec!["*".to_string()])?,
+            operations: collection_operations_from_strings(json_string_array(
+                &config,
+                "operations",
+                vec!["Read".to_string(), "List".to_string()],
+            )?)?,
+        }),
         _ => Err(ApiError::bad_request(format!(
             "Unknown capability: {}",
             capability_name
@@ -295,6 +303,14 @@ pub fn parse_capability_string(cap_str: &str) -> Result<PluginCapability, ApiErr
         }),
         "DeleteRecords" => Ok(PluginCapability::DeleteRecords {
             collections: string_vec_arg(&args, "collections", vec!["*".to_string()])?,
+        }),
+        "ManageCollections" => Ok(PluginCapability::ManageCollections {
+            collections: string_vec_arg(&args, "collections", vec!["*".to_string()])?,
+            operations: collection_operations_arg(
+                &args,
+                "operations",
+                vec![CollectionOperation::Read, CollectionOperation::List],
+            )?,
         }),
         "ReadConfig" => Ok(PluginCapability::ReadConfig {
             keys: string_vec_arg(&args, "keys", vec!["*".to_string()])?,
@@ -647,6 +663,24 @@ fn vfs_operations_arg(
     vfs_operations_from_strings(operation_names)
 }
 
+fn collection_operations_arg(
+    args: &CapabilityArgs,
+    key: &str,
+    default_value: Vec<CollectionOperation>,
+) -> Result<Vec<CollectionOperation>, ApiError> {
+    let operation_names = match args.get(key) {
+        Some(value) => value_to_string_vec(value).ok_or_else(|| {
+            ApiError::bad_request(format!(
+                "Capability argument '{}' must be a collection operation string or array",
+                key
+            ))
+        })?,
+        None => return Ok(default_value),
+    };
+
+    collection_operations_from_strings(operation_names)
+}
+
 fn parse_crud_operation(operation: &str) -> Result<CrudOperation, ApiError> {
     match operation.trim().to_lowercase().as_str() {
         "create" => Ok(CrudOperation::Create),
@@ -666,6 +700,33 @@ fn vfs_operations_from_strings(operations: Vec<String>) -> Result<Vec<VfsOperati
         .into_iter()
         .map(|operation| parse_vfs_operation(&operation))
         .collect()
+}
+
+fn collection_operations_from_strings(
+    operations: Vec<String>,
+) -> Result<Vec<CollectionOperation>, ApiError> {
+    operations
+        .into_iter()
+        .map(|operation| parse_collection_operation(&operation))
+        .collect()
+}
+
+fn parse_collection_operation(operation: &str) -> Result<CollectionOperation, ApiError> {
+    match operation.trim().to_lowercase().as_str() {
+        "create" => Ok(CollectionOperation::Create),
+        "read" | "schema" | "get_schema" => Ok(CollectionOperation::Read),
+        "update" | "update_schema" => Ok(CollectionOperation::Update),
+        "delete" => Ok(CollectionOperation::Delete),
+        "list" => Ok(CollectionOperation::List),
+        "exists" | "collection_exists" => Ok(CollectionOperation::Exists),
+        "stats" | "statistics" | "get_stats" | "get_collection_stats" => {
+            Ok(CollectionOperation::Stats)
+        }
+        _ => Err(ApiError::bad_request(format!(
+            "Unknown collection operation in capability: {}",
+            operation
+        ))),
+    }
 }
 
 fn parse_vfs_operation(operation: &str) -> Result<VfsOperation, ApiError> {
@@ -784,6 +845,17 @@ pub fn is_capability_allowed_for_trust_level(
             | PluginCapability::ScheduleTasks
             | PluginCapability::RegisterHttpRoutes { .. }
             | PluginCapability::DeleteRecords { .. } => false,
+            PluginCapability::ManageCollections { operations, .. } => {
+                operations.iter().all(|operation| {
+                    matches!(
+                        operation,
+                        CollectionOperation::Read
+                            | CollectionOperation::List
+                            | CollectionOperation::Exists
+                            | CollectionOperation::Stats
+                    )
+                })
+            }
             PluginCapability::AccessVfs { operations, .. } => operations.iter().all(|operation| {
                 matches!(
                     operation,
@@ -889,6 +961,28 @@ mod tests {
                 operations,
             } if namespaces == vec!["media/*".to_string()]
                 && operations == vec![VfsOperation::Read, VfsOperation::Move, VfsOperation::List]
+        ));
+    }
+
+    #[test]
+    fn parses_scoped_collection_management_capability() {
+        let capability = parse_capability_string(
+            r#"ManageCollections(collections=["tenant_*"], operations=["read", "list", "exists", "stats"])"#,
+        )
+        .unwrap();
+
+        assert!(matches!(
+            capability,
+            PluginCapability::ManageCollections {
+                collections,
+                operations,
+            } if collections == vec!["tenant_*".to_string()]
+                && operations == vec![
+                    CollectionOperation::Read,
+                    CollectionOperation::List,
+                    CollectionOperation::Exists,
+                    CollectionOperation::Stats,
+                ]
         ));
     }
 

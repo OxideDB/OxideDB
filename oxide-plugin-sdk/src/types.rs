@@ -218,6 +218,34 @@ pub struct DatabaseResult {
     pub error: Option<String>,
 }
 
+/// Result data returned by a collection existence check.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CollectionExists {
+    /// Collection name that was checked.
+    pub collection: String,
+    /// Whether the collection exists.
+    pub exists: bool,
+}
+
+/// Collection statistics returned by collection management host calls.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CollectionStats {
+    /// Collection name.
+    pub name: String,
+    /// Number of records in the collection.
+    pub record_count: usize,
+    /// Whether the collection exists.
+    pub exists: bool,
+    /// Collection size in kilobytes.
+    pub size_kb: f64,
+    /// Collection schema version when the collection exists.
+    pub schema_version: Option<u32>,
+    /// Collection creation timestamp as Unix seconds.
+    pub created_at: Option<i64>,
+    /// Collection update timestamp as Unix seconds.
+    pub updated_at: Option<i64>,
+}
+
 impl DatabaseResult {
     /// Check if the operation was successful
     pub fn is_success(&self) -> bool {

@@ -101,8 +101,35 @@ pub enum PluginCapability {
         /// Collections the plugin can delete from
         collections: Vec<String>,
     },
+    /// Allow plugin to manage collection schemas
+    ManageCollections {
+        /// Collection names or patterns the plugin can manage
+        collections: Vec<String>,
+        /// Collection management operations allowed on those collections
+        operations: Vec<CollectionOperation>,
+    },
     /// Allow plugin to handle HTTP requests
     HandleHttpRequests,
+}
+
+/// Collection management operations that can be granted to plugins.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub enum CollectionOperation {
+    /// Create new collections
+    Create,
+    /// Read collection schemas
+    Read,
+    /// Update collection schemas
+    Update,
+    /// Delete collections
+    Delete,
+    /// List collections
+    List,
+    /// Check whether a collection exists
+    Exists,
+    /// Read collection statistics
+    Stats,
 }
 
 /// VFS operations that can be granted to plugins.
@@ -252,6 +279,21 @@ impl PluginCapability {
                     collections: requested,
                 },
             ) => string_patterns_cover(granted, requested, false),
+            (
+                ManageCollections {
+                    collections: granted_collections,
+                    operations: granted_operations,
+                },
+                ManageCollections {
+                    collections: requested_collections,
+                    operations: requested_operations,
+                },
+            ) => {
+                string_patterns_cover(granted_collections, requested_collections, false)
+                    && requested_operations
+                        .iter()
+                        .all(|operation| granted_operations.contains(operation))
+            }
             (_, CreateRecords { collections }) => collections
                 .iter()
                 .all(|collection| self.allows_record_operation(&CrudOperation::Create, collection)),
@@ -265,6 +307,24 @@ impl PluginCapability {
             (_, DeleteRecords { collections }) => collections
                 .iter()
                 .all(|collection| self.allows_record_operation(&CrudOperation::Delete, collection)),
+            _ => false,
+        }
+    }
+
+    /// Return true when this capability allows a collection management operation.
+    pub fn allows_collection_operation(
+        &self,
+        operation: &CollectionOperation,
+        collection: &str,
+    ) -> bool {
+        match self {
+            PluginCapability::ManageCollections {
+                collections,
+                operations,
+            } => {
+                operations.contains(operation)
+                    && string_patterns_cover(collections, &[collection.to_string()], false)
+            }
             _ => false,
         }
     }
@@ -1013,6 +1073,17 @@ impl PluginSecurityManager {
                 | PluginCapability::ScheduleTasks
                 | PluginCapability::RegisterHttpRoutes { .. }
                 | PluginCapability::DeleteRecords { .. } => false,
+                PluginCapability::ManageCollections { operations, .. } => {
+                    operations.iter().all(|operation| {
+                        matches!(
+                            operation,
+                            CollectionOperation::Read
+                                | CollectionOperation::List
+                                | CollectionOperation::Exists
+                                | CollectionOperation::Stats
+                        )
+                    })
+                }
                 PluginCapability::AccessVfs { operations, .. } => {
                     operations.iter().all(|operation| {
                         matches!(
@@ -1055,6 +1126,34 @@ impl PluginSecurityManager {
             }),
             "delete_record" | "delete_records" => Ok(PluginCapability::DeleteRecords {
                 collections: vec!["*".to_string()],
+            }),
+            "create_collection" => Ok(PluginCapability::ManageCollections {
+                collections: vec!["*".to_string()],
+                operations: vec![CollectionOperation::Create],
+            }),
+            "list_collections" => Ok(PluginCapability::ManageCollections {
+                collections: vec!["*".to_string()],
+                operations: vec![CollectionOperation::List],
+            }),
+            "get_collection_schema" => Ok(PluginCapability::ManageCollections {
+                collections: vec!["*".to_string()],
+                operations: vec![CollectionOperation::Read],
+            }),
+            "update_collection_schema" => Ok(PluginCapability::ManageCollections {
+                collections: vec!["*".to_string()],
+                operations: vec![CollectionOperation::Update],
+            }),
+            "delete_collection" => Ok(PluginCapability::ManageCollections {
+                collections: vec!["*".to_string()],
+                operations: vec![CollectionOperation::Delete],
+            }),
+            "collection_exists" => Ok(PluginCapability::ManageCollections {
+                collections: vec!["*".to_string()],
+                operations: vec![CollectionOperation::Exists],
+            }),
+            "get_collection_stats" => Ok(PluginCapability::ManageCollections {
+                collections: vec!["*".to_string()],
+                operations: vec![CollectionOperation::Stats],
             }),
             "vfs_write_file" => Ok(PluginCapability::AccessVfs {
                 namespaces: vec!["*".to_string()],
@@ -1253,6 +1352,45 @@ mod tests {
     }
 
     #[test]
+    fn test_scoped_collection_management_capability_grants() {
+        let granted = PluginCapability::ManageCollections {
+            collections: vec!["tenant_*".to_string()],
+            operations: vec![
+                CollectionOperation::Read,
+                CollectionOperation::List,
+                CollectionOperation::Exists,
+                CollectionOperation::Stats,
+            ],
+        };
+        let requested = PluginCapability::ManageCollections {
+            collections: vec!["tenant_posts".to_string()],
+            operations: vec![CollectionOperation::Read],
+        };
+        let denied_collection = PluginCapability::ManageCollections {
+            collections: vec!["admin_posts".to_string()],
+            operations: vec![CollectionOperation::Read],
+        };
+        let denied_operation = PluginCapability::ManageCollections {
+            collections: vec!["tenant_posts".to_string()],
+            operations: vec![CollectionOperation::Delete],
+        };
+        let requested_exists = PluginCapability::ManageCollections {
+            collections: vec!["tenant_posts".to_string()],
+            operations: vec![CollectionOperation::Exists],
+        };
+        let requested_stats = PluginCapability::ManageCollections {
+            collections: vec!["tenant_posts".to_string()],
+            operations: vec![CollectionOperation::Stats],
+        };
+
+        assert!(granted.grants(&requested));
+        assert!(granted.grants(&requested_exists));
+        assert!(granted.grants(&requested_stats));
+        assert!(!granted.grants(&denied_collection));
+        assert!(!granted.grants(&denied_operation));
+    }
+
+    #[test]
     fn test_trust_level_restrictions() {
         let policies = SecurityPolicies {
             allow_untrusted_plugins: true, // Allow untrusted plugins for this test
@@ -1274,6 +1412,42 @@ mod tests {
         // Should not be able to grant advanced capabilities
         assert!(manager
             .grant_capability("untrusted_plugin", PluginCapability::ScheduleTasks)
+            .is_err());
+    }
+
+    #[test]
+    fn test_partially_trusted_collection_management_restrictions() {
+        let mut manager = PluginSecurityManager::new();
+        manager
+            .register_plugin(
+                "collection_plugin".to_string(),
+                Some(PluginTrustLevel::PartiallyTrusted),
+            )
+            .unwrap();
+
+        assert!(manager
+            .grant_capability(
+                "collection_plugin",
+                PluginCapability::ManageCollections {
+                    collections: vec!["tenant_*".to_string()],
+                    operations: vec![
+                        CollectionOperation::Read,
+                        CollectionOperation::List,
+                        CollectionOperation::Exists,
+                        CollectionOperation::Stats,
+                    ],
+                },
+            )
+            .is_ok());
+
+        assert!(manager
+            .grant_capability(
+                "collection_plugin",
+                PluginCapability::ManageCollections {
+                    collections: vec!["tenant_*".to_string()],
+                    operations: vec![CollectionOperation::Update],
+                },
+            )
             .is_err());
     }
 

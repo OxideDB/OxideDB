@@ -72,8 +72,9 @@ pub use logging::{
 };
 pub use plugin_api::{EventPayload, PluginError, PluginResponse, PluginResult};
 pub use plugin_security::{
-    ExecutionStats, PluginCapability, PluginSecurityContext, PluginSecurityManager,
-    PluginTrustLevel, ResourceLimits, SecurityPolicies, SecurityViolation, VfsOperation,
+    CollectionOperation, ExecutionStats, PluginCapability, PluginSecurityContext,
+    PluginSecurityManager, PluginTrustLevel, ResourceLimits, SecurityPolicies, SecurityViolation,
+    VfsOperation,
 };
 pub use site_settings::{
     settings_sections, BackupSettings, BrandingSettings, DeploymentEnvironment, EmailSettings,

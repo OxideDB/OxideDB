@@ -263,6 +263,40 @@ pub mod host_functions {
     /// Returns: number of deleted records
     pub const DELETE_RECORDS: &str = "delete_records";
 
+    /// Function signature for creating a collection
+    /// Parameters: schema (JSON string)
+    /// Returns: created schema as JSON
+    pub const CREATE_COLLECTION: &str = "create_collection";
+
+    /// Function signature for listing collections
+    /// Returns: JSON array of collection schemas
+    pub const LIST_COLLECTIONS: &str = "list_collections";
+
+    /// Function signature for reading a collection schema
+    /// Parameters: collection (string)
+    /// Returns: collection schema as JSON
+    pub const GET_COLLECTION_SCHEMA: &str = "get_collection_schema";
+
+    /// Function signature for updating a collection schema
+    /// Parameters: collection (string), schema (JSON string)
+    /// Returns: updated schema as JSON
+    pub const UPDATE_COLLECTION_SCHEMA: &str = "update_collection_schema";
+
+    /// Function signature for deleting a collection
+    /// Parameters: collection (string)
+    /// Returns: deleted collection name
+    pub const DELETE_COLLECTION: &str = "delete_collection";
+
+    /// Function signature for checking whether a collection exists
+    /// Parameters: collection (string)
+    /// Returns: existence metadata as JSON
+    pub const COLLECTION_EXISTS: &str = "collection_exists";
+
+    /// Function signature for getting collection statistics
+    /// Parameters: collection (string)
+    /// Returns: collection statistics as JSON
+    pub const GET_COLLECTION_STATS: &str = "get_collection_stats";
+
     /// Function signature for getting current HTTP request context
     /// Returns: JSON-serialized HttpRequestContext
     pub const GET_HTTP_REQUEST: &str = "get_http_request";
