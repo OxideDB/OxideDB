@@ -102,6 +102,15 @@ mod tests {
 
         assert!(!verified);
     }
+
+    #[test]
+    fn normalize_license_key_trims_and_discards_blank_values() {
+        assert_eq!(normalize_license_key(" \n\t ".to_string()), None);
+        assert_eq!(
+            normalize_license_key(" signed-license \n".to_string()),
+            Some("signed-license".to_string())
+        );
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -382,7 +391,12 @@ impl SqliteDb {
             oxide_core::site_settings::OxideDbEdition::Community => Ok(true), // No license required
             oxide_core::site_settings::OxideDbEdition::Professional
             | oxide_core::site_settings::OxideDbEdition::Enterprise => {
-                let Some(license_key) = system_info.license_key.as_deref() else {
+                let Some(license_key) = system_info
+                    .license_key
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|license_key| !license_key.is_empty())
+                else {
                     return Ok(false);
                 };
 
@@ -516,6 +530,15 @@ fn parse_signed_license_document(license_key: &str) -> Result<SignedLicenseDocum
             format!("Invalid license JSON document: {}", e),
         )
     })
+}
+
+fn normalize_license_key(license_key: String) -> Option<String> {
+    let license_key = license_key.trim();
+    if license_key.is_empty() {
+        None
+    } else {
+        Some(license_key.to_string())
+    }
 }
 
 fn load_license_public_key() -> Result<Option<VerifyingKey>, AppError> {
@@ -802,7 +825,7 @@ impl SiteSettingsService for SqliteDb {
                 current_system_info.instance_name = Some(instance_name);
             }
             if let Some(license_key) = system_info_update.license_key {
-                current_system_info.license_key = Some(license_key);
+                current_system_info.license_key = normalize_license_key(license_key);
             }
 
             // Always update version from current binary

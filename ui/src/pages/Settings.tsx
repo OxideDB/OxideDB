@@ -14,6 +14,7 @@ import { Separator } from '@/components/ui/separator';
 import { Badge } from '@/components/ui/badge';
 import { apiService } from '@/services/api';
 import type { SiteSettings, UpdateSiteSettingsRequest, SettingsHealthStatus } from '@/types/api';
+import { useSiteSettings } from '@/hooks/useSiteSettings';
 
 const Settings: React.FC = () => {
   const [settings, setSettings] = useState<SiteSettings | null>(null);
@@ -24,10 +25,13 @@ const Settings: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState('branding');
+  const { refreshSiteSettings } = useSiteSettings();
 
   const form = useForm<UpdateSiteSettingsRequest>({
     defaultValues: {}
   });
+  const selectedEdition = form.watch('system_info.oxidedb_edition');
+  const requiresLicense = selectedEdition === 'Professional' || selectedEdition === 'Enterprise';
 
   // Load settings on component mount
   useEffect(() => {
@@ -76,6 +80,7 @@ const Settings: React.FC = () => {
       await apiService.updateSiteSettings(data);
       setSuccess('Settings updated successfully');
       await loadSettings(); // Reload to get updated data
+      await refreshSiteSettings();
       setTimeout(() => setSuccess(null), 3000);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to update settings');
@@ -95,6 +100,7 @@ const Settings: React.FC = () => {
       await apiService.resetSiteSettings();
       setSuccess('Settings reset to defaults');
       await loadSettings();
+      await refreshSiteSettings();
       setTimeout(() => setSuccess(null), 3000);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to reset settings');
@@ -141,9 +147,18 @@ const Settings: React.FC = () => {
         {health && !health.healthy && (
           <Alert>
             <AlertTriangle className="h-4 w-4" />
-            <AlertDescription>
-              Settings validation found {health.warnings.length} warning(s). 
-              Some features may not work correctly.
+            <AlertDescription className="space-y-2">
+              <p>
+                Settings validation found {health.warnings.length} warning(s).
+                Some features may not work correctly.
+              </p>
+              {health.warnings.length > 0 && (
+                <ul className="list-disc space-y-1 pl-5">
+                  {health.warnings.map((warning) => (
+                    <li key={warning}>{warning}</li>
+                  ))}
+                </ul>
+              )}
             </AlertDescription>
           </Alert>
         )}
@@ -395,7 +410,7 @@ const Settings: React.FC = () => {
                     render={({ field }) => (
                       <FormItem>
                         <FormLabel>OxideDB Edition</FormLabel>
-                        <Select onValueChange={field.onChange} defaultValue={field.value}>
+                        <Select onValueChange={field.onChange} value={field.value}>
                           <FormControl>
                             <SelectTrigger>
                               <SelectValue placeholder="Select edition" />
@@ -421,7 +436,7 @@ const Settings: React.FC = () => {
                     render={({ field }) => (
                       <FormItem>
                         <FormLabel>Environment</FormLabel>
-                        <Select onValueChange={field.onChange} defaultValue={field.value}>
+                        <Select onValueChange={field.onChange} value={field.value}>
                           <FormControl>
                             <SelectTrigger>
                               <SelectValue placeholder="Select environment" />
@@ -458,6 +473,43 @@ const Settings: React.FC = () => {
                     )}
                   />
                 </div>
+
+                {requiresLicense && (
+                  <FormField
+                    control={form.control}
+                    name="system_info.license_key"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>License Key</FormLabel>
+                        <FormControl>
+                          <Textarea
+                            className="min-h-32 font-mono text-xs"
+                            placeholder="Paste signed license document"
+                            {...field}
+                            value={field.value ?? ''}
+                          />
+                        </FormControl>
+                        <FormDescription>
+                          Professional and Enterprise editions require a signed license.
+                        </FormDescription>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                )}
+
+                {requiresLicense && health && (
+                  <div className="flex items-center gap-2">
+                    <Badge variant={health.license_valid ? 'default' : 'destructive'}>
+                      {health.license_valid ? (
+                        <CheckCircle className="mr-1 h-3 w-3" />
+                      ) : (
+                        <AlertTriangle className="mr-1 h-3 w-3" />
+                      )}
+                      {health.license_valid ? 'License valid' : 'License required'}
+                    </Badge>
+                  </div>
+                )}
 
                 {settings && (
                   <div className="rounded-lg border p-4 space-y-2">
@@ -563,27 +615,6 @@ const Settings: React.FC = () => {
                 <div className="space-y-4">
                   <h3 className="text-lg font-medium">Access Control</h3>
                   
-                  <FormField
-                    control={form.control}
-                    name="general.allow_user_registration"
-                    render={({ field }) => (
-                      <FormItem className="flex flex-row items-center justify-between rounded-lg border p-4">
-                        <div className="space-y-0.5">
-                          <FormLabel className="text-base">Allow User Registration</FormLabel>
-                          <FormDescription>
-                            Allow new users to register accounts.
-                          </FormDescription>
-                        </div>
-                        <FormControl>
-                          <Switch
-                            checked={field.value}
-                            onCheckedChange={field.onChange}
-                          />
-                        </FormControl>
-                      </FormItem>
-                    )}
-                  />
-
                   <FormField
                     control={form.control}
                     name="general.allow_public_api"
@@ -705,27 +736,6 @@ const Settings: React.FC = () => {
                 <div className="space-y-4">
                   <h3 className="text-lg font-medium">Security Features</h3>
                   
-                  <FormField
-                    control={form.control}
-                    name="security.require_email_verification"
-                    render={({ field }) => (
-                      <FormItem className="flex flex-row items-center justify-between rounded-lg border p-4">
-                        <div className="space-y-0.5">
-                          <FormLabel className="text-base">Require Email Verification</FormLabel>
-                          <FormDescription>
-                            Require users to verify their email addresses.
-                          </FormDescription>
-                        </div>
-                        <FormControl>
-                          <Switch
-                            checked={field.value}
-                            onCheckedChange={field.onChange}
-                          />
-                        </FormControl>
-                      </FormItem>
-                    )}
-                  />
-
                   <FormField
                     control={form.control}
                     name="security.password_require_complexity"

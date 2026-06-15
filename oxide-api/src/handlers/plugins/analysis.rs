@@ -118,6 +118,7 @@ pub async fn analyze_plugin(
         "BlockOperations",
         "AccessVfs",
         "HandleHttpRequests",
+        "ManageCollections",
     ];
     let has_sensitive_caps: Vec<&String> = declared_capabilities
         .iter()

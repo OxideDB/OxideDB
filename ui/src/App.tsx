@@ -6,6 +6,7 @@ import {
 } from "react-router-dom";
 import { ThemeProvider } from "./components/theme-provider";
 import { AuthProvider } from "./contexts/AuthContext";
+import { SiteSettingsProvider } from "./contexts/SiteSettingsContext";
 import ProtectedRoute from "./components/ProtectedRoute";
 import { SidebarProvider } from "./components/ui/sidebar";
 import { AppSidebar } from "./components/AppSidebar";
@@ -29,8 +30,9 @@ function App() {
   return (
     <ThemeProvider defaultTheme="system" storageKey="oxidedb-ui-theme">
       <AuthProvider>
-        <Router basename="/admin">
-          <Routes>
+        <SiteSettingsProvider>
+          <Router basename="/admin">
+            <Routes>
             {/* Public login route */}
             <Route path="/login" element={<Login />} />
 
@@ -118,8 +120,9 @@ function App() {
 
             {/* Catch all - redirect to login */}
             <Route path="*" element={<Navigate to="/login" replace />} />
-          </Routes>
-        </Router>
+            </Routes>
+          </Router>
+        </SiteSettingsProvider>
       </AuthProvider>
     </ThemeProvider>
   );

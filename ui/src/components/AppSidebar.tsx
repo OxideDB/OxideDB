@@ -21,6 +21,7 @@ import { Button } from "@/components/ui/button"
 import { Separator } from "@/components/ui/separator"
 import { ThemeToggle } from "@/components/theme-toggle"
 import { useAuth } from "@/hooks/useAuth"
+import { useSiteSettings } from "@/hooks/useSiteSettings"
 import { apiService } from "@/services/api"
 import { cn } from "@/lib/utils"
 import type { CollectionSchema, CollectionStats } from "@/types/api"
@@ -104,7 +105,10 @@ export function AppSidebar() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const { user, logout } = useAuth()
+  const { branding, settings } = useSiteSettings()
   const location = useLocation()
+  const siteTitle = branding.site_title?.trim() || 'OxideDB'
+  const subtitle = settings?.system_info.instance_name?.trim() || 'Admin console'
 
   // Load collections data
   useEffect(() => {
@@ -171,11 +175,19 @@ export function AppSidebar() {
         <div className="flex items-center justify-between gap-2 px-2">
           <div className="flex min-w-0 items-center gap-2">
             <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-primary text-primary-foreground shadow-sm">
-              <Database className="h-4 w-4" />
+              {branding.logo_url ? (
+                <img
+                  src={branding.logo_url}
+                  alt={`${siteTitle} logo`}
+                  className="h-5 w-5 object-contain"
+                />
+              ) : (
+                <Database className="h-4 w-4" />
+              )}
             </div>
             <div className="min-w-0 group-data-[collapsible=icon]:hidden">
-              <div className="truncate text-sm font-semibold leading-5">OxideDB</div>
-              <div className="text-xs text-sidebar-foreground/60">Admin console</div>
+              <div className="truncate text-sm font-semibold leading-5">{siteTitle}</div>
+              <div className="truncate text-xs text-sidebar-foreground/60">{subtitle}</div>
             </div>
           </div>
           <div className="group-data-[collapsible=icon]:hidden">

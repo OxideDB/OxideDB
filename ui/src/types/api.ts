@@ -560,7 +560,15 @@ export interface LoggingHealthResponse {
 }
 
 // Plugin-specific CRUD operations for capabilities (different from API CrudOperation)
-export type PluginCrudOperation = "Create" | "Read" | "Update" | "Delete";
+export type PluginCrudOperation = "Create" | "Read" | "Update" | "Delete" | "List";
+export type PluginCollectionOperation =
+  | "Create"
+  | "Read"
+  | "Update"
+  | "Delete"
+  | "List"
+  | "Exists"
+  | "Stats";
 export type PluginVfsOperation = "Write" | "Read" | "Move" | "Delete" | "List" | "Usage";
 
 // PluginCapability types matching Rust enum
@@ -582,7 +590,8 @@ export type PluginCapability =
   | { CreateRecords: { collections: string[] } }
   | { ReadRecords: { collections: string[] } }
   | { UpdateRecords: { collections: string[] } }
-  | { DeleteRecords: { collections: string[] } };
+  | { DeleteRecords: { collections: string[] } }
+  | { ManageCollections: { collections: string[]; operations: PluginCollectionOperation[] } };
 
 // Utility functions to create capability objects
 export const createCapability = {
@@ -614,6 +623,10 @@ export const createCapability = {
     ({ UpdateRecords: { collections } }),
   DeleteRecords: (collections: string[] = ["*"]): PluginCapability => 
     ({ DeleteRecords: { collections } }),
+  ManageCollections: (
+    collections: string[] = ["*"],
+    operations: PluginCollectionOperation[] = ["Read", "List"]
+  ): PluginCapability => ({ ManageCollections: { collections, operations } }),
 };
 
 function splitCapabilityArgs(input: string): string[] {
@@ -748,6 +761,27 @@ function normalizeVfsOperation(operation: string): PluginVfsOperation {
   }
 }
 
+function normalizeCollectionOperation(operation: string): PluginCollectionOperation {
+  switch (operation.trim().toLowerCase()) {
+    case "create": return "Create";
+    case "read":
+    case "schema":
+    case "get_schema": return "Read";
+    case "update":
+    case "update_schema": return "Update";
+    case "delete": return "Delete";
+    case "list": return "List";
+    case "exists":
+    case "collection_exists": return "Exists";
+    case "stats":
+    case "statistics":
+    case "get_stats":
+    case "get_collection_stats": return "Stats";
+    default:
+      return operation as PluginCollectionOperation;
+  }
+}
+
 // Function to convert capability names to capability objects
 export function capabilityNameToObject(capabilityName: string): PluginCapability {
   try {
@@ -795,6 +829,10 @@ export function capabilityNameToObject(capabilityName: string): PluginCapability
     case "ReadRecords": return createCapability.ReadRecords(stringArrayArg(args, "collections", ["*"]));
     case "UpdateRecords": return createCapability.UpdateRecords(stringArrayArg(args, "collections", ["*"]));
     case "DeleteRecords": return createCapability.DeleteRecords(stringArrayArg(args, "collections", ["*"]));
+    case "ManageCollections": return createCapability.ManageCollections(
+      stringArrayArg(args, "collections", ["*"]),
+      stringArrayArg(args, "operations", ["Read", "List"]).map(normalizeCollectionOperation)
+    );
     default:
       throw new Error(`Unknown capability: ${capabilityName}`);
   }
@@ -916,6 +954,17 @@ export interface SiteSettingsResponse {
   settings?: SiteSettings | null;
 }
 
+export interface PublicSiteSettings {
+  branding: BrandingSettings;
+  system_info: PublicSystemInfo;
+}
+
+export interface PublicSystemInfo {
+  oxidedb_version: string;
+  environment: DeploymentEnvironment;
+  instance_name?: string;
+}
+
 export interface SettingsHealthStatus {
   healthy: boolean;
   email_config_valid: boolean;
@@ -970,7 +1019,6 @@ export interface GeneralSettings {
   default_timezone: string;
   default_locale: string;
   max_upload_size: number;
-  allow_user_registration: boolean;
   allow_public_api: boolean;
   api_rate_limit: number;
   maintenance: MaintenanceSettings;
@@ -978,7 +1026,6 @@ export interface GeneralSettings {
 }
 
 export interface SecuritySettings {
-  require_email_verification: boolean;
   password_min_length: number;
   password_require_complexity: boolean;
   session_timeout_minutes: number;

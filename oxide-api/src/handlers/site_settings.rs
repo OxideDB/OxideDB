@@ -9,12 +9,13 @@ use axum::{
 };
 use oxide_core::{
     site_settings::{
-        settings_sections, SettingsHealthStatus, SiteSettingsResponse, UpdateSiteSettingsRequest,
+        settings_sections, BrandingSettings, DeploymentEnvironment, SettingsHealthStatus,
+        SiteSettingsResponse, UpdateSiteSettingsRequest,
     },
     AppError,
 };
 use oxide_db::Db;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::Arc;
 use tracing::{debug, info, warn};
@@ -30,10 +31,49 @@ pub struct SettingsQuery {
     pub include_health: Option<bool>,
 }
 
+/// Public, non-sensitive site settings for UI bootstrapping.
+#[derive(Debug, Clone, Serialize)]
+pub struct PublicSiteSettings {
+    /// Branding values safe to expose before authentication.
+    pub branding: BrandingSettings,
+    /// Non-sensitive system metadata safe to expose before authentication.
+    pub system_info: PublicSystemInfo,
+}
+
+/// Public system metadata for UI display.
+#[derive(Debug, Clone, Serialize)]
+pub struct PublicSystemInfo {
+    /// OxideDB version.
+    pub oxidedb_version: String,
+    /// Deployment environment.
+    pub environment: DeploymentEnvironment,
+    /// Optional instance name configured by an administrator.
+    pub instance_name: Option<String>,
+}
+
 /// Site settings handlers
 pub struct SiteSettingsHandlers;
 
 impl SiteSettingsHandlers {
+    /// Get public, non-sensitive site settings.
+    pub async fn get_public_settings<D: Db + ?Sized>(
+        db: Arc<D>,
+    ) -> Result<PublicSiteSettings, ApiError> {
+        let settings = db.get_site_settings().await.map_err(|e| {
+            warn!("Failed to get public site settings: {}", e);
+            ApiError::internal(format!("Failed to retrieve public site settings: {}", e))
+        })?;
+
+        Ok(PublicSiteSettings {
+            branding: settings.branding,
+            system_info: PublicSystemInfo {
+                oxidedb_version: settings.system_info.oxidedb_version,
+                environment: settings.system_info.environment,
+                instance_name: settings.system_info.instance_name,
+            },
+        })
+    }
+
     /// Get all site settings with optional health information
     pub async fn get_settings<D: Db + ?Sized>(
         db: Arc<D>,
@@ -188,8 +228,8 @@ impl SiteSettingsHandlers {
         // Validate section name
         Self::validate_section_name(&section)?;
 
-        // Validate section data based on section type
-        Self::validate_section_data(&section, &data)?;
+        // Validate and normalize section data based on section type.
+        let data = Self::validate_section_data(&section, &data)?;
 
         db.update_settings_section(&section, &data)
             .await
@@ -413,41 +453,51 @@ impl SiteSettingsHandlers {
     }
 
     /// Validate section data based on section type
-    fn validate_section_data(section: &str, data: &Value) -> Result<(), ApiError> {
+    fn validate_section_data(section: &str, data: &Value) -> Result<Value, ApiError> {
         match section {
             settings_sections::BRANDING => {
-                let _branding: oxide_core::site_settings::BrandingSettings =
+                let branding: oxide_core::site_settings::BrandingSettings =
                     serde_json::from_value(data.clone()).map_err(|e| {
                         ApiError::bad_request(format!("Invalid branding data: {}", e))
                     })?;
-                Ok(())
+                serde_json::to_value(&branding).map_err(|e| {
+                    ApiError::internal(format!("Failed to normalize branding settings: {}", e))
+                })
             }
             settings_sections::EMAIL => {
-                let _email: oxide_core::site_settings::EmailSettings =
+                let email: oxide_core::site_settings::EmailSettings =
                     serde_json::from_value(data.clone())
                         .map_err(|e| ApiError::bad_request(format!("Invalid email data: {}", e)))?;
-                Ok(())
+                serde_json::to_value(&email).map_err(|e| {
+                    ApiError::internal(format!("Failed to normalize email settings: {}", e))
+                })
             }
             settings_sections::SYSTEM_INFO => {
-                let _system_info: oxide_core::site_settings::SystemInfoSettings =
+                let system_info: oxide_core::site_settings::SystemInfoSettings =
                     serde_json::from_value(data.clone()).map_err(|e| {
                         ApiError::bad_request(format!("Invalid system info data: {}", e))
                     })?;
-                Ok(())
+                serde_json::to_value(&system_info).map_err(|e| {
+                    ApiError::internal(format!("Failed to normalize system info settings: {}", e))
+                })
             }
             settings_sections::GENERAL => {
-                let _general: oxide_core::site_settings::GeneralSettings =
+                let general: oxide_core::site_settings::GeneralSettings =
                     serde_json::from_value(data.clone()).map_err(|e| {
                         ApiError::bad_request(format!("Invalid general settings data: {}", e))
                     })?;
-                Ok(())
+                serde_json::to_value(&general).map_err(|e| {
+                    ApiError::internal(format!("Failed to normalize general settings: {}", e))
+                })
             }
             settings_sections::SECURITY => {
-                let _security: oxide_core::site_settings::SecuritySettings =
+                let security: oxide_core::site_settings::SecuritySettings =
                     serde_json::from_value(data.clone()).map_err(|e| {
                         ApiError::bad_request(format!("Invalid security settings data: {}", e))
                     })?;
-                Ok(())
+                serde_json::to_value(&security).map_err(|e| {
+                    ApiError::internal(format!("Failed to normalize security settings: {}", e))
+                })
             }
             _ => Err(ApiError::bad_request(format!(
                 "Unknown settings section: {}",
@@ -492,6 +542,16 @@ pub async fn get_site_settings(
     Ok(Json(ApiResponse::success(response)))
 }
 
+/// Get public, non-sensitive site settings.
+///
+/// GET /settings/public
+pub async fn get_public_site_settings(
+    State(state): State<AppState>,
+) -> Result<Json<ApiResponse<PublicSiteSettings>>, ApiError> {
+    let response = SiteSettingsHandlers::get_public_settings(state.db).await?;
+    Ok(Json(ApiResponse::success(response)))
+}
+
 /// Update site settings (partial update)
 ///
 /// PUT /api/admin/settings
@@ -501,12 +561,13 @@ pub async fn update_site_settings(
     Json(request): Json<UpdateSiteSettingsRequest>,
 ) -> Result<Json<ApiResponse<SiteSettingsResponse>>, ApiError> {
     let response = SiteSettingsHandlers::update_settings(
-        state.db,
+        Arc::clone(&state.db),
         authenticated_user.user_id().to_string(),
         authenticated_user.is_superuser(),
         request,
     )
     .await?;
+    refresh_runtime_settings(&state).await?;
 
     Ok(Json(ApiResponse::success(response)))
 }
@@ -519,11 +580,12 @@ pub async fn reset_site_settings(
     authenticated_user: AuthenticatedUser,
 ) -> Result<Json<ApiResponse<SiteSettingsResponse>>, ApiError> {
     let response = SiteSettingsHandlers::reset_settings(
-        state.db,
+        Arc::clone(&state.db),
         authenticated_user.user_id().to_string(),
         authenticated_user.is_superuser(),
     )
     .await?;
+    refresh_runtime_settings(&state).await?;
 
     Ok(Json(ApiResponse::success(response)))
 }
@@ -557,13 +619,14 @@ pub async fn update_settings_section(
     Json(data): Json<Value>,
 ) -> Result<Json<ApiResponse<SiteSettingsResponse>>, ApiError> {
     let response = SiteSettingsHandlers::update_settings_section(
-        state.db,
+        Arc::clone(&state.db),
         authenticated_user.user_id().to_string(),
         authenticated_user.is_superuser(),
         section,
         data,
     )
     .await?;
+    refresh_runtime_settings(&state).await?;
 
     Ok(Json(ApiResponse::success(response)))
 }
@@ -600,4 +663,19 @@ pub async fn get_settings_health(
     .await?;
 
     Ok(Json(ApiResponse::success(health)))
+}
+
+async fn refresh_runtime_settings(state: &AppState) -> Result<(), ApiError> {
+    state
+        .runtime_settings
+        .refresh_from_db(&state.db)
+        .await
+        .map(|_| ())
+        .map_err(|e| {
+            warn!("Failed to refresh runtime settings after update: {}", e);
+            ApiError::internal(format!(
+                "Settings were saved but runtime settings failed to refresh: {}",
+                e
+            ))
+        })
 }

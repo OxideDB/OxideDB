@@ -8,6 +8,7 @@ import type {
   DashboardStats, SystemStats, FileMetadata, FileListRequest, FileMoveRequest,
   FileListResponse, VfsUsageStats,
   SiteSettings, SiteSettingsResponse, UpdateSiteSettingsRequest, SettingsHealthStatus,
+  PublicSiteSettings,
   ApiKeyRulesResponse, UpsertApiKeyRuleRequest, UpsertApiKeyRuleResponse,
   RevokeApiKeyRuleRequest, BackupExportResponse, BackupManifestResponse,
   BackupQueryOptions, BackupRestoreRequest, BackupRestoreResponse,
@@ -1117,6 +1118,14 @@ class ApiService {
   }
 
   // Site Settings Operations
+
+  /**
+   * Get public site settings safe for unauthenticated UI bootstrapping
+   */
+  async getPublicSiteSettings(): Promise<PublicSiteSettings> {
+    const response = await this.get<ApiResponse<PublicSiteSettings>>('/settings/public');
+    return response.data;
+  }
 
   /**
    * Get all site settings

@@ -1,6 +1,8 @@
 //! Database utilities for plugin database operations
 
-use crate::{DatabaseResult, Host, PluginError, PluginResult, Record};
+use crate::{
+    CollectionExists, CollectionStats, DatabaseResult, Host, PluginError, PluginResult, Record,
+};
 
 /// Database utilities for plugins
 pub struct Database;
@@ -36,6 +38,109 @@ impl Database {
     /// Delete a record from a collection
     pub fn delete(collection: &str, record_id: &str) -> PluginResult<DatabaseResult> {
         Host::delete_record(collection, record_id)
+    }
+
+    /// Create a collection from a serialized collection schema
+    pub fn create_collection<T: serde::Serialize>(schema: &T) -> PluginResult<DatabaseResult> {
+        Host::create_collection(schema)
+    }
+
+    /// List collection schemas visible to the plugin
+    pub fn list_collections() -> PluginResult<DatabaseResult> {
+        Host::list_collections()
+    }
+
+    /// Get the schema for a collection
+    pub fn get_collection_schema(collection: &str) -> PluginResult<DatabaseResult> {
+        Host::get_collection_schema(collection)
+    }
+
+    /// Update the schema for an existing collection
+    pub fn update_collection_schema<T: serde::Serialize>(
+        collection: &str,
+        schema: &T,
+    ) -> PluginResult<DatabaseResult> {
+        Host::update_collection_schema(collection, schema)
+    }
+
+    /// Delete a collection and its records
+    pub fn delete_collection(collection: &str) -> PluginResult<DatabaseResult> {
+        Host::delete_collection(collection)
+    }
+
+    /// Check whether a collection exists
+    pub fn collection_exists(collection: &str) -> PluginResult<DatabaseResult> {
+        Host::collection_exists(collection)
+    }
+
+    /// Get collection statistics
+    pub fn get_collection_stats(collection: &str) -> PluginResult<DatabaseResult> {
+        Host::get_collection_stats(collection)
+    }
+
+    /// List collection schemas and parse them into a caller-provided type
+    pub fn list_collection_schemas<T: serde::de::DeserializeOwned>() -> PluginResult<Vec<T>> {
+        let result = Self::list_collections()?;
+        if result.is_success() {
+            result.parse_data().map_err(PluginError::JsonError)
+        } else {
+            Err(PluginError::ExecutionError(
+                result
+                    .error()
+                    .unwrap_or("Unknown database error")
+                    .to_string(),
+            ))
+        }
+    }
+
+    /// Read a collection schema and parse it into a caller-provided type
+    pub fn get_collection_schema_as<T: serde::de::DeserializeOwned>(
+        collection: &str,
+    ) -> PluginResult<T> {
+        let result = Self::get_collection_schema(collection)?;
+        if result.is_success() {
+            result.parse_data().map_err(PluginError::JsonError)
+        } else {
+            Err(PluginError::ExecutionError(
+                result
+                    .error()
+                    .unwrap_or("Unknown database error")
+                    .to_string(),
+            ))
+        }
+    }
+
+    /// Check whether a collection exists and return a boolean
+    pub fn collection_exists_bool(collection: &str) -> PluginResult<bool> {
+        let result = Self::collection_exists(collection)?;
+        if result.is_success() {
+            result
+                .parse_data::<CollectionExists>()
+                .map(|response| response.exists)
+                .map_err(PluginError::JsonError)
+        } else {
+            Err(PluginError::ExecutionError(
+                result
+                    .error()
+                    .unwrap_or("Unknown database error")
+                    .to_string(),
+            ))
+        }
+    }
+
+    /// Read collection statistics and parse them into the SDK stats type
+    pub fn get_collection_stats_typed(collection: &str) -> PluginResult<CollectionStats> {
+        let result = Self::get_collection_stats(collection)?;
+        if result.is_success() {
+            result.parse_data().map_err(PluginError::JsonError)
+        } else {
+            Err(PluginError::ExecutionError(
+                result
+                    .error()
+                    .unwrap_or("Unknown database error")
+                    .to_string(),
+            ))
+        }
     }
 
     /// Create a typed record in a collection

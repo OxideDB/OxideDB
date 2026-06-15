@@ -274,6 +274,7 @@ pub async fn register_plugin(
         "BlockOperations",
         "AccessVfs",
         "HttpRequest",
+        "ManageCollections",
     ];
     let granted_sensitive: Vec<String> = final_capabilities
         .iter()

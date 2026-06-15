@@ -9,6 +9,8 @@
 
 // Re-export main SDK types
 pub use crate::{
+    CollectionExists,
+    CollectionStats,
     DatabaseResult,
     EventPayload,
     FileIdentifier,

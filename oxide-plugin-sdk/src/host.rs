@@ -59,6 +59,18 @@ extern "C" {
         record_id_ptr: *const u8,
         record_id_len: usize,
     ) -> i32;
+    fn create_collection(schema_ptr: *const u8, schema_len: usize) -> i32;
+    fn list_collections() -> i32;
+    fn get_collection_schema(collection_ptr: *const u8, collection_len: usize) -> i32;
+    fn update_collection_schema(
+        collection_ptr: *const u8,
+        collection_len: usize,
+        schema_ptr: *const u8,
+        schema_len: usize,
+    ) -> i32;
+    fn delete_collection(collection_ptr: *const u8, collection_len: usize) -> i32;
+    fn collection_exists(collection_ptr: *const u8, collection_len: usize) -> i32;
+    fn get_collection_stats(collection_ptr: *const u8, collection_len: usize) -> i32;
 
     // VFS functions
     fn vfs_write_file(
@@ -178,6 +190,46 @@ unsafe fn delete_record(
     _record_id_ptr: *const u8,
     _record_id_len: usize,
 ) -> i32 {
+    -1
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+unsafe fn create_collection(_schema_ptr: *const u8, _schema_len: usize) -> i32 {
+    -1
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+unsafe fn list_collections() -> i32 {
+    -1
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+unsafe fn get_collection_schema(_collection_ptr: *const u8, _collection_len: usize) -> i32 {
+    -1
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+unsafe fn update_collection_schema(
+    _collection_ptr: *const u8,
+    _collection_len: usize,
+    _schema_ptr: *const u8,
+    _schema_len: usize,
+) -> i32 {
+    -1
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+unsafe fn delete_collection(_collection_ptr: *const u8, _collection_len: usize) -> i32 {
+    -1
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+unsafe fn collection_exists(_collection_ptr: *const u8, _collection_len: usize) -> i32 {
+    -1
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+unsafe fn get_collection_stats(_collection_ptr: *const u8, _collection_len: usize) -> i32 {
     -1
 }
 
@@ -470,6 +522,134 @@ impl Host {
             } else {
                 Err(PluginError::HostCallFailed(
                     "Failed to delete record".to_string(),
+                ))
+            }
+        }
+    }
+
+    /// Create a collection from a serialized collection schema.
+    pub fn create_collection<T: serde::Serialize>(schema: &T) -> PluginResult<DatabaseResult> {
+        let schema_json = serde_json::to_string(schema)?;
+        let schema_bytes = schema_json.as_bytes();
+
+        unsafe {
+            let result = create_collection(schema_bytes.as_ptr(), schema_bytes.len());
+
+            if result == 0 {
+                Self::get_database_result()
+            } else {
+                Err(PluginError::HostCallFailed(
+                    "Failed to create collection".to_string(),
+                ))
+            }
+        }
+    }
+
+    /// List collection schemas visible to the plugin.
+    pub fn list_collections() -> PluginResult<DatabaseResult> {
+        unsafe {
+            let result = list_collections();
+
+            if result == 0 {
+                Self::get_database_result()
+            } else {
+                Err(PluginError::HostCallFailed(
+                    "Failed to list collections".to_string(),
+                ))
+            }
+        }
+    }
+
+    /// Read the schema for a collection.
+    pub fn get_collection_schema(collection: &str) -> PluginResult<DatabaseResult> {
+        let collection_bytes = collection.as_bytes();
+
+        unsafe {
+            let result = get_collection_schema(collection_bytes.as_ptr(), collection_bytes.len());
+
+            if result == 0 {
+                Self::get_database_result()
+            } else {
+                Err(PluginError::HostCallFailed(
+                    "Failed to get collection schema".to_string(),
+                ))
+            }
+        }
+    }
+
+    /// Update the schema for an existing collection.
+    pub fn update_collection_schema<T: serde::Serialize>(
+        collection: &str,
+        schema: &T,
+    ) -> PluginResult<DatabaseResult> {
+        let schema_json = serde_json::to_string(schema)?;
+        let collection_bytes = collection.as_bytes();
+        let schema_bytes = schema_json.as_bytes();
+
+        unsafe {
+            let result = update_collection_schema(
+                collection_bytes.as_ptr(),
+                collection_bytes.len(),
+                schema_bytes.as_ptr(),
+                schema_bytes.len(),
+            );
+
+            if result == 0 {
+                Self::get_database_result()
+            } else {
+                Err(PluginError::HostCallFailed(
+                    "Failed to update collection schema".to_string(),
+                ))
+            }
+        }
+    }
+
+    /// Delete a collection and its records.
+    pub fn delete_collection(collection: &str) -> PluginResult<DatabaseResult> {
+        let collection_bytes = collection.as_bytes();
+
+        unsafe {
+            let result = delete_collection(collection_bytes.as_ptr(), collection_bytes.len());
+
+            if result == 0 {
+                Self::get_database_result()
+            } else {
+                Err(PluginError::HostCallFailed(
+                    "Failed to delete collection".to_string(),
+                ))
+            }
+        }
+    }
+
+    /// Check whether a collection exists.
+    pub fn collection_exists(collection: &str) -> PluginResult<DatabaseResult> {
+        let collection_bytes = collection.as_bytes();
+
+        unsafe {
+            let result = collection_exists(collection_bytes.as_ptr(), collection_bytes.len());
+
+            if result == 0 {
+                Self::get_database_result()
+            } else {
+                Err(PluginError::HostCallFailed(
+                    "Failed to check collection existence".to_string(),
+                ))
+            }
+        }
+    }
+
+    /// Read collection statistics.
+    pub fn get_collection_stats(collection: &str) -> PluginResult<DatabaseResult> {
+        let collection_bytes = collection.as_bytes();
+
+        unsafe {
+            let result = get_collection_stats(collection_bytes.as_ptr(), collection_bytes.len());
+
+            if result == 0 {
+                Self::get_database_result()
+            } else {
+                Err(PluginError::HostCallFailed(
+                    "Failed to get collection stats".to_string(),
                 ))
             }
         }

@@ -144,6 +144,30 @@ impl PluginEventHandler for DatabasePlugin {
 export_plugin!(DatabasePlugin);
 ```
 
+Plugins with `ManageCollections` can create, list, read, update, delete, check,
+and inspect collection schemas through the same `Database` helper:
+
+```rust
+use oxide_plugin_sdk::prelude::*;
+
+fn inspect_collections() -> PluginResult<()> {
+    let schemas = Database::list_collections()?;
+    log_info!("Visible collection schemas: {:?}", schemas.data());
+
+    if Database::collection_exists_bool("tenant_posts")? {
+        let stats = Database::get_collection_stats_typed("tenant_posts")?;
+        log_info!("tenant_posts has {} records", stats.record_count);
+    }
+
+    Ok(())
+}
+```
+
+Grant collection management with a scoped capability, for example:
+`ManageCollections(collections=["tenant_*"], operations=["read", "list", "exists", "stats"])`.
+Schema-changing operations (`create`, `update`, `delete`) should only be granted
+to fully trusted plugins.
+
 ### VFS Operations
 
 Read, write, move, list, and delete files in namespaces granted to your plugin:

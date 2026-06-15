@@ -8,11 +8,13 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { useAuth } from '../hooks/useAuth';
+import { useSiteSettings } from '@/hooks/useSiteSettings';
 // import { apiService } from '../services/api';
 
 const Login: React.FC = () => {
   const navigate = useNavigate();
   const { login, authCollections, isAuthenticated, isLoading: isAuthLoading } = useAuth();
+  const { branding, settings } = useSiteSettings();
   const [formData, setFormData] = useState({
     collection: '',
     identifier: '',
@@ -41,6 +43,9 @@ const Login: React.FC = () => {
   }, [authCollections, formData.collection]);
 
   const selectedCollection = authCollections.find(c => c.name === formData.collection);
+  const siteTitle = branding.site_title?.trim() || 'OxideDB';
+  const siteDescription = branding.site_description?.trim() || 'Secure Database Administration';
+  const footerText = branding.footer_text?.trim() || `OxideDB v${settings?.system_info.oxidedb_version || '1.0.0'}`;
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const { name, value } = e.target;
@@ -99,12 +104,20 @@ const Login: React.FC = () => {
         <div className="text-center">
           <div className="flex justify-center mb-4">
             <div className="p-3 bg-primary/10 rounded-full">
-              <Database className="h-8 w-8 text-primary" />
+              {branding.logo_url ? (
+                <img
+                  src={branding.logo_url}
+                  alt={`${siteTitle} logo`}
+                  className="h-8 w-8 object-contain"
+                />
+              ) : (
+                <Database className="h-8 w-8 text-primary" />
+              )}
             </div>
           </div>
-          <h1 className="text-3xl font-bold text-foreground">OxideDB Admin</h1>
+          <h1 className="text-3xl font-bold text-foreground">{siteTitle} Admin</h1>
           <p className="text-muted-foreground mt-2">
-            Sign in to access the database administration panel
+            {siteDescription}
           </p>
         </div>
 
@@ -212,7 +225,7 @@ const Login: React.FC = () => {
 
         {/* Footer */}
         <div className="text-center text-sm text-muted-foreground">
-          <p>OxideDB v1.0.0 - Secure Database Administration</p>
+          <p>{footerText}</p>
         </div>
       </div>
     </div>

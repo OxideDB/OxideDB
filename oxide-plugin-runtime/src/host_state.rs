@@ -6,7 +6,7 @@
 use oxide_core::{
     auth::CrudOperation,
     plugin_api::{HttpRequestContext, RouteRegistration},
-    plugin_security::{PluginCapability, VfsOperation},
+    plugin_security::{CollectionOperation, PluginCapability, VfsOperation},
     VfsServiceBridge,
 };
 use oxide_logging::LogServiceBridge;
@@ -350,6 +350,42 @@ impl HostState {
                 capabilities
                     .iter()
                     .any(|capability| capability.allows_record_operation(operation, collection))
+            })
+            .unwrap_or(false)
+    }
+
+    /// Check whether the current plugin can manage a collection.
+    pub fn current_plugin_can_manage_collection(
+        &self,
+        operation: &CollectionOperation,
+        collection: &str,
+    ) -> bool {
+        self.current_plugin
+            .as_ref()
+            .and_then(|plugin_name| self.plugin_capabilities.get(plugin_name))
+            .map(|capabilities| {
+                capabilities
+                    .iter()
+                    .any(|capability| capability.allows_collection_operation(operation, collection))
+            })
+            .unwrap_or(false)
+    }
+
+    /// Check whether the current plugin has any collection management grant for an operation.
+    pub fn current_plugin_has_collection_management_operation(
+        &self,
+        operation: &CollectionOperation,
+    ) -> bool {
+        self.current_plugin
+            .as_ref()
+            .and_then(|plugin_name| self.plugin_capabilities.get(plugin_name))
+            .map(|capabilities| {
+                capabilities.iter().any(|capability| match capability {
+                    PluginCapability::ManageCollections { operations, .. } => {
+                        operations.contains(operation)
+                    }
+                    _ => false,
+                })
             })
             .unwrap_or(false)
     }
