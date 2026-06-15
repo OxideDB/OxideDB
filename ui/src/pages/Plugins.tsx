@@ -9,7 +9,6 @@ import { Label } from '../components/ui/label';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '../components/ui/dialog';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from '../components/ui/alert-dialog';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
 import { ScrollArea } from '../components/ui/scroll-area';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '../components/ui/dropdown-menu';
 import { toast } from '../components/ui/use-toast';
@@ -79,17 +78,6 @@ interface AuditEntry {
   metadata?: unknown;
 }
 
-interface PluginAnalysisResult {
-  is_valid: boolean;
-  plugin_info?: PluginInfo;
-  declared_capabilities: string[];
-  recommended_trust_level?: string;
-  security_info: PluginSecurityInfo;
-  size_bytes: number;
-  warnings: string[];
-  errors: string[];
-}
-
 interface PluginSecurityInfo {
   binary_hash: string;
   hash_algorithm: string;
@@ -103,6 +91,21 @@ interface PluginSecurityInfo {
   };
 }
 
+interface PluginInstallNotice {
+  severity: 'Info' | 'Warning';
+  message: string;
+}
+
+interface PluginInstallResult {
+  plugin_info: PluginInfo;
+  applied_trust_level: 'Untrusted' | 'PartiallyTrusted' | 'FullyTrusted' | 'System';
+  applied_capabilities: PluginCapability[];
+  declared_capabilities: string[];
+  security_info: PluginSecurityInfo;
+  size_bytes: number;
+  notices: PluginInstallNotice[];
+}
+
 const Plugins: React.FC = () => {
   const [plugins, setPlugins] = useState<PluginInfo[]>([]);
   const [selectedPlugin, setSelectedPlugin] = useState<PluginDetails | null>(null);
@@ -114,15 +117,10 @@ const Plugins: React.FC = () => {
 
   // Installation form state
   const [installForm, setInstallForm] = useState({
-    zipFile: null as File | null,
-    trustLevel: 'Untrusted' as string,
-    capabilities: [] as string[]
+    zipFile: null as File | null
   });
-
-  // Analysis state
-  const [analysisResult, setAnalysisResult] = useState<PluginAnalysisResult | null>(null);
-  const [analyzeDialogOpen, setAnalyzeDialogOpen] = useState(false);
-  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [installResult, setInstallResult] = useState<PluginInstallResult | null>(null);
+  const [isInstalling, setIsInstalling] = useState(false);
 
   useEffect(() => {
     fetchPlugins();
@@ -159,35 +157,6 @@ const Plugins: React.FC = () => {
     }
   };
 
-  const handleAnalyzePlugin = async () => {
-    if (!installForm.zipFile) {
-      toast({
-        title: "Validation Error",
-        description: "Please select a ZIP package to analyze",
-        variant: "destructive"
-      });
-      return;
-    }
-
-    setIsAnalyzing(true);
-
-    try {
-      const result = await apiService.analyzePlugin(installForm.zipFile);
-      setAnalysisResult(result);
-      setAnalyzeDialogOpen(true);
-    } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : 'Failed to analyze plugin';
-      toast({
-        title: "Analysis Failed",
-        description: errorMessage,
-        variant: "destructive"
-      });
-      console.error('Error analyzing plugin:', err);
-    } finally {
-      setIsAnalyzing(false);
-    }
-  };
-
   const handleInstallPlugin = async () => {
     if (!installForm.zipFile) {
       toast({
@@ -198,17 +167,15 @@ const Plugins: React.FC = () => {
       return;
     }
 
+    setIsInstalling(true);
+    setInstallResult(null);
+
     try {
-      await apiService.installPlugin(installForm.zipFile, installForm.trustLevel, installForm.capabilities);
+      const result = await apiService.installPlugin(installForm.zipFile);
+      setInstallResult(result);
       toast({
-        title: "Success",
-        description: "Plugin installed successfully"
-      });
-      setInstallDialogOpen(false);
-      setInstallForm({
-        zipFile: null,
-        trustLevel: 'Untrusted',
-        capabilities: []
+        title: "Plugin Installed",
+        description: `${result.plugin_info.name} installed with ${result.applied_trust_level} trust`
       });
       await fetchPlugins();
     } catch (err) {
@@ -219,6 +186,21 @@ const Plugins: React.FC = () => {
         variant: "destructive"
       });
       console.error('Error installing plugin:', err);
+    } finally {
+      setIsInstalling(false);
+    }
+  };
+
+  const resetInstallDialog = () => {
+    setInstallForm({ zipFile: null });
+    setInstallResult(null);
+    setIsInstalling(false);
+  };
+
+  const handleInstallDialogOpenChange = (open: boolean) => {
+    setInstallDialogOpen(open);
+    if (!open) {
+      resetInstallDialog();
     }
   };
 
@@ -336,88 +318,143 @@ const Plugins: React.FC = () => {
         />
       </div>
 
-      <Dialog open={installDialogOpen} onOpenChange={setInstallDialogOpen}>
+      <Dialog open={installDialogOpen} onOpenChange={handleInstallDialogOpenChange}>
         <DialogTrigger asChild>
           <Button className="w-full sm:w-auto">
             <Upload className="w-4 h-4 mr-2" />
             Install Plugin
           </Button>
         </DialogTrigger>
-        <DialogContent className="max-w-md">
+        <DialogContent className="max-w-2xl">
           <DialogHeader>
-            <DialogTitle>Install New Plugin</DialogTitle>
-            <DialogDescription>Upload a ZIP plugin package containing plugin.toml and WASM file</DialogDescription>
+            <DialogTitle>{installResult ? "Plugin Installed" : "Install New Plugin"}</DialogTitle>
+            <DialogDescription>
+              {installResult
+                ? "Review the trust scope and package notices from the automatic installation"
+                : "Upload a ZIP plugin package containing plugin.toml and WASM file"}
+            </DialogDescription>
           </DialogHeader>
           
-          <div className="space-y-4">
-            <div>
-              <Label htmlFor="zip-file">Plugin ZIP Package</Label>
-              <Input
-                id="zip-file"
-                type="file"
-                accept=".zip"
-                onChange={(e) => setInstallForm({ ...installForm, zipFile: e.target.files?.[0] || null })}
-              />
-              <p className="text-sm text-muted-foreground mt-1">
-                Select a ZIP package containing plugin.toml and WASM file
-              </p>
-            </div>
-            
-            <div>
-              <Label htmlFor="trust-level">Trust Level</Label>
-              <Select value={installForm.trustLevel} onValueChange={(value) => setInstallForm({ ...installForm, trustLevel: value })}>
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="Untrusted">Untrusted</SelectItem>
-                  <SelectItem value="PartiallyTrusted">Partially Trusted</SelectItem>
-                  <SelectItem value="FullyTrusted">Fully Trusted</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-            
-            <div>
-              <Label>Capabilities</Label>
-              <div className="border rounded-md p-3 max-h-32 overflow-y-auto">
-                {installForm.capabilities.length === 0 ? (
-                  <p className="text-sm text-muted-foreground">No capabilities specified. Use "Analyze Package" to detect required capabilities.</p>
-                ) : (
+          {installResult ? (
+            <div className="space-y-4">
+              <div className="rounded-md border p-4">
+                <div className="flex flex-wrap items-start gap-3">
+                  <CheckCircle className="h-5 w-5 text-green-600 mt-0.5" />
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <div className="font-medium truncate">{installResult.plugin_info.name}</div>
+                      <Badge variant="outline">v{installResult.plugin_info.version}</Badge>
+                      {getTrustLevelBadge(installResult.applied_trust_level)}
+                    </div>
+                    <div className="text-sm text-muted-foreground mt-1">
+                      by {installResult.plugin_info.author}
+                    </div>
+                    <p className="text-sm mt-2">{installResult.plugin_info.description}</p>
+                  </div>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-sm">
+                <div className="rounded-md border p-3">
+                  <div className="text-muted-foreground">Trust</div>
+                  <div className="font-medium mt-1">{installResult.applied_trust_level}</div>
+                </div>
+                <div className="rounded-md border p-3">
+                  <div className="text-muted-foreground">Signature</div>
+                  <div
+                    className={
+                      installResult.security_info.signature_valid
+                        ? "text-green-600 font-medium mt-1"
+                        : "text-yellow-600 font-medium mt-1"
+                    }
+                  >
+                    {installResult.security_info.signature_valid ? "Verified" : "Not verified"}
+                  </div>
+                </div>
+                <div className="rounded-md border p-3">
+                  <div className="text-muted-foreground">Package</div>
+                  <div className="font-medium mt-1">{formatBytes(installResult.size_bytes)}</div>
+                </div>
+              </div>
+
+              <div>
+                <Label>Applied Capabilities</Label>
+                <ScrollArea className="mt-2 max-h-28 rounded-md border p-3">
                   <div className="flex flex-wrap gap-1">
-                    {installForm.capabilities.map((cap, index) => (
-                      <Badge key={index} variant="outline" className="text-xs">
-                        {cap}
-                      </Badge>
+                    {installResult.applied_capabilities.length === 0 ? (
+                      <span className="text-sm text-muted-foreground">No capabilities requested</span>
+                    ) : (
+                      installResult.applied_capabilities.map((capability, index) => (
+                        <Badge key={index} variant="outline" className="text-xs">
+                          {formatCapability(capability)}
+                        </Badge>
+                      ))
+                    )}
+                  </div>
+                </ScrollArea>
+              </div>
+
+              {installResult.notices.length > 0 && (
+                <div>
+                  <Label>Notices</Label>
+                  <div className="mt-2 space-y-2">
+                    {installResult.notices.map((notice, index) => (
+                      <div key={index} className="flex gap-2 rounded-md border p-3 text-sm">
+                        {notice.severity === 'Warning' ? (
+                          <AlertTriangle className="h-4 w-4 text-yellow-600 mt-0.5 flex-shrink-0" />
+                        ) : (
+                          <CheckCircle className="h-4 w-4 text-green-600 mt-0.5 flex-shrink-0" />
+                        )}
+                        <span>{notice.message}</span>
+                      </div>
                     ))}
                   </div>
-                )}
+                </div>
+              )}
+
+              <Button onClick={() => handleInstallDialogOpenChange(false)} className="w-full">
+                Done
+              </Button>
+            </div>
+          ) : (
+            <div className="space-y-4">
+              <div>
+                <Label htmlFor="zip-file">Plugin ZIP Package</Label>
+                <Input
+                  id="zip-file"
+                  type="file"
+                  accept=".zip"
+                  onChange={(e) => setInstallForm({ zipFile: e.target.files?.[0] || null })}
+                />
+                <p className="text-sm text-muted-foreground mt-1">
+                  Trust and capabilities are applied from the package manifest during install.
+                </p>
               </div>
-              <p className="text-sm text-muted-foreground mt-1">
-                Capabilities will be auto-detected from the plugin manifest or can be customized after analysis.
-              </p>
-            </div>
-            
-            <div className="flex gap-2">
-              <Button 
-                onClick={handleAnalyzePlugin} 
-                variant="outline" 
-                disabled={!installForm.zipFile || isAnalyzing}
-                className="flex-1"
-              >
-                {isAnalyzing ? "Analyzing..." : "Analyze Package"}
+
+              <div className="flex gap-2">
+                <Button 
+                  onClick={handleInstallPlugin} 
+                  disabled={!installForm.zipFile || isInstalling}
+                  className="flex-1"
+                >
+                  {isInstalling ? (
+                    <>
+                      <Activity className="w-4 h-4 mr-2 animate-spin" />
+                      Installing...
+                    </>
+                  ) : (
+                    <>
+                      <Upload className="w-4 h-4 mr-2" />
+                      Install
+                    </>
+                  )}
+                </Button>
+              </div>
+              <Button variant="ghost" onClick={() => handleInstallDialogOpenChange(false)} className="w-full">
+                Cancel
               </Button>
-              <Button 
-                onClick={handleInstallPlugin} 
-                disabled={!installForm.zipFile}
-                className="flex-1"
-              >
-                Install
-              </Button>
             </div>
-            <Button variant="ghost" onClick={() => setInstallDialogOpen(false)} className="w-full">
-              Cancel
-            </Button>
-          </div>
+          )}
         </DialogContent>
       </Dialog>
     </>
@@ -751,172 +788,6 @@ const Plugins: React.FC = () => {
                   </div>
                 </TabsContent>
               </Tabs>
-            </>
-          )}
-        </DialogContent>
-      </Dialog>
-
-      {/* Plugin Analysis Result Dialog */}
-      <Dialog open={analyzeDialogOpen} onOpenChange={setAnalyzeDialogOpen}>
-        <DialogContent className="max-w-2xl max-h-[80vh]">
-          {analysisResult && (
-            <>
-              <DialogHeader>
-                <DialogTitle className="flex items-center gap-2">
-                  Plugin Analysis Results
-                  {analysisResult.is_valid ? (
-                    <CheckCircle className="w-5 h-5 text-green-500" />
-                  ) : (
-                    <XCircle className="w-5 h-5 text-red-500" />
-                  )}
-                </DialogTitle>
-                <DialogDescription>
-                  Security and compatibility analysis for the plugin package
-                </DialogDescription>
-              </DialogHeader>
-              
-              <ScrollArea className="max-h-96">
-                <div className="space-y-4">
-                  {/* Plugin Info */}
-                  {analysisResult.plugin_info && (
-                    <Card>
-                      <CardHeader className="pb-2">
-                        <CardTitle className="text-sm">Plugin Information</CardTitle>
-                      </CardHeader>
-                      <CardContent className="space-y-2">
-                        <div className="grid grid-cols-2 gap-2 text-sm">
-                          <div><strong>Name:</strong> {analysisResult.plugin_info.name}</div>
-                          <div><strong>Version:</strong> {analysisResult.plugin_info.version}</div>
-                          <div><strong>Author:</strong> {analysisResult.plugin_info.author}</div>
-                          <div><strong>Size:</strong> {formatBytes(analysisResult.size_bytes)}</div>
-                        </div>
-                        <div className="text-sm">
-                          <strong>Description:</strong> {analysisResult.plugin_info.description}
-                        </div>
-                      </CardContent>
-                    </Card>
-                  )}
-
-                  {/* Security Information */}
-                  <Card>
-                    <CardHeader className="pb-2">
-                      <CardTitle className="text-sm flex items-center">
-                        <Shield className="w-4 h-4 mr-2" />
-                        Security Information
-                      </CardTitle>
-                    </CardHeader>
-                    <CardContent className="space-y-2">
-                      <div className="grid grid-cols-2 gap-2 text-sm">
-                        <div className="flex items-center">
-                          <strong>Signature:</strong>
-                          <span className={`ml-2 ${analysisResult.security_info.signature_valid ? 'text-green-600' : 'text-yellow-600'}`}>
-                            {analysisResult.security_info.signature_valid ? 'Valid' : 'Not verified'}
-                          </span>
-                        </div>
-                        <div>
-                          <strong>Hash:</strong> 
-                          <code className="ml-2 text-xs">{analysisResult.security_info.binary_hash.slice(0, 16)}...</code>
-                        </div>
-                      </div>
-                      
-                      {analysisResult.security_info.security_advisories.length > 0 && (
-                        <div>
-                          <strong>Security Advisories:</strong>
-                          <ul className="list-disc list-inside text-sm text-yellow-600">
-                            {analysisResult.security_info.security_advisories.map((advisory, idx) => (
-                              <li key={idx}>{advisory}</li>
-                            ))}
-                          </ul>
-                        </div>
-                      )}
-                    </CardContent>
-                  </Card>
-
-                  {/* Capabilities */}
-                  <Card>
-                    <CardHeader className="pb-2">
-                      <CardTitle className="text-sm">Declared Capabilities</CardTitle>
-                    </CardHeader>
-                    <CardContent>
-                      <div className="flex flex-wrap gap-1">
-                        {analysisResult.declared_capabilities.map((cap, idx) => (
-                          <Badge key={idx} variant="outline" className="text-xs">
-                            {cap}
-                          </Badge>
-                        ))}
-                      </div>
-                      {analysisResult.recommended_trust_level && (
-                        <div className="mt-2 text-sm">
-                          <strong>Recommended Trust Level:</strong> 
-                          <Badge className="ml-2" variant="secondary">
-                            {analysisResult.recommended_trust_level}
-                          </Badge>
-                        </div>
-                      )}
-                    </CardContent>
-                  </Card>
-
-                  {/* Warnings and Errors */}
-                  {(analysisResult.warnings.length > 0 || analysisResult.errors.length > 0) && (
-                    <Card>
-                      <CardHeader className="pb-2">
-                        <CardTitle className="text-sm flex items-center">
-                          <AlertTriangle className="w-4 h-4 mr-2" />
-                          Issues Found
-                        </CardTitle>
-                      </CardHeader>
-                      <CardContent className="space-y-2">
-                        {analysisResult.errors.length > 0 && (
-                          <div>
-                            <strong className="text-red-600">Errors:</strong>
-                            <ul className="list-disc list-inside text-sm text-red-600">
-                              {analysisResult.errors.map((error, idx) => (
-                                <li key={idx}>{error}</li>
-                              ))}
-                            </ul>
-                          </div>
-                        )}
-                        {analysisResult.warnings.length > 0 && (
-                          <div>
-                            <strong className="text-yellow-600">Warnings:</strong>
-                            <ul className="list-disc list-inside text-sm text-yellow-600">
-                              {analysisResult.warnings.map((warning, idx) => (
-                                <li key={idx}>{warning}</li>
-                              ))}
-                            </ul>
-                          </div>
-                        )}
-                      </CardContent>
-                    </Card>
-                  )}
-                </div>
-              </ScrollArea>
-              
-              <div className="flex gap-2 pt-4">
-                <Button
-                  onClick={() => {
-                    setAnalyzeDialogOpen(false);
-                    if (analysisResult.is_valid && analysisResult.plugin_info) {
-                      // Pre-fill installation form with analysis results
-                      if (analysisResult.recommended_trust_level) {
-                        setInstallForm(prev => ({
-                          ...prev,
-                          trustLevel: analysisResult.recommended_trust_level!,
-                          capabilities: analysisResult.declared_capabilities || []
-                        }));
-                      }
-                      setInstallDialogOpen(true);
-                    }
-                  }}
-                  disabled={!analysisResult.is_valid}
-                  className="flex-1"
-                >
-                  Proceed to Install
-                </Button>
-                <Button variant="outline" onClick={() => setAnalyzeDialogOpen(false)} className="flex-1">
-                  Close
-                </Button>
-              </div>
             </>
           )}
         </DialogContent>

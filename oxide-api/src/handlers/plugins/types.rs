@@ -271,3 +271,40 @@ pub struct PluginSecurityInfo {
     pub security_advisories: Vec<String>,
     pub audit_info: Option<oxide_plugin_sdk::PluginAuditInfo>,
 }
+
+/// Result returned after a plugin package is installed.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PluginInstallResult {
+    /// Installed plugin information.
+    pub plugin_info: PluginInfo,
+    /// Trust level applied from the package manifest after policy validation.
+    pub applied_trust_level: PluginTrustLevel,
+    /// Capabilities applied from the package manifest.
+    pub applied_capabilities: Vec<PluginCapability>,
+    /// Raw capability declarations read from the package manifest.
+    pub declared_capabilities: Vec<String>,
+    /// Security information calculated during package validation.
+    pub security_info: PluginSecurityInfo,
+    /// Package size in bytes.
+    pub size_bytes: u64,
+    /// Notices the user should review after automatic installation.
+    pub notices: Vec<PluginInstallNotice>,
+}
+
+/// A notice produced during automatic plugin installation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PluginInstallNotice {
+    /// Severity of the notice.
+    pub severity: PluginInstallNoticeSeverity,
+    /// Human-readable notice text.
+    pub message: String,
+}
+
+/// Severity for an automatic plugin installation notice.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum PluginInstallNoticeSeverity {
+    /// Informational notice.
+    Info,
+    /// Warning that should be reviewed by the installer.
+    Warning,
+}

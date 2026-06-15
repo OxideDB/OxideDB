@@ -14,7 +14,6 @@ import type {
   BackupQueryOptions, BackupRestoreRequest, BackupRestoreResponse,
   PluginAdminPage, PluginCapability
 } from '../types/api';
-import { capabilityNameToObject } from '../types/api';
 
 // Plugin-related interfaces
 interface PluginInfo {
@@ -83,6 +82,21 @@ interface PluginSecurityInfo {
     report_url?: string;
     status: string;
   };
+}
+
+interface PluginInstallNotice {
+  severity: 'Info' | 'Warning';
+  message: string;
+}
+
+interface PluginInstallResult {
+  plugin_info: PluginInfo;
+  applied_trust_level: 'Untrusted' | 'PartiallyTrusted' | 'FullyTrusted' | 'System';
+  applied_capabilities: PluginCapability[];
+  declared_capabilities: string[];
+  security_info: PluginSecurityInfo;
+  size_bytes: number;
+  notices: PluginInstallNotice[];
 }
 
 // Import PaginatedResponse from generated bindings
@@ -811,21 +825,9 @@ class ApiService {
     return result.data;
   }
 
-  async installPlugin(pluginFile: File, trustLevel: string, capabilities: string[]): Promise<void> {
-    // Convert capability names to proper capability objects
-    const capabilityObjects = capabilities.map(capName => {
-      try {
-        return capabilityNameToObject(capName);
-      } catch (error) {
-        console.error(`Failed to convert capability '${capName}':`, error);
-        throw new Error(`Invalid capability: ${capName}`);
-      }
-    });
-
+  async installPlugin(pluginFile: File): Promise<PluginInstallResult> {
     const formData = new FormData();
     formData.append('plugin_package', pluginFile);
-    formData.append('trust_level', trustLevel);
-    formData.append('capabilities', JSON.stringify(capabilityObjects));
 
     const response = await fetch(`${this.baseUrl}/plugins`, {
       method: 'POST',
@@ -837,6 +839,9 @@ class ApiService {
     if (!response.ok) {
       throw new Error(await this.fetchErrorMessage(response));
     }
+
+    const result = await response.json();
+    return result.data;
   }
 
   async enablePlugin(pluginName: string): Promise<void> {

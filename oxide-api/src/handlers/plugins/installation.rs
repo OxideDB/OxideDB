@@ -9,7 +9,7 @@ use base64::{
     Engine as _,
 };
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::convert::TryInto;
 use std::io::{Cursor, Read};
 use std::path::{Component, Path, PathBuf};
@@ -24,6 +24,7 @@ use super::{
     capabilities::{
         capability_satisfies, is_capability_allowed_for_trust_level,
         minimum_trust_level_for_capabilities, parse_capability_strings, parse_trust_level_string,
+        trust_level_rank,
     },
     types::*,
 };
@@ -50,7 +51,7 @@ pub async fn register_plugin(
     authenticated_user: AuthenticatedUser,
     State(state): State<AppState>,
     mut multipart: Multipart,
-) -> Result<Json<ApiResponse<PluginInfo>>, ApiError> {
+) -> Result<Json<ApiResponse<PluginInstallResult>>, ApiError> {
     super::ensure_plugin_superuser(&authenticated_user, "install plugins")?;
 
     debug!("🔌 Starting plugin registration from ZIP package");
@@ -61,8 +62,6 @@ pub async fn register_plugin(
         .ok_or_else(|| ApiError::internal("Plugin system not available".to_string()))?;
 
     let mut package_data: Option<Vec<u8>> = None;
-    let mut user_trust_level = PluginTrustLevel::Untrusted;
-    let mut user_capabilities: Vec<PluginCapability> = Vec::new();
 
     // Parse multipart form data
     debug!("🔌 Parsing multipart form data");
@@ -94,36 +93,12 @@ pub async fn register_plugin(
                     debug!("🔌 Package size: {} bytes", data.len());
                 }
             }
-            "trust_level" => {
-                let trust_str = field.text().await.map_err(|e| {
-                    error!("Error reading trust_level field: {}", e);
-                    ApiError::bad_request(format!("Invalid trust level: {}", e))
-                })?;
-                debug!("🔌 Trust level string: {}", trust_str);
-                user_trust_level =
-                    serde_json::from_str(&format!("\"{}\"", trust_str)).map_err(|e| {
-                        error!("Error parsing trust level '{}': {}", trust_str, e);
-                        ApiError::bad_request(format!("Invalid trust level format: {}", e))
-                    })?;
-                debug!("🔌 Trust level: {:?}", user_trust_level);
-            }
-            "capabilities" => {
-                let caps_str = field.text().await.map_err(|e| {
-                    error!("Error reading capabilities field: {}", e);
-                    ApiError::bad_request(format!("Invalid capabilities: {}", e))
-                })?;
-                debug!("🔌 Capabilities string: {}", caps_str);
-
-                // Parse as full PluginCapability objects
-                user_capabilities = serde_json::from_str(&caps_str)
-                    .map_err(|e| {
-                        error!("Error parsing capabilities '{}': {}", caps_str, e);
-                        ApiError::bad_request(format!(
-                            "Invalid capabilities format: {}. Expected an array of capability objects with proper structure.",
-                            e
-                        ))
-                    })?;
-                debug!("🔌 Capabilities: {:?}", user_capabilities);
+            "trust_level" | "capabilities" => {
+                debug!(
+                    "🔌 Ignoring legacy manual installation field '{}' for automatic package-scoped install",
+                    field_name
+                );
+                let _ = field.bytes().await;
             }
             _ => {
                 debug!("🔌 Skipping unknown field: {}", field_name);
@@ -176,21 +151,10 @@ pub async fn register_plugin(
         );
     }
 
-    // Parse declared capabilities from manifest
-    let declared_capabilities: Vec<PluginCapability> =
-        parse_capability_strings(&package.manifest.security.required_capabilities)?;
-
-    // Parse recommended trust level from manifest (for future use)
-    let _recommended_trust_level =
-        parse_trust_level_string(&package.manifest.security.recommended_trust_level)
-            .unwrap_or(PluginTrustLevel::Untrusted);
-
-    // If user didn't specify capabilities, use declared ones (but still require explicit trust)
-    let final_capabilities = if user_capabilities.is_empty() {
-        declared_capabilities.clone()
-    } else {
-        user_capabilities
-    };
+    let install_scope = resolve_install_scope(&package.manifest, signature_valid)?;
+    let declared_capabilities = install_scope.capabilities.clone();
+    let final_capabilities = install_scope.capabilities.clone();
+    let applied_trust_level = install_scope.trust_level.clone();
 
     record_plugin_audit_event(
         &state,
@@ -200,12 +164,17 @@ pub async fn register_plugin(
         serde_json::json!({
             "source": "zip_package",
             "version": plugin_version,
-            "trust_level": user_trust_level,
+            "trust_level": applied_trust_level,
             "requested_capabilities": final_capabilities,
             "declared_capabilities": declared_capabilities,
+            "declared_capability_strings": package.manifest.security.required_capabilities,
+            "manifest_recommended_trust_level": install_scope.manifest_recommended_trust_level,
+            "minimum_trust_level": install_scope.minimum_trust_level,
+            "automatic_scope": true,
             "signature_verified": signature_valid,
             "package_hash": package.package_hash,
             "package_size": package.package_size,
+            "notices": install_scope.notices,
         }),
     )
     .await;
@@ -242,7 +211,9 @@ pub async fn register_plugin(
 
     let disallowed_capabilities: Vec<&PluginCapability> = final_capabilities
         .iter()
-        .filter(|capability| !is_capability_allowed_for_trust_level(&user_trust_level, capability))
+        .filter(|capability| {
+            !is_capability_allowed_for_trust_level(&applied_trust_level, capability)
+        })
         .collect();
 
     if !disallowed_capabilities.is_empty() {
@@ -256,7 +227,7 @@ pub async fn register_plugin(
                 "source": "zip_package",
                 "version": plugin_version,
                 "reason": "capability_not_allowed_for_trust_level",
-                "trust_level": user_trust_level,
+                "trust_level": applied_trust_level,
                 "minimum_trust_level": minimum_trust_level,
                 "disallowed_capabilities": disallowed_capabilities,
             }),
@@ -264,7 +235,7 @@ pub async fn register_plugin(
         .await;
         return Err(ApiError::bad_request(format!(
             "Trust level {:?} does not allow capabilities {:?}. Use at least {:?} for plugin '{}'.",
-            user_trust_level, disallowed_capabilities, minimum_trust_level, plugin_name
+            applied_trust_level, disallowed_capabilities, minimum_trust_level, plugin_name
         )));
     }
 
@@ -302,7 +273,7 @@ pub async fn register_plugin(
             plugin_version.clone(),
             package.manifest.plugin.description.clone(),
             package.manifest.plugin.author.clone(),
-            user_trust_level.clone(),
+            applied_trust_level.clone(),
             final_capabilities.clone(),
             ResourceLimits::default(),
             package.extraction_path.clone(),
@@ -312,6 +283,10 @@ pub async fn register_plugin(
                 "package_size": package.package_size,
                 "signature_verified": signature_valid,
                 "manifest": package.manifest,
+                "automatic_scope": true,
+                "applied_trust_level": applied_trust_level,
+                "minimum_trust_level": install_scope.minimum_trust_level,
+                "install_notices": install_scope.notices,
                 "source": "zip_package",
                 "extraction_path": package.extraction_path.display().to_string()
             })),
@@ -421,11 +396,13 @@ pub async fn register_plugin(
         serde_json::json!({
             "source": "zip_package",
             "version": plugin_version,
-            "trust_level": user_trust_level,
+            "trust_level": applied_trust_level,
             "capabilities": final_capabilities,
+            "automatic_scope": true,
             "signature_verified": signature_valid,
             "package_hash": package.package_hash,
             "package_size": package.package_size,
+            "notices": install_scope.notices,
         }),
     )
     .await;
@@ -436,11 +413,11 @@ pub async fn register_plugin(
     let plugin_info = PluginInfo {
         name: plugin_name.clone(),
         status: PluginStatus::Enabled,
-        version: plugin_version,
+        version: plugin_version.clone(),
         description: package.manifest.plugin.description.clone(),
         author: package.manifest.plugin.author.clone(),
-        capabilities: final_capabilities,
-        trust_level: user_trust_level,
+        capabilities: final_capabilities.clone(),
+        trust_level: applied_trust_level.clone(),
         routes: vec![], // Routes will be populated by the runtime
         admin_pages,
         executions: 0,
@@ -449,7 +426,211 @@ pub async fn register_plugin(
         resource_usage: ResourceUsageInfo::default(),
     };
 
-    Ok(Json(ApiResponse::success(plugin_info)))
+    let install_result = PluginInstallResult {
+        plugin_info,
+        applied_trust_level,
+        applied_capabilities: final_capabilities,
+        declared_capabilities: package.manifest.security.required_capabilities.clone(),
+        security_info: package_security_info(&package, signature_valid),
+        size_bytes: package.package_size,
+        notices: install_scope.notices,
+    };
+
+    Ok(Json(ApiResponse::success(install_result)))
+}
+
+#[derive(Debug, Clone)]
+struct PluginInstallScope {
+    capabilities: Vec<PluginCapability>,
+    trust_level: PluginTrustLevel,
+    manifest_recommended_trust_level: String,
+    minimum_trust_level: PluginTrustLevel,
+    notices: Vec<PluginInstallNotice>,
+}
+
+fn resolve_install_scope(
+    manifest: &PluginManifest,
+    signature_valid: bool,
+) -> Result<PluginInstallScope, ApiError> {
+    let capabilities = parse_capability_strings(&manifest.security.required_capabilities)?;
+    let minimum_trust_level = minimum_trust_level_for_capabilities(&capabilities);
+    let manifest_recommended_trust_level = manifest.security.recommended_trust_level.clone();
+    let mut notices = Vec::new();
+
+    let trust_level = match parse_trust_level_string(&manifest_recommended_trust_level) {
+        Ok(PluginTrustLevel::System) => {
+            notices.push(install_notice(
+                PluginInstallNoticeSeverity::Warning,
+                "Package requested System trust; installing with FullyTrusted because System trust cannot be granted from a package manifest.",
+            ));
+            PluginTrustLevel::FullyTrusted
+        }
+        Ok(manifest_trust_level) => {
+            if trust_level_rank(&manifest_trust_level) < trust_level_rank(&minimum_trust_level) {
+                notices.push(install_notice(
+                    PluginInstallNoticeSeverity::Warning,
+                    format!(
+                        "Package recommends {:?}, but its declared capabilities require at least {:?}; installing with {:?}.",
+                        manifest_trust_level, minimum_trust_level, minimum_trust_level
+                    ),
+                ));
+                minimum_trust_level.clone()
+            } else {
+                if trust_level_rank(&manifest_trust_level) > trust_level_rank(&minimum_trust_level)
+                {
+                    notices.push(install_notice(
+                        PluginInstallNoticeSeverity::Warning,
+                        format!(
+                            "Package requested {:?} trust even though the declared capabilities require only {:?}; review the package source if this was unexpected.",
+                            manifest_trust_level, minimum_trust_level
+                        ),
+                    ));
+                }
+                manifest_trust_level
+            }
+        }
+        Err(error) => {
+            notices.push(install_notice(
+                PluginInstallNoticeSeverity::Warning,
+                format!(
+                    "Package recommended trust level '{}' could not be parsed ({}); installing with {:?}.",
+                    manifest_recommended_trust_level, error, minimum_trust_level
+                ),
+            ));
+            minimum_trust_level.clone()
+        }
+    };
+
+    notices.push(install_notice(
+        PluginInstallNoticeSeverity::Info,
+        format!(
+            "Installed using package-declared scope: {:?} trust with {} capabilit{}.",
+            trust_level,
+            capabilities.len(),
+            if capabilities.len() == 1 { "y" } else { "ies" }
+        ),
+    ));
+
+    if signature_valid {
+        notices.push(install_notice(
+            PluginInstallNoticeSeverity::Info,
+            "Package signature was verified against a trusted key.",
+        ));
+    } else {
+        notices.push(install_notice(
+            PluginInstallNoticeSeverity::Warning,
+            "Package signature was not verified. Install only packages from sources you trust.",
+        ));
+    }
+
+    let sensitive_capabilities = sensitive_capability_names(&capabilities);
+    if !sensitive_capabilities.is_empty() {
+        notices.push(install_notice(
+            PluginInstallNoticeSeverity::Warning,
+            format!(
+                "Package requests sensitive capabilities: {}.",
+                sensitive_capabilities.join(", ")
+            ),
+        ));
+    }
+
+    if let Some(advisories) = &manifest.security.security_advisories {
+        if !advisories.is_empty() {
+            notices.push(install_notice(
+                PluginInstallNoticeSeverity::Warning,
+                format!(
+                    "Package lists security advisories: {}.",
+                    advisories.join("; ")
+                ),
+            ));
+        }
+    }
+
+    if let Some(audit_info) = &manifest.security.audit_info {
+        if !audit_info.status.eq_ignore_ascii_case("passed") {
+            notices.push(install_notice(
+                PluginInstallNoticeSeverity::Warning,
+                format!(
+                    "Package audit status is '{}' from {}.",
+                    audit_info.status, audit_info.auditor
+                ),
+            ));
+        }
+    }
+
+    if let Some(admin) = &manifest.admin {
+        if !admin.pages.is_empty() {
+            notices.push(install_notice(
+                PluginInstallNoticeSeverity::Info,
+                format!(
+                    "Package adds {} admin page{} to the console.",
+                    admin.pages.len(),
+                    if admin.pages.len() == 1 { "" } else { "s" }
+                ),
+            ));
+        }
+    }
+
+    Ok(PluginInstallScope {
+        capabilities,
+        trust_level,
+        manifest_recommended_trust_level,
+        minimum_trust_level,
+        notices,
+    })
+}
+
+fn install_notice(
+    severity: PluginInstallNoticeSeverity,
+    message: impl Into<String>,
+) -> PluginInstallNotice {
+    PluginInstallNotice {
+        severity,
+        message: message.into(),
+    }
+}
+
+fn sensitive_capability_names(capabilities: &[PluginCapability]) -> Vec<String> {
+    let names: BTreeSet<&'static str> = capabilities
+        .iter()
+        .filter_map(|capability| match capability {
+            PluginCapability::ModifyEventData => Some("modify event data"),
+            PluginCapability::BlockOperations => Some("block database operations"),
+            PluginCapability::HttpRequest { .. } => Some("make outbound HTTP requests"),
+            PluginCapability::ScheduleTasks => Some("schedule tasks"),
+            PluginCapability::AccessVfs { .. } => Some("access VFS files"),
+            PluginCapability::RegisterHttpRoutes { .. } => Some("register HTTP routes"),
+            PluginCapability::HandleHttpRequests => Some("handle HTTP requests"),
+            PluginCapability::UpdateRecords { .. } => Some("update records"),
+            PluginCapability::DeleteRecords { .. } => Some("delete records"),
+            PluginCapability::ManageCollections { .. } => Some("manage collections"),
+            _ => None,
+        })
+        .collect();
+
+    names.into_iter().map(ToOwned::to_owned).collect()
+}
+
+fn package_security_info(package: &PluginPackage, signature_valid: bool) -> PluginSecurityInfo {
+    PluginSecurityInfo {
+        binary_hash: package.package_hash.clone(),
+        hash_algorithm: "SHA-256".to_string(),
+        signature_valid,
+        security_advisories: package
+            .manifest
+            .security
+            .security_advisories
+            .clone()
+            .unwrap_or_default(),
+        audit_info: package.manifest.security.audit_info.clone().map(|audit| {
+            oxide_plugin_sdk::PluginAuditInfo {
+                audit_date: audit.audit_date,
+                auditor: audit.auditor,
+                report_url: audit.report_url,
+                status: audit.status,
+            }
+        }),
+    }
 }
 
 /// Extract and validate a plugin package from ZIP data
@@ -1203,6 +1384,36 @@ recommended_trust_level = "Untrusted"
             package_size: 128,
             extraction_path: PathBuf::from("test"),
         }
+    }
+
+    #[test]
+    fn automatic_scope_raises_trust_to_capability_minimum() {
+        let mut package = test_plugin_package();
+        package.manifest.security.required_capabilities =
+            vec![r#"DeleteRecords(collections=["posts"])"#.to_string()];
+        package.manifest.security.recommended_trust_level = "Untrusted".to_string();
+
+        let scope = resolve_install_scope(&package.manifest, false).unwrap();
+
+        assert_eq!(scope.trust_level, PluginTrustLevel::FullyTrusted);
+        assert!(scope.notices.iter().any(|notice| {
+            matches!(notice.severity, PluginInstallNoticeSeverity::Warning)
+                && notice.message.contains("require at least FullyTrusted")
+        }));
+    }
+
+    #[test]
+    fn automatic_scope_does_not_grant_system_trust_from_package() {
+        let mut package = test_plugin_package();
+        package.manifest.security.recommended_trust_level = "System".to_string();
+
+        let scope = resolve_install_scope(&package.manifest, true).unwrap();
+
+        assert_eq!(scope.trust_level, PluginTrustLevel::FullyTrusted);
+        assert!(scope.notices.iter().any(|notice| {
+            matches!(notice.severity, PluginInstallNoticeSeverity::Warning)
+                && notice.message.contains("System trust")
+        }));
     }
 
     #[test]
