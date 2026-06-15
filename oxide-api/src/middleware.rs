@@ -18,7 +18,9 @@ use axum::{
     response::Response,
 };
 use oxide_core::{
+    auth::UserRole,
     logging::{ApplicationLogger, LogContext, LogLevel, SecurityAuditor},
+    site_settings::{GeneralSettings, MaintenanceSettings, SecuritySettings},
     AuthService, BeforeEventContext, BeforeEventType, Claims,
 };
 use std::{
@@ -105,7 +107,7 @@ impl RateLimiter {
 
         if entry.request_count >= max_requests {
             return Err(ApiError::Core(oxide_core::AppError::rate_limit(format!(
-                "Too many authentication requests; retry after {} seconds",
+                "Too many requests; retry after {} seconds",
                 window.as_secs()
             ))));
         }
@@ -121,18 +123,45 @@ pub async fn auth_rate_limit_middleware(
     request: Request,
     next: Next,
 ) -> Result<Response, ApiError> {
-    if let Some(limit) = auth_endpoint_rate_limit(request.method(), request.uri().path()) {
-        let client_ip = extract_client_ip(request.headers());
+    let settings = state.runtime_settings.current().await;
+    let method = request.method().clone();
+    let path = request.uri().path().to_string();
+    let headers = request.headers().clone();
+
+    if should_apply_general_api_rate_limit(&path) {
+        let key = general_api_rate_limit_key(&headers, &state.auth_service);
+        state.rate_limiter.check(
+            key,
+            settings.general.api_rate_limit.max(1),
+            Duration::from_secs(60),
+        )?;
+    }
+
+    if let Some((limit, window)) = auth_endpoint_rate_limit(&method, &path, &settings.security) {
+        let client_ip = extract_client_ip(&headers);
         let key = format!(
             "{}:{}:{}",
-            request.method(),
-            auth_rate_limit_path_key(request.uri().path()),
+            method,
+            auth_rate_limit_path_key(&path),
             client_ip
         );
-        state
-            .rate_limiter
-            .check(key, limit, Duration::from_secs(60))?;
+        state.rate_limiter.check(key, limit, window)?;
     }
+
+    Ok(next.run(request).await)
+}
+
+/// Apply runtime site settings that affect every request.
+pub async fn runtime_settings_middleware(
+    State(state): State<AppState>,
+    request: Request,
+    next: Next,
+) -> Result<Response, ApiError> {
+    let settings = state.runtime_settings.current().await;
+
+    enforce_max_upload_size(&request, &settings.general)?;
+    enforce_session_timeout(&state, &request, &settings.security)?;
+    enforce_maintenance_mode(&state, &request, &settings.general.maintenance)?;
 
     Ok(next.run(request).await)
 }
@@ -146,6 +175,79 @@ pub async fn require_https_middleware(request: Request, next: Next) -> Result<Re
     Err(ApiError::forbidden(
         "HTTPS is required for this deployment".to_string(),
     ))
+}
+
+fn enforce_max_upload_size(request: &Request, general: &GeneralSettings) -> Result<(), ApiError> {
+    if !request_method_can_have_body(request.method()) {
+        return Ok(());
+    }
+
+    let Some(content_length) = request.headers().get(header::CONTENT_LENGTH) else {
+        return Ok(());
+    };
+
+    let content_length = content_length.to_str().map_err(|_| {
+        ApiError::bad_request("Content-Length header must be valid ASCII".to_string())
+    })?;
+    let content_length = content_length.parse::<u64>().map_err(|_| {
+        ApiError::bad_request("Content-Length header must be a valid byte count".to_string())
+    })?;
+
+    if content_length > general.max_upload_size {
+        return Err(ApiError::PayloadTooLarge);
+    }
+
+    Ok(())
+}
+
+fn enforce_session_timeout(
+    state: &AppState,
+    request: &Request,
+    security: &SecuritySettings,
+) -> Result<(), ApiError> {
+    let Some(claims) = extract_user_claims(request.headers(), &state.auth_service) else {
+        return Ok(());
+    };
+
+    let now = current_unix_timestamp();
+    let session_timeout_seconds = i64::from(security.session_timeout_minutes) * 60;
+    if now.saturating_sub(claims.iat) > session_timeout_seconds {
+        return Err(ApiError::auth("Session timed out".to_string()));
+    }
+
+    Ok(())
+}
+
+fn enforce_maintenance_mode(
+    state: &AppState,
+    request: &Request,
+    maintenance: &MaintenanceSettings,
+) -> Result<(), ApiError> {
+    if !maintenance.enabled {
+        return Ok(());
+    }
+
+    let path = request.uri().path();
+    if maintenance_exempt_path(path) {
+        return Ok(());
+    }
+
+    if maintenance.allow_admin_access
+        && (maintenance_admin_bootstrap_path(path)
+            || request_has_superuser_claims(request.headers(), &state.auth_service))
+    {
+        return Ok(());
+    }
+
+    Err(ApiError::service_unavailable(
+        maintenance.message.clone().unwrap_or_else(|| {
+            "System maintenance in progress. Please try again later.".to_string()
+        }),
+    ))
+}
+
+fn request_method_can_have_body(method: &Method) -> bool {
+    matches!(*method, Method::POST | Method::PUT | Method::PATCH)
 }
 
 /// Comprehensive request logging middleware that logs API access
@@ -179,6 +281,12 @@ pub async fn request_logging_middleware(
     // Extract user information if available for context
     let user_id =
         extract_user_claims(&headers, &state.auth_service).map(|claims| claims.sub.clone());
+    let audit_logging_enabled = state
+        .runtime_settings
+        .current()
+        .await
+        .security
+        .enable_audit_logging;
 
     // Store correlation ID and start time in request extensions
     request
@@ -237,17 +345,19 @@ pub async fn request_logging_middleware(
             error!("Failed to log API request: {}", e);
         }
 
-        // Log security audit event for data access
-        if let Err(e) = logging_service
-            .log_data_access(
-                user_id.clone().unwrap_or_else(|| "anonymous".to_string()),
-                format!("API:{}", path),
-                method.to_string(),
-                log_context.clone(),
-            )
-            .await
-        {
-            error!("Failed to log security audit event: {}", e);
+        if audit_logging_enabled {
+            // Log security audit event for data access
+            if let Err(e) = logging_service
+                .log_data_access(
+                    user_id.clone().unwrap_or_else(|| "anonymous".to_string()),
+                    format!("API:{}", path),
+                    method.to_string(),
+                    log_context.clone(),
+                )
+                .await
+            {
+                error!("Failed to log security audit event: {}", e);
+            }
         }
     }
 
@@ -315,19 +425,21 @@ pub async fn request_logging_middleware(
                 "server_error"
             };
 
-            if let Err(e) = logging_service
-                .log_security_violation(
-                    user_id.clone().unwrap_or_else(|| "anonymous".to_string()),
-                    violation_type.to_string(),
-                    format!(
-                        "API request failed with status {}: {} {}",
-                        status, method, path
-                    ),
-                    response_log_context,
-                )
-                .await
-            {
-                error!("Failed to log security violation: {}", e);
+            if audit_logging_enabled {
+                if let Err(e) = logging_service
+                    .log_security_violation(
+                        user_id.clone().unwrap_or_else(|| "anonymous".to_string()),
+                        violation_type.to_string(),
+                        format!(
+                            "API request failed with status {}: {} {}",
+                            status, method, path
+                        ),
+                        response_log_context,
+                    )
+                    .await
+                {
+                    error!("Failed to log security violation: {}", e);
+                }
             }
         }
     }
@@ -438,7 +550,7 @@ fn get_status_class(status: StatusCode) -> &'static str {
 }
 
 /// List of public endpoints that don't require authentication
-const PUBLIC_ENDPOINTS: &[&str] = &["/health"];
+const PUBLIC_ENDPOINTS: &[&str] = &["/health", "/settings/public"];
 
 /// Public endpoints can either bypass policy entirely or allow anonymous
 /// requests while still letting authorization hooks enforce configured policy.
@@ -510,6 +622,21 @@ fn is_public_admin_ui_endpoint(path: &str) -> bool {
         && !crate::routes::is_registered_protected_admin_api_path(path)
 }
 
+fn is_public_api_candidate(path: &str) -> bool {
+    path == "/collections"
+        || path.starts_with("/collections/")
+        || path == "/plugin"
+        || path.starts_with("/plugin/")
+}
+
+fn maintenance_exempt_path(path: &str) -> bool {
+    path == "/health" || path == "/settings/public"
+}
+
+fn maintenance_admin_bootstrap_path(path: &str) -> bool {
+    is_public_admin_ui_endpoint(path) || path == "/auth/collections" || path.starts_with("/auth/")
+}
+
 /// Authentication and authorization middleware
 pub async fn auth_middleware(
     State(state): State<AppState>,
@@ -529,6 +656,7 @@ pub async fn auth_middleware(
 
     // Extract user claims from headers and store in request extensions
     let claims = extract_user_claims(&headers, &state.auth_service);
+    let settings = state.runtime_settings.current().await;
 
     // Insert claims extension into the request
     request
@@ -544,6 +672,12 @@ pub async fn auth_middleware(
             authorize_api_request(&state, &method, &uri, path, &headers, &claims).await?;
         }
         return Ok(next.run(request).await);
+    }
+
+    if claims.is_none() && is_public_api_candidate(path) && !settings.general.allow_public_api {
+        return Err(ApiError::auth(
+            "Authentication required; public API access is disabled".to_string(),
+        ));
     }
 
     authorize_api_request(&state, &method, &uri, path, &headers, &claims).await?;
@@ -691,24 +825,51 @@ pub fn extract_user_claims(headers: &HeaderMap, auth_service: &Arc<AuthService>)
     auth_service.verify_token(&token).ok()
 }
 
-fn auth_endpoint_rate_limit(method: &Method, path: &str) -> Option<u32> {
+fn request_has_superuser_claims(headers: &HeaderMap, auth_service: &Arc<AuthService>) -> bool {
+    extract_user_claims(headers, auth_service)
+        .as_ref()
+        .is_some_and(claims_are_superuser)
+}
+
+fn claims_are_superuser(claims: &Claims) -> bool {
+    matches!(claims.user_role(), Ok(UserRole::Superuser))
+}
+
+fn current_unix_timestamp() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64
+}
+
+fn should_apply_general_api_rate_limit(path: &str) -> bool {
+    path != "/health" && !is_public_admin_ui_endpoint(path)
+}
+
+fn general_api_rate_limit_key(headers: &HeaderMap, auth_service: &Arc<AuthService>) -> String {
+    if let Some(claims) = extract_user_claims(headers, auth_service) {
+        return format!("api:user:{}", claims.sub);
+    }
+
+    format!("api:ip:{}", extract_client_ip(headers))
+}
+
+fn auth_endpoint_rate_limit(
+    method: &Method,
+    path: &str,
+    security: &SecuritySettings,
+) -> Option<(u32, Duration)> {
     if *method != Method::POST {
         return None;
     }
 
     if matches_auth_endpoint(path, "login") {
-        return Some(10);
+        let limit = u32::from(security.max_login_attempts.max(1));
+        let window = Duration::from_secs(u64::from(security.lockout_duration_minutes.max(1)) * 60);
+        return Some((limit, window));
     }
 
-    if matches_auth_endpoint(path, "register") {
-        return Some(5);
-    }
-
-    match path {
-        "/auth/refresh" => Some(30),
-        "/auth/validate" => Some(60),
-        _ => None,
-    }
+    None
 }
 
 fn auth_rate_limit_path_key(path: &str) -> String {
@@ -924,6 +1085,7 @@ fn forwarded_header_proto(headers: &HeaderMap) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::server::RuntimeSettings;
     use crate::services::{DatabasePermissionService, PluginConfigService};
     use axum::{
         body::Body,
@@ -963,6 +1125,9 @@ mod tests {
             plugin_config_service,
             vfs_service: None,
             rate_limiter: Arc::new(RateLimiter::new()),
+            runtime_settings: Arc::new(RuntimeSettings::new(
+                oxide_core::site_settings::SiteSettings::default(),
+            )),
             started_at: Instant::now(),
         }
     }

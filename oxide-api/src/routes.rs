@@ -52,8 +52,9 @@ use crate::{
         },
         records::{create_record, delete_record, get_record, list_records, update_record},
         site_settings::{
-            get_settings_health, get_settings_section, get_site_settings, reset_site_settings,
-            test_email_configuration, update_settings_section, update_site_settings,
+            get_public_site_settings, get_settings_health, get_settings_section, get_site_settings,
+            reset_site_settings, test_email_configuration, update_settings_section,
+            update_site_settings,
         },
         user_preferences::{
             delete_all_user_preferences, delete_user_preference, get_user_preference,
@@ -308,6 +309,15 @@ fn get_static_endpoints(config: &RouteConfig) -> Vec<RegisteredEndpoint> {
         category: EndpointCategory::Health,
         auth_required: false,
         description: Some("System health check".to_string()),
+    });
+
+    endpoints.push(RegisteredEndpoint {
+        method: "GET".to_string(),
+        path: "/settings/public".to_string(),
+        handler: "site_settings::get_public_site_settings".to_string(),
+        category: EndpointCategory::SiteSettings,
+        auth_required: false,
+        description: Some("Public branding and instance settings".to_string()),
     });
 
     // Authentication endpoints
@@ -1090,7 +1100,9 @@ pub fn build_router(state: AppState) -> Router<()> {
 
 /// Health check routes
 fn health_routes() -> Router<AppState> {
-    Router::new().route("/health", get(health_check))
+    Router::new()
+        .route("/health", get(health_check))
+        .route("/settings/public", get(get_public_site_settings))
 }
 
 /// Authentication routes
@@ -1504,6 +1516,11 @@ pub fn build_router_with_config_and_middleware(config: RouteConfig, state: AppSt
     router = router.layer(axum::middleware::from_fn_with_state(
         state.clone(),
         crate::middleware::auth_rate_limit_middleware,
+    ));
+
+    router = router.layer(axum::middleware::from_fn_with_state(
+        state.clone(),
+        crate::middleware::runtime_settings_middleware,
     ));
 
     // Apply logging middleware to all routes (should be applied before CORS and tracing)

@@ -916,6 +916,17 @@ export interface SiteSettingsResponse {
   settings?: SiteSettings | null;
 }
 
+export interface PublicSiteSettings {
+  branding: BrandingSettings;
+  system_info: PublicSystemInfo;
+}
+
+export interface PublicSystemInfo {
+  oxidedb_version: string;
+  environment: DeploymentEnvironment;
+  instance_name?: string;
+}
+
 export interface SettingsHealthStatus {
   healthy: boolean;
   email_config_valid: boolean;

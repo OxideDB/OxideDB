@@ -7,15 +7,46 @@ use crate::middleware::RateLimiter;
 use crate::services::{
     plugin_config_service::PluginConfigService, DatabasePermissionService, LoggingApiService,
 };
-use oxide_core::{event::EventBus, logging::ApplicationLogger, AppError, AuthService};
+use oxide_core::{
+    event::EventBus, logging::ApplicationLogger, site_settings::SiteSettings, AppError, AuthService,
+};
 use oxide_db::Db;
 use oxide_logging::LogServiceBridge;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::net::TcpListener;
+use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
 use crate::routes::{build_router_with_config, RouteConfig};
+
+/// Runtime copy of persisted site settings used by request middleware.
+#[derive(Clone)]
+pub struct RuntimeSettings {
+    settings: Arc<RwLock<SiteSettings>>,
+}
+
+impl RuntimeSettings {
+    /// Create a runtime settings cache from an initial snapshot.
+    pub fn new(settings: SiteSettings) -> Self {
+        Self {
+            settings: Arc::new(RwLock::new(settings)),
+        }
+    }
+
+    /// Return the current settings snapshot.
+    pub async fn current(&self) -> SiteSettings {
+        self.settings.read().await.clone()
+    }
+
+    /// Reload settings from the database and update the runtime snapshot.
+    pub async fn refresh_from_db(&self, db: &Arc<dyn Db>) -> Result<SiteSettings, AppError> {
+        let settings = db.get_site_settings().await?;
+        let mut current = self.settings.write().await;
+        *current = settings.clone();
+        Ok(settings)
+    }
+}
 
 /// Shared application state
 #[derive(Clone)]
@@ -30,6 +61,7 @@ pub struct AppState {
     pub plugin_config_service: Arc<PluginConfigService>,
     pub vfs_service: Option<Arc<dyn oxide_core::VirtualFileSystem>>,
     pub rate_limiter: Arc<RateLimiter>,
+    pub runtime_settings: Arc<RuntimeSettings>,
     pub started_at: Instant,
 }
 
@@ -203,6 +235,32 @@ impl ApiServer {
         let plugin_config_service =
             Arc::new(PluginConfigService::new(Arc::clone(&self.db), plugins_dir));
 
+        let initial_settings = match self.db.get_site_settings().await {
+            Ok(settings) => settings,
+            Err(error) => {
+                warn!(
+                    "Failed to load persisted site settings during startup; using defaults: {}",
+                    error
+                );
+                SiteSettings::default()
+            }
+        };
+
+        let mut effective_config = config.clone();
+        match usize::try_from(initial_settings.general.max_upload_size) {
+            Ok(max_upload_size) => {
+                effective_config.max_request_size =
+                    effective_config.max_request_size.max(max_upload_size);
+            }
+            Err(_) => {
+                warn!(
+                    "Configured max upload size {} is too large for this platform; keeping route limit {}",
+                    initial_settings.general.max_upload_size,
+                    effective_config.max_request_size
+                );
+            }
+        }
+
         let state = AppState {
             db: Arc::clone(&self.db),
             event_bus: Arc::clone(&self.event_bus),
@@ -214,13 +272,14 @@ impl ApiServer {
             plugin_config_service,
             vfs_service,
             rate_limiter: Arc::new(RateLimiter::new()),
+            runtime_settings: Arc::new(RuntimeSettings::new(initial_settings)),
             started_at: Instant::now(),
         };
 
-        let app = build_router_with_config(config.clone(), state.clone());
+        let app = build_router_with_config(effective_config.clone(), state.clone());
 
         // Log all registered endpoints
-        crate::routes::log_registered_endpoints(&state, &config);
+        crate::routes::log_registered_endpoints(&state, &effective_config);
 
         let listener = TcpListener::bind(&self.address()).await.map_err(|e| {
             AppError::internal(format!("Failed to bind to {}: {}", self.address(), e))
@@ -292,8 +351,11 @@ impl ApiServer {
 /// Server status information
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ServerStatus {
+    /// Host interface the server is bound to.
     pub host: String,
+    /// TCP port the server is listening on.
     pub port: u16,
+    /// Combined host and port address.
     pub address: String,
 }
 

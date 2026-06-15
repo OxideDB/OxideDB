@@ -14,6 +14,7 @@ import { Separator } from '@/components/ui/separator';
 import { Badge } from '@/components/ui/badge';
 import { apiService } from '@/services/api';
 import type { SiteSettings, UpdateSiteSettingsRequest, SettingsHealthStatus } from '@/types/api';
+import { useSiteSettings } from '@/hooks/useSiteSettings';
 
 const Settings: React.FC = () => {
   const [settings, setSettings] = useState<SiteSettings | null>(null);
@@ -24,6 +25,7 @@ const Settings: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState('branding');
+  const { refreshSiteSettings } = useSiteSettings();
 
   const form = useForm<UpdateSiteSettingsRequest>({
     defaultValues: {}
@@ -78,6 +80,7 @@ const Settings: React.FC = () => {
       await apiService.updateSiteSettings(data);
       setSuccess('Settings updated successfully');
       await loadSettings(); // Reload to get updated data
+      await refreshSiteSettings();
       setTimeout(() => setSuccess(null), 3000);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to update settings');
@@ -97,6 +100,7 @@ const Settings: React.FC = () => {
       await apiService.resetSiteSettings();
       setSuccess('Settings reset to defaults');
       await loadSettings();
+      await refreshSiteSettings();
       setTimeout(() => setSuccess(null), 3000);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to reset settings');

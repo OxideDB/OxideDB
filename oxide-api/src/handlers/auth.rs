@@ -10,7 +10,7 @@ use axum::{
     http::{header, HeaderMap, HeaderValue, StatusCode},
     Json,
 };
-use oxide_core::{auth::RefreshClaims, Claims};
+use oxide_core::{auth::RefreshClaims, site_settings::SecuritySettings, Claims};
 use oxide_db::{
     db::{AuthRequest, RefreshTokenRecord, RegisterRequest as DbRegisterRequest},
     Db,
@@ -226,6 +226,7 @@ impl AuthHandlers {
     pub async fn register(
         db: Arc<dyn Db>,
         auth_service: Arc<oxide_core::AuthService>,
+        security: &SecuritySettings,
         collection: String,
         identifier: String,
         credential: String,
@@ -254,12 +255,7 @@ impl AuthHandlers {
             ));
         }
 
-        // Validate credential strength (basic validation)
-        if credential.len() < 8 {
-            return Err(ApiError::bad_request(
-                "Credential must be at least 8 characters long".to_string(),
-            ));
-        }
+        validate_credential_policy(&credential, security)?;
 
         // Create registration request
         let register_request = DbRegisterRequest {
@@ -337,12 +333,25 @@ impl AuthHandlers {
     /// Validate a JWT token
     pub async fn validate_token(
         auth_service: Arc<oxide_core::AuthService>,
+        security: &SecuritySettings,
         token: String,
     ) -> Result<TokenValidationResponse, ApiError> {
         debug!("🔍 Validating token");
 
         match auth_service.verify_token(&token) {
             Ok(claims) => {
+                if token_session_timed_out(&claims, security) {
+                    return Ok(TokenValidationResponse {
+                        valid: false,
+                        user_id: None,
+                        email: None,
+                        role: None,
+                        auth_collection: None,
+                        expires_at: None,
+                        custom_claims: None,
+                    });
+                }
+
                 let response = TokenValidationResponse {
                     valid: true,
                     user_id: Some(claims.sub),
@@ -504,6 +513,54 @@ fn hash_refresh_token(token: &str) -> String {
     format!("{:x}", Sha256::digest(token.as_bytes()))
 }
 
+fn validate_credential_policy(
+    credential: &str,
+    security: &SecuritySettings,
+) -> Result<(), ApiError> {
+    let min_length = usize::from(security.password_min_length);
+    if credential.chars().count() < min_length {
+        return Err(ApiError::bad_request(format!(
+            "Credential must be at least {} characters long",
+            min_length
+        )));
+    }
+
+    if security.password_require_complexity && !credential_has_required_complexity(credential) {
+        return Err(ApiError::bad_request(
+            "Credential must include uppercase, lowercase, numeric, and symbol characters"
+                .to_string(),
+        ));
+    }
+
+    Ok(())
+}
+
+fn credential_has_required_complexity(credential: &str) -> bool {
+    let has_uppercase = credential.chars().any(char::is_uppercase);
+    let has_lowercase = credential.chars().any(char::is_lowercase);
+    let has_digit = credential.chars().any(|ch| ch.is_ascii_digit());
+    let has_symbol = credential.chars().any(|ch| !ch.is_alphanumeric());
+
+    has_uppercase && has_lowercase && has_digit && has_symbol
+}
+
+fn effective_access_expires_in(default_seconds: i64, security: &SecuritySettings) -> i64 {
+    let session_seconds = i64::from(security.session_timeout_minutes) * 60;
+    default_seconds.min(session_seconds)
+}
+
+fn token_session_timed_out(claims: &Claims, security: &SecuritySettings) -> bool {
+    let session_seconds = i64::from(security.session_timeout_minutes) * 60;
+    current_unix_timestamp().saturating_sub(claims.iat) > session_seconds
+}
+
+fn current_unix_timestamp() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64
+}
+
 pub(crate) fn extract_cookie_value(headers: &HeaderMap, name: &str) -> Option<String> {
     let cookie_header = headers.get(header::COOKIE)?.to_str().ok()?;
 
@@ -636,6 +693,7 @@ pub async fn login_collection(
     Json(request): Json<LoginRequest>,
 ) -> Result<(HeaderMap, Json<ApiResponse<LoginResponse>>), ApiError> {
     let cookie_session = request.cookie_session;
+    let settings = state.runtime_settings.current().await;
     let mut response = AuthHandlers::login(
         state.db,
         state.auth_service,
@@ -644,6 +702,7 @@ pub async fn login_collection(
         request.credential,
     )
     .await?;
+    response.expires_in = effective_access_expires_in(response.expires_in, &settings.security);
 
     let headers = if cookie_session {
         let headers = auth_cookie_headers(
@@ -673,9 +732,11 @@ pub async fn register_collection(
     Path(collection): Path<String>,
     Json(request): Json<RegisterRequest>,
 ) -> Result<(StatusCode, Json<ApiResponse<RegisterResponse>>), ApiError> {
+    let settings = state.runtime_settings.current().await;
     let response = AuthHandlers::register(
         state.db,
         state.auth_service,
+        &settings.security,
         collection,
         request.identifier,
         request.credential,
@@ -692,7 +753,9 @@ pub async fn validate_token(
     State(state): State<AppState>,
     Json(request): Json<TokenValidationRequest>,
 ) -> Result<Json<ApiResponse<TokenValidationResponse>>, ApiError> {
-    let response = AuthHandlers::validate_token(state.auth_service, request.token).await?;
+    let settings = state.runtime_settings.current().await;
+    let response =
+        AuthHandlers::validate_token(state.auth_service, &settings.security, request.token).await?;
     Ok(Json(ApiResponse::success(response)))
 }
 
@@ -758,8 +821,10 @@ pub async fn refresh_token(
         .or(cookie_refresh_token)
         .ok_or_else(|| ApiError::auth("Missing refresh token".to_string()))?;
 
+    let settings = state.runtime_settings.current().await;
     let mut response =
         AuthHandlers::refresh_token(state.db, state.auth_service, refresh_token).await?;
+    response.expires_in = effective_access_expires_in(response.expires_in, &settings.security);
 
     let headers = if cookie_session {
         let headers = auth_cookie_headers(
