@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { apiService } from '../services/api';
-import { getCapabilityName, type PluginCapability } from '../types/api';
+import { getCapabilityName, type PluginAdminPage, type PluginCapability } from '../types/api';
 import { Button } from '../components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card';
 import { Badge } from '../components/ui/badge';
@@ -44,6 +44,7 @@ interface PluginInfo {
   capabilities: PluginCapability[];
   trust_level: 'Untrusted' | 'PartiallyTrusted' | 'FullyTrusted' | 'System';
   routes: PluginRoute[];
+  admin_pages: PluginAdminPage[];
   executions: number;
   errors: number;
   last_execution?: string;

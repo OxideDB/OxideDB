@@ -15,6 +15,10 @@ const PLUGIN_VERSION: &str = "1.0.0";
 const PLUGIN_AUTHOR: &str = "OxideDB Team <team@oxidedb.com>";
 const PLUGIN_DESCRIPTION: &str = "A simple demonstration plugin for OxideDB that showcases basic CRUD operations and HTTP route handling";
 const PLUGIN_HOMEPAGE: &str = "https://github.com/oxidedb/hello-plugin";
+const SETTINGS_COLLECTION: &str = "_plugins";
+const SETTINGS_METADATA_KEY: &str = "demo_settings";
+const SETTINGS_SAVED_AT_KEY: &str = "demo_settings_saved_at";
+const HELLO_MODES: [&str; 3] = ["Observe", "Transform records", "Block restricted writes"];
 
 /// Hello Plugin - demonstrates the Plugin SDK capabilities
 #[derive(Default)]
@@ -41,6 +45,105 @@ impl HelloPlugin {
             "build_timestamp": "2024-01-01T00:00:00Z"
         })
     }
+
+    /// Get default settings for the packaged admin demo.
+    fn default_settings() -> JsonValue {
+        json!({
+            "greeting": "Hello from a packaged plugin page",
+            "mode": HELLO_MODES[0]
+        })
+    }
+
+    /// Identify system collections that should not receive demo record mutations.
+    fn is_system_collection(collection: &str) -> bool {
+        collection.starts_with('_')
+    }
+
+    /// Validate and normalize settings saved from the admin page.
+    fn sanitize_settings(input: &JsonValue) -> Result<JsonValue, HttpResponse> {
+        let Some(obj) = input.as_object() else {
+            return Err(HttpResponse::error(
+                400,
+                "Settings payload must be a JSON object",
+            ));
+        };
+
+        let Some(raw_greeting) = obj.get("greeting").and_then(|value| value.as_str()) else {
+            return Err(HttpResponse::error(400, "Greeting is required"));
+        };
+        let greeting = raw_greeting.trim();
+        if greeting.is_empty() {
+            return Err(HttpResponse::error(400, "Greeting cannot be empty"));
+        }
+        if greeting.chars().count() > 120 {
+            return Err(HttpResponse::error(
+                400,
+                "Greeting must be 120 characters or fewer",
+            ));
+        }
+
+        let Some(mode) = obj.get("mode").and_then(|value| value.as_str()) else {
+            return Err(HttpResponse::error(400, "Mode is required"));
+        };
+        if !HELLO_MODES.contains(&mode) {
+            return Err(HttpResponse::error(400, "Mode is not supported"));
+        }
+
+        Ok(json!({
+            "greeting": greeting,
+            "mode": mode
+        }))
+    }
+
+    /// Find this plugin's persisted configuration record.
+    fn find_plugin_record() -> PluginResult<Option<Record>> {
+        let records = Database::read_typed(SETTINGS_COLLECTION)?;
+        Ok(records.into_iter().find(|record| {
+            record.data.get("name").and_then(|value| value.as_str()) == Some(PLUGIN_NAME)
+        }))
+    }
+
+    /// Read persisted demo settings from this plugin's configuration metadata.
+    fn read_persisted_settings(record_data: &JsonValue) -> Option<JsonValue> {
+        record_data
+            .get("metadata")
+            .and_then(|metadata| metadata.get(SETTINGS_METADATA_KEY))
+            .cloned()
+    }
+
+    /// Store demo settings in this plugin's configuration metadata.
+    fn write_settings_to_record_data(
+        mut record_data: JsonValue,
+        settings: JsonValue,
+    ) -> Result<JsonValue, HttpResponse> {
+        let Some(record_obj) = record_data.as_object_mut() else {
+            return Err(HttpResponse::error(
+                500,
+                "Plugin configuration record is malformed",
+            ));
+        };
+
+        let metadata_entry = record_obj
+            .entry("metadata".to_string())
+            .or_insert_with(|| json!({}));
+        if !metadata_entry.is_object() {
+            *metadata_entry = json!({});
+        }
+
+        let Some(metadata_obj) = metadata_entry.as_object_mut() else {
+            return Err(HttpResponse::error(
+                500,
+                "Plugin configuration metadata is malformed",
+            ));
+        };
+        metadata_obj.insert(SETTINGS_METADATA_KEY.to_string(), settings);
+        metadata_obj.insert(
+            SETTINGS_SAVED_AT_KEY.to_string(),
+            json!(Self::get_current_timestamp()),
+        );
+
+        Ok(record_data)
+    }
 }
 
 impl PluginEventHandler for HelloPlugin {
@@ -58,6 +161,8 @@ impl PluginEventHandler for HelloPlugin {
         Http::register_route("POST", "/api/hello/items", "handle_create_item")?;
         Http::register_route("GET", "/api/hello/items/:id", "handle_get_item")?;
         Http::register_route("POST", "/api/hello/process", "handle_process_data")?;
+        Http::register_route("GET", "/api/hello/settings", "handle_get_settings")?;
+        Http::register_route("POST", "/api/hello/settings", "handle_save_settings")?;
         Http::register_route("GET", "/api/hello/metadata", "handle_get_metadata")?;
         Http::register_route("GET", "/api/hello/status", "handle_get_status")?;
 
@@ -71,6 +176,14 @@ impl PluginEventHandler for HelloPlugin {
             "Processing create event for collection: {}",
             event.collection
         );
+
+        if Self::is_system_collection(&event.collection) {
+            log_info!(
+                "Skipping demo create mutations for system collection: {}",
+                event.collection
+            );
+            return Ok(PluginResponse::allow());
+        }
 
         // Security check: block access to restricted collections
         if event.collection.contains("admin") || event.collection.contains("system") {
@@ -139,6 +252,14 @@ impl PluginEventHandler for HelloPlugin {
             event.collection
         );
 
+        if Self::is_system_collection(&event.collection) {
+            log_info!(
+                "Skipping demo update mutations for system collection: {}",
+                event.collection
+            );
+            return Ok(PluginResponse::allow());
+        }
+
         // Parse and validate the update data
         let mut data: JsonValue = serde_json::from_str(&event.data)?;
 
@@ -171,6 +292,14 @@ impl PluginEventHandler for HelloPlugin {
             "Processing delete event for collection: {}",
             event.collection
         );
+
+        if Self::is_system_collection(&event.collection) {
+            log_info!(
+                "Skipping demo delete checks for system collection: {}",
+                event.collection
+            );
+            return Ok(PluginResponse::allow());
+        }
 
         // Parse the data to check if it's a protected record
         let data: JsonValue = serde_json::from_str(&event.data)?;
@@ -215,6 +344,8 @@ impl PluginHttpHandler for HelloPlugin {
             ("POST", "/api/hello/items") => self.handle_create_item(request),
             ("GET", path) if path.starts_with("/api/hello/items/") => self.handle_get_item(request),
             ("POST", "/api/hello/process") => self.handle_process_data(request),
+            ("GET", "/api/hello/settings") => self.handle_get_settings(request),
+            ("POST", "/api/hello/settings") => self.handle_save_settings(request),
             ("GET", "/api/hello/metadata") => self.handle_get_metadata(request),
             ("GET", "/api/hello/status") => self.handle_get_status(request),
             _ => {
@@ -528,6 +659,109 @@ impl HelloPlugin {
             .json(&response)
     }
 
+    /// Handle GET /api/hello/settings - read persisted admin page settings
+    fn handle_get_settings(&mut self, _request: &HttpRequestContext) -> PluginResult<HttpResponse> {
+        log_info!("Handling GET /api/hello/settings");
+
+        let (settings, persisted) = match Self::find_plugin_record() {
+            Ok(Some(record)) => match Self::read_persisted_settings(&record.data) {
+                Some(settings) => (settings, true),
+                None => (Self::default_settings(), false),
+            },
+            Ok(None) => {
+                log_warn!(
+                    "Plugin configuration record for {} was not found; returning defaults",
+                    PLUGIN_NAME
+                );
+                (Self::default_settings(), false)
+            }
+            Err(e) => {
+                log_error!("Failed to read plugin settings: {}", e);
+                return Ok(HttpResponse::error(500, "Failed to read plugin settings"));
+            }
+        };
+
+        let response = json!({
+            "success": true,
+            "settings": settings,
+            "persisted": persisted,
+            "plugin": {
+                "name": PLUGIN_NAME,
+                "version": PLUGIN_VERSION
+            }
+        });
+
+        JsonResponseBuilder::new()
+            .header("X-Plugin-Name".to_string(), PLUGIN_NAME.to_string())
+            .header("X-Plugin-Version".to_string(), PLUGIN_VERSION.to_string())
+            .json(&response)
+    }
+
+    /// Handle POST /api/hello/settings - persist admin page settings
+    fn handle_save_settings(&mut self, request: &HttpRequestContext) -> PluginResult<HttpResponse> {
+        log_info!("Handling POST /api/hello/settings");
+
+        if !request.is_json() {
+            return Ok(HttpResponse::error(
+                400,
+                "Content-Type must be application/json",
+            ));
+        }
+
+        let input_data: JsonValue = request.body_json()?;
+        let settings = match Self::sanitize_settings(&input_data) {
+            Ok(settings) => settings,
+            Err(response) => return Ok(response),
+        };
+
+        let record = match Self::find_plugin_record() {
+            Ok(Some(record)) => record,
+            Ok(None) => {
+                log_error!(
+                    "Cannot save settings because plugin configuration record for {} was not found",
+                    PLUGIN_NAME
+                );
+                return Ok(HttpResponse::error(
+                    404,
+                    "Plugin configuration record not found",
+                ));
+            }
+            Err(e) => {
+                log_error!("Failed to read plugin settings before save: {}", e);
+                return Ok(HttpResponse::error(500, "Failed to read plugin settings"));
+            }
+        };
+
+        let record_id = record.id.clone();
+        let updated_data = match Self::write_settings_to_record_data(record.data, settings.clone())
+        {
+            Ok(data) => data,
+            Err(response) => return Ok(response),
+        };
+
+        match Database::update_typed(SETTINGS_COLLECTION, &record_id, &updated_data) {
+            Ok(_) => {
+                log_info!("Persisted admin page settings for {}", PLUGIN_NAME);
+                let response = json!({
+                    "success": true,
+                    "message": "Settings saved",
+                    "settings": settings,
+                    "persisted": true,
+                    "saved_at": Self::get_current_timestamp()
+                });
+
+                JsonResponseBuilder::new()
+                    .header("X-Plugin-Name".to_string(), PLUGIN_NAME.to_string())
+                    .header("X-Plugin-Version".to_string(), PLUGIN_VERSION.to_string())
+                    .json(&response)
+            }
+            Err(e) => {
+                log_error!("Failed to save plugin settings: {}", e);
+                Ok(HttpResponse::error(500, "Failed to save plugin settings"))
+            }
+        }
+    }
+
     /// Handle GET /api/hello/metadata - get plugin metadata  
     fn handle_get_metadata(&mut self, _request: &HttpRequestContext) -> PluginResult<HttpResponse> {
         log_info!("Handling GET /api/hello/metadata");
@@ -553,6 +787,8 @@ impl HelloPlugin {
                 {"method": "POST", "path": "/api/hello/items", "description": "Create a new item"},
                 {"method": "GET", "path": "/api/hello/items/:id", "description": "Get specific item"},
                 {"method": "POST", "path": "/api/hello/process", "description": "Process data"},
+                {"method": "GET", "path": "/api/hello/settings", "description": "Read admin page settings"},
+                {"method": "POST", "path": "/api/hello/settings", "description": "Save admin page settings"},
                 {"method": "GET", "path": "/api/hello/metadata", "description": "Get plugin metadata"},
                 {"method": "GET", "path": "/api/hello/status", "description": "Get plugin status"}
             ]
@@ -658,5 +894,64 @@ mod tests {
         assert_eq!(runtime_info["plugin_name"], "hello-plugin");
         assert_eq!(runtime_info["plugin_version"], "1.0.0");
         assert_eq!(runtime_info["runtime"], "wasmtime");
+    }
+
+    #[test]
+    fn test_sanitize_settings_trims_greeting() {
+        let settings = HelloPlugin::sanitize_settings(&json!({
+            "greeting": "  Hello admin  ",
+            "mode": "Observe"
+        }))
+        .expect("settings should be valid");
+
+        assert_eq!(settings["greeting"], "Hello admin");
+        assert_eq!(settings["mode"], "Observe");
+    }
+
+    #[test]
+    fn test_sanitize_settings_rejects_unknown_mode() {
+        let error = HelloPlugin::sanitize_settings(&json!({
+            "greeting": "Hello admin",
+            "mode": "Unknown"
+        }))
+        .expect_err("unknown mode should be rejected");
+
+        assert_eq!(error.status_code, 400);
+    }
+
+    #[test]
+    fn test_system_collections_are_skipped() {
+        assert!(HelloPlugin::is_system_collection("_plugins"));
+        assert!(!HelloPlugin::is_system_collection("items"));
+    }
+
+    #[test]
+    fn test_write_settings_to_record_data_updates_metadata() {
+        let updated = HelloPlugin::write_settings_to_record_data(
+            json!({
+                "name": PLUGIN_NAME,
+                "metadata": {
+                    "manifest": {"plugin": {"name": PLUGIN_NAME}}
+                }
+            }),
+            json!({
+                "greeting": "Saved",
+                "mode": "Observe"
+            }),
+        )
+        .expect("record data should update");
+
+        assert_eq!(
+            updated["metadata"][SETTINGS_METADATA_KEY],
+            json!({
+                "greeting": "Saved",
+                "mode": "Observe"
+            })
+        );
+        assert_eq!(
+            updated["metadata"]["manifest"]["plugin"]["name"],
+            PLUGIN_NAME
+        );
+        assert!(updated["metadata"][SETTINGS_SAVED_AT_KEY].is_string());
     }
 }

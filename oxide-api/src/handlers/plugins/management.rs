@@ -7,6 +7,7 @@ use axum::{
 use tracing::{info, warn};
 
 use super::{
+    admin_pages::admin_pages_from_config,
     audit::{get_plugin_audit_log, record_plugin_audit_event},
     permissions::get_plugin_permissions_info,
     types::*,
@@ -62,6 +63,8 @@ pub async fn list_plugins(
             runtime_stat.map(|stat| &stat.status),
             is_loaded_in_runtime,
         );
+        let routes = get_plugin_routes(&state, &config.name).await?;
+        let admin_pages = admin_pages_from_config(&config);
 
         let plugin_info = PluginInfo {
             name: config.name.clone(),
@@ -71,7 +74,8 @@ pub async fn list_plugins(
             author: config.author,
             capabilities: config.capabilities,
             trust_level: config.trust_level,
-            routes: get_plugin_routes(&state, &config.name).await?,
+            routes,
+            admin_pages,
             executions,
             errors,
             last_execution,
@@ -108,6 +112,7 @@ pub async fn get_plugin_details(
     let capabilities = plugin_config.capabilities.clone();
     let trust_level = plugin_config.trust_level.clone();
     let routes = get_plugin_routes(&state, &plugin_name).await?;
+    let admin_pages = admin_pages_from_config(&plugin_config);
     let audit_log = get_plugin_audit_log(&state, &plugin_name).await?;
     let resource_usage = runtime_stat
         .as_ref()
@@ -128,6 +133,7 @@ pub async fn get_plugin_details(
         capabilities,
         trust_level,
         routes,
+        admin_pages,
         executions: runtime_stat
             .as_ref()
             .map(|stat| stat.executions)

@@ -7,6 +7,7 @@ use axum::{
 use tracing::{debug, info};
 
 use super::{
+    admin_pages::admin_pages_from_manifest,
     capabilities::{
         minimum_trust_level_for_capabilities, parse_capability_string, parse_trust_level_string,
         trust_level_rank,
@@ -161,6 +162,12 @@ pub async fn analyze_plugin(
             capabilities: parsed_capabilities,
             trust_level: effective_recommended_trust_level,
             routes: vec![], // Routes not available until actual installation
+            admin_pages: admin_pages_from_manifest(
+                &package.manifest.plugin.name,
+                &package.manifest.plugin.version,
+                false,
+                &package.manifest,
+            ),
             executions: 0,
             errors: 0,
             last_execution: None,

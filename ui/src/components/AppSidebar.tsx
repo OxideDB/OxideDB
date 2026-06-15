@@ -1,4 +1,20 @@
-import { Archive, Database, Shield, Settings, BarChart3, FileText, Key, Eye, EyeOff, Activity, User, LogOut, FileSearch, Puzzle, RefreshCw } from "lucide-react"
+import {
+  Activity,
+  Archive,
+  BarChart3,
+  Database,
+  Eye,
+  EyeOff,
+  FileSearch,
+  FileText,
+  Key,
+  LogOut,
+  Puzzle,
+  RefreshCw,
+  Settings,
+  Shield,
+  User,
+} from "lucide-react"
 import { useState, useEffect } from "react"
 import { Link, useLocation } from "react-router-dom"
 
@@ -24,7 +40,7 @@ import { useAuth } from "@/hooks/useAuth"
 import { useSiteSettings } from "@/hooks/useSiteSettings"
 import { apiService } from "@/services/api"
 import { cn } from "@/lib/utils"
-import type { CollectionSchema, CollectionStats } from "@/types/api"
+import type { CollectionSchema, CollectionStats, PluginAdminPage } from "@/types/api"
 
 const staticNavigationItems = [
   {
@@ -94,6 +110,19 @@ const staticNavigationItems = [
   },
 ]
 
+const pluginPageIcons = {
+  activity: Activity,
+  database: Database,
+  file: FileText,
+  logs: FileSearch,
+  page: FileText,
+  plugin: Puzzle,
+  puzzle: Puzzle,
+  security: Shield,
+  settings: Settings,
+  shield: Shield,
+}
+
 interface CollectionWithStats {
   schema: CollectionSchema;
   stats?: CollectionStats;
@@ -102,6 +131,8 @@ interface CollectionWithStats {
 export function AppSidebar() {
   const [showSystemCollections, setShowSystemCollections] = useState(false)
   const [collections, setCollections] = useState<CollectionWithStats[]>([])
+  const [pluginPages, setPluginPages] = useState<PluginAdminPage[]>([])
+  const [pluginPagesLoading, setPluginPagesLoading] = useState(false)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const { user, logout } = useAuth()
@@ -114,6 +145,14 @@ export function AppSidebar() {
   useEffect(() => {
     fetchCollections()
   }, [])
+
+  useEffect(() => {
+    if (user?.is_superuser) {
+      fetchPluginPages()
+    } else {
+      setPluginPages([])
+    }
+  }, [user?.is_superuser])
 
   const fetchCollections = async () => {
     try {
@@ -143,6 +182,19 @@ export function AppSidebar() {
     }
   }
 
+  const fetchPluginPages = async () => {
+    try {
+      setPluginPagesLoading(true)
+      const pages = await apiService.getPluginAdminPages()
+      setPluginPages(pages.filter((page) => page.enabled))
+    } catch (err) {
+      console.warn('Failed to fetch plugin admin pages:', err)
+      setPluginPages([])
+    } finally {
+      setPluginPagesLoading(false)
+    }
+  }
+
   // Filter collections based on whether we want to show system collections
   const userCollections = collections.filter(({ schema }) => 
     !apiService.isSystemCollection(schema)
@@ -151,6 +203,11 @@ export function AppSidebar() {
     apiService.isSystemCollection(schema)
   )
   const collectionsToShow = showSystemCollections ? [...userCollections, ...systemCollections] : userCollections
+
+  const getPluginPageIcon = (icon?: string) => {
+    const normalizedIcon = icon?.toLowerCase() as keyof typeof pluginPageIcons | undefined
+    return normalizedIcon ? pluginPageIcons[normalizedIcon] || Puzzle : Puzzle
+  }
 
   const handleLogout = async () => {
     try {
@@ -220,6 +277,42 @@ export function AppSidebar() {
             </SidebarGroupContent>
           </SidebarGroup>
         ))}
+
+        {(pluginPages.length > 0 || pluginPagesLoading) && (
+          <SidebarGroup className="px-2 py-1">
+            <SidebarGroupLabel className="px-2 text-[0.68rem] font-semibold uppercase tracking-wide text-sidebar-foreground/55">
+              Plugin Pages
+            </SidebarGroupLabel>
+            <SidebarGroupContent>
+              {pluginPagesLoading && pluginPages.length === 0 ? (
+                <div className="px-2 py-1.5 text-xs text-sidebar-foreground/60 group-data-[collapsible=icon]:hidden">
+                  Loading plugin pages...
+                </div>
+              ) : (
+                <SidebarMenu>
+                  {pluginPages.map((page) => {
+                    const Icon = getPluginPageIcon(page.icon)
+                    const isActive = isRouteActive(page.admin_path)
+
+                    return (
+                      <SidebarMenuItem key={`${page.plugin_name}:${page.slug}`}>
+                        <SidebarMenuButton asChild isActive={isActive} tooltip={page.title}>
+                          <Link to={page.admin_path}>
+                            <Icon className="h-4 w-4" />
+                            <span className="truncate">{page.title}</span>
+                            <span className="ml-auto truncate text-xs text-sidebar-foreground/55 group-data-[collapsible=icon]:hidden">
+                              {page.nav_group}
+                            </span>
+                          </Link>
+                        </SidebarMenuButton>
+                      </SidebarMenuItem>
+                    )
+                  })}
+                </SidebarMenu>
+              )}
+            </SidebarGroupContent>
+          </SidebarGroup>
+        )}
 
         {/* Collections Section */}
         <SidebarGroup className="px-2 py-1">

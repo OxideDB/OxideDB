@@ -30,6 +30,10 @@ A plugin package is a ZIP file containing:
 plugin-name-1.0.0.zip
 ├── plugin.toml          # Plugin manifest (required)
 ├── plugin-name.wasm     # WebAssembly binary (required)
+├── admin/               # Admin UI pages and assets (optional)
+│   ├── index.html
+│   ├── app.js
+│   └── styles.css
 ├── signature            # Digital signature (optional)
 └── README.md           # Documentation (optional)
 ```
@@ -44,7 +48,8 @@ plugin-name-1.0.0.zip
 1. **`signature`** or **`plugin.sig`** - Digital signature for verification
 2. **`README.md`** - Plugin documentation
 3. **`LICENSE`** - License file
-4. **Additional assets** - Any other files the plugin needs
+4. **`admin/` assets** - HTML, CSS, and JavaScript for custom admin pages
+5. **Additional assets** - Any other files the plugin needs
 
 ## Plugin Manifest Format (`plugin.toml`)
 
@@ -80,6 +85,14 @@ auditor = "Security Audit Firm"
 report_url = "https://example.com/audit-report"
 status = "passed"
 
+[[admin.pages]]
+slug = "settings"
+title = "My Plugin Settings"
+description = "Configure My Plugin"
+entry = "admin/index.html"
+icon = "settings"
+nav_group = "My Plugin"
+
 [dependencies]
 [dependencies.plugins]
 # other-plugin = ">=1.0.0"
@@ -99,6 +112,46 @@ schema = {
     required = ["api_key"]
 }
 defaults = { batch_size = 100 }
+```
+
+## Admin UI Pages
+
+Plugins can contribute custom pages to the OxideDB admin console by declaring `[[admin.pages]]` entries in `plugin.toml` and packaging the compiled UI under the ZIP's `admin/` directory.
+
+- `slug` is the stable admin route segment and must use lowercase letters, numbers, hyphens, or underscores.
+- `entry` must point to an HTML file under `admin/`.
+- Assets referenced by the entry HTML should also live under `admin/`.
+- Packaged pages can use the shared stylesheet at `/admin/plugin-pages/style.css` for OxideDB-compatible controls and panels.
+- Installed pages are exposed in the admin sidebar for enabled plugins and are served from protected `/admin/plugin-pages/assets/{plugin}/...` URLs.
+
+Example HTML entry:
+
+```html
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="stylesheet" href="/admin/plugin-pages/style.css" />
+    <title>My Plugin Settings</title>
+  </head>
+  <body>
+    <main class="oxide-page">
+      <section class="oxide-panel">
+        <div class="oxide-panel-header">
+          <h1 class="oxide-panel-title">Settings</h1>
+        </div>
+        <div class="oxide-panel-body">
+          <label>
+            <span class="oxide-label">API key</span>
+            <input class="oxide-input" name="api_key" />
+          </label>
+          <button class="oxide-button" type="button">Save</button>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>
 ```
 
 ## Plugin Installation Process
@@ -257,4 +310,4 @@ curl -X POST http://localhost:8080/api/admin/plugins/analyze \
   -F "plugin_package=@../my-plugin-1.0.0.zip"
 ```
 
-This new architecture provides a much more secure and maintainable approach to plugin distribution and management in OxideDB. 
+This new architecture provides a much more secure and maintainable approach to plugin distribution and management in OxideDB.

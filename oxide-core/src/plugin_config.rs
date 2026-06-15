@@ -406,7 +406,11 @@ pub fn create_plugins_collection_schema() -> CollectionSchema {
 pub fn plugin_config_to_record(
     config: &PluginConfiguration,
 ) -> Result<serde_json::Value, serde_json::Error> {
-    serde_json::to_value(config)
+    let mut record = serde_json::to_value(config)?;
+    if let Some(obj) = record.as_object_mut() {
+        obj.remove("updated_at");
+    }
+    Ok(record)
 }
 
 /// Convert a JSON record from database to PluginConfiguration
@@ -767,6 +771,31 @@ mod tests {
         assert!(schema.fields.contains_key("capabilities"));
         assert!(schema.fields.contains_key("wasm_path"));
         assert!(schema.fields.contains_key("wasm_hash"));
+    }
+
+    #[test]
+    fn test_plugin_config_record_omits_reserved_updated_at() {
+        let config = PluginConfiguration::new(
+            "test_plugin".to_string(),
+            "1.0.0".to_string(),
+            "Test plugin".to_string(),
+            "Test Author".to_string(),
+            PluginTrustLevel::Untrusted,
+            vec![PluginCapability::LogInfo],
+            ResourceLimits::default(),
+            Some("test_plugin-1.0.0.wasm".to_string()),
+            Some(1024),
+            Some("abc123".to_string()),
+        );
+
+        let record = plugin_config_to_record(&config).expect("plugin config should serialize");
+        let schema = create_plugins_collection_schema();
+
+        assert!(record.get("installed_at").is_some());
+        assert!(record.get("updated_at").is_none());
+        schema
+            .validate_data(&record)
+            .expect("serialized plugin config should match _plugins schema");
     }
 
     #[test]

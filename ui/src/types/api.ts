@@ -181,6 +181,19 @@ export interface RevokeApiKeyRuleRequest {
   fallback_permission?: PermissionLevel;
 }
 
+export interface PluginAdminPage {
+  plugin_name: string;
+  plugin_version: string;
+  slug: string;
+  title: string;
+  description?: string;
+  icon?: string;
+  nav_group: string;
+  admin_path: string;
+  source_url: string;
+  enabled: boolean;
+}
+
 export interface BackupCollectionSummary {
   name: string;
   collection_type: CollectionType;

@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Hello Plugin Settings</title>
+    <link rel="stylesheet" href="/admin/plugin-pages/style.css" />
+    <style>
+      .hello-actions {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        flex-wrap: wrap;
+      }
+
+      .hello-status {
+        min-height: 20px;
+        color: var(--muted-foreground);
+        font-size: 13px;
+      }
+
+      .hello-status[data-kind="success"] {
+        color: var(--success);
+      }
+
+      .hello-status[data-kind="error"] {
+        color: var(--destructive);
+      }
+
+      .hello-preview {
+        display: grid;
+        gap: 8px;
+        border-left: 3px solid var(--primary);
+        padding-left: 12px;
+      }
+
+      .hello-preview strong {
+        font-weight: 650;
+      }
+
+      .hello-mode {
+        color: var(--muted-foreground);
+        font-size: 13px;
+      }
+    </style>
+  </head>
+  <body>
+    <main class="oxide-page">
+      <header class="oxide-header">
+        <div>
+          <h1 class="oxide-title">Hello Plugin Settings</h1>
+          <p class="oxide-description">
+            A packaged admin page served from the plugin ZIP alongside the WASM module.
+          </p>
+        </div>
+        <span class="oxide-badge">v1.0.0</span>
+      </header>
+
+      <section class="oxide-panel">
+        <div class="oxide-panel-header">
+          <h2 class="oxide-panel-title">Demo Controls</h2>
+          <p class="oxide-panel-description">
+            Plugin authors can ship compiled HTML, CSS, and JavaScript under the admin directory.
+          </p>
+        </div>
+        <div class="oxide-panel-body">
+          <div class="oxide-grid oxide-grid-2">
+            <label>
+              <span class="oxide-label">Greeting</span>
+              <input
+                id="greeting"
+                class="oxide-input"
+                maxlength="120"
+                value="Hello from a packaged plugin page"
+              />
+            </label>
+            <label>
+              <span class="oxide-label">Mode</span>
+              <select id="mode" class="oxide-select">
+                <option>Observe</option>
+                <option>Transform records</option>
+                <option>Block restricted writes</option>
+              </select>
+            </label>
+          </div>
+          <div class="hello-actions">
+            <button id="save" class="oxide-button" type="button">Save Settings</button>
+            <span id="status" class="hello-status" role="status">Loading settings...</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="oxide-panel">
+        <div class="oxide-panel-header">
+          <h2 class="oxide-panel-title">Live Preview</h2>
+        </div>
+        <div class="oxide-panel-body">
+          <div class="hello-preview">
+            <strong id="preview-greeting">Hello from a packaged plugin page</strong>
+            <span id="preview-mode" class="hello-mode">Mode: Observe</span>
+          </div>
+        </div>
+      </section>
+    </main>
+    <script>
+      const defaults = {
+        greeting: "Hello from a packaged plugin page",
+        mode: "Observe",
+      };
+
+      const apiUrl = "/plugin/api/hello/settings";
+      const greetingInput = document.getElementById("greeting");
+      const modeSelect = document.getElementById("mode");
+      const saveButton = document.getElementById("save");
+      const statusEl = document.getElementById("status");
+      const previewGreeting = document.getElementById("preview-greeting");
+      const previewMode = document.getElementById("preview-mode");
+
+      function setStatus(message, kind = "") {
+        statusEl.textContent = message;
+        statusEl.dataset.kind = kind;
+      }
+
+      function authHeaders() {
+        const token =
+          window.localStorage.getItem("auth_token") ||
+          window.sessionStorage.getItem("auth_token");
+        return token ? { Authorization: `Bearer ${token}` } : {};
+      }
+
+      function applySettings(settings) {
+        greetingInput.value = settings.greeting || defaults.greeting;
+        modeSelect.value = settings.mode || defaults.mode;
+        updatePreview();
+      }
+
+      function currentSettings() {
+        return {
+          greeting: greetingInput.value.trim(),
+          mode: modeSelect.value,
+        };
+      }
+
+      function updatePreview() {
+        const settings = currentSettings();
+        previewGreeting.textContent = settings.greeting || defaults.greeting;
+        previewMode.textContent = `Mode: ${settings.mode}`;
+      }
+
+      async function loadSettings() {
+        setStatus("Loading settings...");
+        try {
+          const response = await fetch(apiUrl, {
+            credentials: "include",
+            headers: { Accept: "application/json", ...authHeaders() },
+          });
+          const data = await response.json();
+          if (!response.ok || !data.success) {
+            throw new Error(data.error || "Could not load settings");
+          }
+
+          applySettings(data.settings || defaults);
+          setStatus(data.persisted ? "Loaded saved settings" : "Using defaults", "success");
+        } catch (error) {
+          applySettings(defaults);
+          setStatus(error.message || "Could not load settings", "error");
+        }
+      }
+
+      async function saveSettings() {
+        const settings = currentSettings();
+        if (!settings.greeting) {
+          setStatus("Greeting cannot be empty", "error");
+          greetingInput.focus();
+          return;
+        }
+
+        saveButton.disabled = true;
+        setStatus("Saving...");
+        try {
+          const response = await fetch(apiUrl, {
+            method: "POST",
+            credentials: "include",
+            headers: {
+              Accept: "application/json",
+              "Content-Type": "application/json",
+              ...authHeaders(),
+            },
+            body: JSON.stringify(settings),
+          });
+          const data = await response.json();
+          if (!response.ok || !data.success) {
+            throw new Error(data.error || "Could not save settings");
+          }
+
+          applySettings(data.settings || settings);
+          setStatus("Saved", "success");
+        } catch (error) {
+          setStatus(error.message || "Could not save settings", "error");
+        } finally {
+          saveButton.disabled = false;
+        }
+      }
+
+      greetingInput.addEventListener("input", updatePreview);
+      modeSelect.addEventListener("change", updatePreview);
+      saveButton.addEventListener("click", saveSettings);
+      loadSettings();
+    </script>
+  </body>
+</html>

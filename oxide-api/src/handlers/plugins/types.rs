@@ -14,6 +14,8 @@ pub struct PluginManifest {
     pub plugin: PluginMetadata,
     /// Security configuration
     pub security: PluginSecurity,
+    /// Admin UI pages contributed by this plugin
+    pub admin: Option<PluginAdmin>,
     /// Dependencies on other plugins or system components
     pub dependencies: Option<PluginDependencies>,
     /// Plugin configuration schema
@@ -66,6 +68,31 @@ pub struct PluginSecurity {
     pub security_advisories: Option<Vec<String>>,
     /// Audit information
     pub audit_info: Option<PluginAuditInfo>,
+}
+
+/// Admin UI contributions declared by a plugin package.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PluginAdmin {
+    /// Pages that should be mounted inside the OxideDB admin console.
+    #[serde(default)]
+    pub pages: Vec<PluginAdminPage>,
+}
+
+/// A single admin page served from packaged plugin assets.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PluginAdminPage {
+    /// Stable URL slug for the page within the plugin's admin namespace.
+    pub slug: String,
+    /// Human-readable page title shown in navigation and headers.
+    pub title: String,
+    /// Entry HTML file under the package's admin asset directory.
+    pub entry: String,
+    /// Optional short description shown by the host admin shell.
+    pub description: Option<String>,
+    /// Optional icon identifier understood by the admin shell.
+    pub icon: Option<String>,
+    /// Optional navigation group label for organizing plugin pages.
+    pub nav_group: Option<String>,
 }
 
 /// Plugin dependencies
@@ -129,6 +156,31 @@ pub struct PluginPackage {
     pub extraction_path: std::path::PathBuf,
 }
 
+/// Runtime-safe information for an admin page contributed by a plugin.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PluginAdminPageInfo {
+    /// Plugin that owns the page.
+    pub plugin_name: String,
+    /// Plugin version that supplied the page.
+    pub plugin_version: String,
+    /// Stable page slug from the plugin manifest.
+    pub slug: String,
+    /// Human-readable page title.
+    pub title: String,
+    /// Optional short page description.
+    pub description: Option<String>,
+    /// Optional icon identifier for the admin shell.
+    pub icon: Option<String>,
+    /// Navigation group label for this page.
+    pub nav_group: String,
+    /// URL path in the OxideDB admin where the page is mounted.
+    pub admin_path: String,
+    /// URL to the packaged page entry HTML.
+    pub source_url: String,
+    /// Whether the owning plugin is currently enabled.
+    pub enabled: bool,
+}
+
 /// Information about a plugin route including permissions
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct PluginRouteInfo {
@@ -150,6 +202,7 @@ pub struct PluginInfo {
     pub capabilities: Vec<PluginCapability>,
     pub trust_level: PluginTrustLevel,
     pub routes: Vec<PluginRouteInfo>,
+    pub admin_pages: Vec<PluginAdminPageInfo>,
     pub executions: u64,
     pub errors: u64,
     pub last_execution: Option<chrono::DateTime<chrono::Utc>>,
@@ -166,6 +219,7 @@ pub struct PluginDetails {
     pub capabilities: Vec<PluginCapability>,
     pub trust_level: PluginTrustLevel,
     pub routes: Vec<PluginRouteInfo>,
+    pub admin_pages: Vec<PluginAdminPageInfo>,
     pub executions: u64,
     pub errors: u64,
     pub last_execution: Option<chrono::DateTime<chrono::Utc>>,

@@ -22,6 +22,7 @@ import Health from "./pages/Health";
 import Settings from "./pages/Settings";
 import Permissions from "./pages/Permissions";
 import Plugins from "./pages/Plugins";
+import PluginAdminPage from "./pages/PluginAdminPage";
 import Logs from "./pages/Logs";
 import ApiKeys from "./pages/ApiKeys";
 import Backups from "./pages/Backups";
@@ -90,6 +91,14 @@ function App() {
                           element={
                             <ProtectedRoute requireSuperuser={true}>
                               <Plugins />
+                            </ProtectedRoute>
+                          }
+                        />
+                        <Route
+                          path="plugins/:pluginName/pages/:pageSlug"
+                          element={
+                            <ProtectedRoute requireSuperuser={true}>
+                              <PluginAdminPage />
                             </ProtectedRoute>
                           }
                         />

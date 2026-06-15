@@ -12,7 +12,7 @@ import type {
   ApiKeyRulesResponse, UpsertApiKeyRuleRequest, UpsertApiKeyRuleResponse,
   RevokeApiKeyRuleRequest, BackupExportResponse, BackupManifestResponse,
   BackupQueryOptions, BackupRestoreRequest, BackupRestoreResponse,
-  PluginCapability
+  PluginAdminPage, PluginCapability
 } from '../types/api';
 import { capabilityNameToObject } from '../types/api';
 
@@ -26,6 +26,7 @@ interface PluginInfo {
   capabilities: PluginCapability[];
   trust_level: 'Untrusted' | 'PartiallyTrusted' | 'FullyTrusted' | 'System';
   routes: PluginRoute[];
+  admin_pages: PluginAdminPage[];
   executions: number;
   errors: number;
   last_execution?: string;
@@ -314,6 +315,10 @@ class ApiService {
 
   async delete<T>(endpoint: string): Promise<T> {
     return this.request<T>(endpoint, { method: 'DELETE' });
+  }
+
+  resolveUrl(endpoint: string): string {
+    return new URL(endpoint, this.baseUrl).toString();
   }
 
   // Auth methods
@@ -780,6 +785,11 @@ class ApiService {
   async getPluginDetails(pluginName: string): Promise<PluginDetails> {
     const response = await this.get<ApiResponse<PluginDetails>>(`/plugins/${encodeURIComponent(pluginName)}`);
     return response.data;
+  }
+
+  async getPluginAdminPages(): Promise<PluginAdminPage[]> {
+    const response = await this.get<ApiResponse<PluginAdminPage[]>>('/admin/plugin-pages');
+    return response.data || [];
   }
 
   async analyzePlugin(pluginFile: File): Promise<PluginAnalysisResult> {

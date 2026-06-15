@@ -46,9 +46,10 @@ use crate::{
         },
         plugins::{
             analyze_plugin, disable_plugin, enable_plugin, get_plugin_details,
-            get_plugin_permissions, grant_plugin_capability, handle_plugin_route,
+            get_plugin_permissions, grant_plugin_capability, handle_plugin_route, list_admin_pages,
             list_plugin_routes, list_plugins, register_plugin, revoke_plugin_capability,
-            unregister_plugin, update_plugin_permissions, update_plugin_trust_level,
+            serve_admin_page_asset, serve_admin_page_styles, unregister_plugin,
+            update_plugin_permissions, update_plugin_trust_level,
         },
         records::{create_record, delete_record, get_record, list_records, update_record},
         site_settings::{
@@ -809,6 +810,27 @@ fn get_static_endpoints(config: &RouteConfig) -> Vec<RegisteredEndpoint> {
         ),
         (
             "GET",
+            "/admin/plugin-pages",
+            "plugins::list_admin_pages",
+            true,
+            "List plugin admin pages",
+        ),
+        (
+            "GET",
+            "/admin/plugin-pages/assets/:plugin_name/*path",
+            "plugins::serve_admin_page_asset",
+            true,
+            "Serve packaged plugin admin UI assets",
+        ),
+        (
+            "GET",
+            "/admin/plugin-pages/style.css",
+            "plugins::serve_admin_page_styles",
+            false,
+            "Shared stylesheet for plugin admin pages",
+        ),
+        (
+            "GET",
             "/plugins/:plugin_name/permissions",
             "plugins::get_plugin_permissions",
             true,
@@ -1013,28 +1035,39 @@ fn get_static_endpoints(config: &RouteConfig) -> Vec<RegisteredEndpoint> {
 
     // Admin endpoints (if enabled)
     if config.enable_admin {
-        let admin_wildcard_path = format!("{}/*path", config.admin_path);
-        let admin_endpoints = vec![
+        let admin_path = normalized_admin_path(&config.admin_path);
+        let admin_trailing_path = admin_trailing_slash_path(&admin_path);
+        let admin_wildcard_path = admin_wildcard_path(&admin_path);
+        let mut admin_endpoints = vec![
             (
                 "GET",
-                config.admin_path.as_str(),
+                admin_path.clone(),
                 "admin::serve_admin_ui",
                 false,
                 "Admin UI main page",
             ),
             (
                 "GET",
-                admin_wildcard_path.as_str(),
+                admin_wildcard_path.clone(),
                 "admin::serve_admin_static",
                 false,
                 "Admin UI static assets",
             ),
         ];
+        if let Some(admin_trailing_path) = admin_trailing_path {
+            admin_endpoints.push((
+                "GET",
+                admin_trailing_path,
+                "admin::serve_admin_ui",
+                false,
+                "Admin UI main page",
+            ));
+        }
 
         for (method, path, handler, auth_required, description) in admin_endpoints {
             endpoints.push(RegisteredEndpoint {
                 method: method.to_string(),
-                path: path.to_string(),
+                path,
                 handler: handler.to_string(),
                 category: EndpointCategory::Admin,
                 auth_required,
@@ -1319,6 +1352,16 @@ fn plugin_routes(max_request_size: usize) -> Router<AppState> {
         )
         // Plugin route management
         .route("/plugins/routes", get(list_plugin_routes))
+        // Plugin admin page discovery and packaged admin assets
+        .route("/admin/plugin-pages", get(list_admin_pages))
+        .route(
+            "/admin/plugin-pages/assets/:plugin_name/*path",
+            get(serve_admin_page_asset),
+        )
+        .route(
+            "/admin/plugin-pages/style.css",
+            get(serve_admin_page_styles),
+        )
         // Plugin permission management
         .route(
             "/plugins/:plugin_name/permissions",
@@ -1387,37 +1430,78 @@ fn vfs_routes() -> Router<AppState> {
 
 /// Admin UI routes with configurable mode
 fn admin_routes(mode: AdminUiMode, path_prefix: String) -> Router<AppState> {
+    let admin_route_path = normalized_admin_path(&path_prefix);
+    let admin_route_trailing_path = admin_trailing_slash_path(&admin_route_path);
+    let admin_route_wildcard_path = admin_wildcard_path(&admin_route_path);
+
     match mode {
-        AdminUiMode::Embedded => Router::new()
-            .route(&path_prefix, get(serve_admin_ui))
-            .route(&format!("{}/*path", path_prefix), get(serve_admin_static)),
+        AdminUiMode::Embedded => {
+            let mut router = Router::new().route(&admin_route_path, get(serve_admin_ui));
+            if let Some(admin_route_trailing_path) = &admin_route_trailing_path {
+                router = router.route(admin_route_trailing_path, get(serve_admin_ui));
+            }
+            router.route(&admin_route_wildcard_path, get(serve_admin_static))
+        }
         AdminUiMode::External(admin_path) => {
             use axum::extract::Path;
 
             // For external mode, we need to create a custom handler that includes the path
             // We'll use a simple approach that works with Axum's routing
-            Router::new()
-                .route(
-                    &path_prefix,
+            let mut router = Router::new().route(
+                &admin_route_path,
+                get({
+                    let admin_path = admin_path.clone();
+                    || async move { serve_external_admin_ui(admin_path).await }
+                }),
+            );
+            if let Some(admin_route_trailing_path) = &admin_route_trailing_path {
+                router = router.route(
+                    admin_route_trailing_path,
                     get({
                         let admin_path = admin_path.clone();
                         || async move { serve_external_admin_ui(admin_path).await }
                     }),
-                )
-                .route(
-                    &format!("{}/*path", path_prefix),
-                    get({
-                        let admin_path = admin_path.clone();
-                        |path: Path<String>| async move {
-                            serve_external_admin_static(admin_path, path).await
-                        }
-                    }),
-                )
+                );
+            }
+            router.route(
+                &admin_route_wildcard_path,
+                get({
+                    let admin_path = admin_path.clone();
+                    |path: Path<String>| async move {
+                        serve_external_admin_static(admin_path, path).await
+                    }
+                }),
+            )
         }
         AdminUiMode::Disabled => {
             // Return empty router when admin is disabled
             Router::new()
         }
+    }
+}
+
+fn normalized_admin_path(path_prefix: &str) -> String {
+    let trimmed = path_prefix.trim_end_matches('/');
+    if trimmed.is_empty() {
+        "/".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+fn admin_trailing_slash_path(admin_path: &str) -> Option<String> {
+    if admin_path == "/" {
+        None
+    } else {
+        Some(format!("{}/", admin_path))
+    }
+}
+
+fn admin_wildcard_path(admin_path: &str) -> String {
+    if admin_path == "/" {
+        "/*path".to_string()
+    } else {
+        format!("{}/*path", admin_path)
     }
 }
 
@@ -1567,8 +1651,17 @@ mod tests {
         assert!(is_registered_protected_admin_api_path(
             "/admin/settings/email/test"
         ));
+        assert!(is_registered_protected_admin_api_path(
+            "/admin/plugin-pages"
+        ));
+        assert!(is_registered_protected_admin_api_path(
+            "/admin/plugin-pages/assets/hello-plugin/index.html"
+        ));
 
         assert!(!is_registered_protected_admin_api_path("/admin"));
+        assert!(!is_registered_protected_admin_api_path(
+            "/admin/plugin-pages/style.css"
+        ));
         assert!(!is_registered_protected_admin_api_path(
             "/admin/assets/app.js"
         ));
@@ -1591,5 +1684,24 @@ mod tests {
             "/admin/settings/:section",
             "/admin/settings/auth/extra"
         ));
+    }
+
+    #[test]
+    fn admin_route_paths_include_trailing_slash_entry() {
+        assert_eq!(normalized_admin_path("/admin/"), "/admin");
+        assert_eq!(
+            admin_trailing_slash_path("/admin"),
+            Some("/admin/".to_string())
+        );
+        assert_eq!(admin_wildcard_path("/admin"), "/admin/*path");
+
+        let admin_paths: Vec<String> = get_static_endpoints(&RouteConfig::default())
+            .into_iter()
+            .filter(|endpoint| endpoint.handler == "admin::serve_admin_ui")
+            .map(|endpoint| endpoint.path)
+            .collect();
+
+        assert!(admin_paths.iter().any(|path| path == "/admin"));
+        assert!(admin_paths.iter().any(|path| path == "/admin/"));
     }
 }

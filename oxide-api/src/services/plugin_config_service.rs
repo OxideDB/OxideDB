@@ -368,6 +368,78 @@ impl PluginConfigService {
         Ok(wasm_data)
     }
 
+    /// Load a packaged admin UI asset for a plugin.
+    pub async fn load_plugin_admin_asset(
+        &self,
+        plugin_name: &str,
+        asset_path: &str,
+    ) -> Result<Vec<u8>, AppError> {
+        debug!(
+            "Loading plugin admin asset: {} -> {}",
+            plugin_name, asset_path
+        );
+
+        let config = self.get_plugin_config(plugin_name).await?;
+        if !config.enabled {
+            return Err(AppError::auth(format!(
+                "Plugin '{}' is disabled",
+                plugin_name
+            )));
+        }
+
+        let plugin_directory = config.plugin_directory.ok_or_else(|| {
+            AppError::not_found(
+                "plugin_directory".to_string(),
+                format!("{} admin assets", plugin_name),
+            )
+        })?;
+        let plugin_directory_path = Self::safe_plugin_directory_path(&plugin_directory)?;
+        let admin_asset_path = Self::safe_relative_path("admin_asset_path", asset_path)?;
+
+        tokio::task::spawn_blocking({
+            let plugins_dir = self.plugins_dir.clone();
+            move || {
+                let plugin_dir = plugins_dir.join(&plugin_directory_path);
+                let admin_dir = plugin_dir.join("admin");
+                let file_path = admin_dir.join(&admin_asset_path);
+                let canonical_plugins_dir = plugins_dir.canonicalize()?;
+                let canonical_plugin_dir = plugin_dir.canonicalize()?;
+                let canonical_admin_dir = admin_dir.canonicalize()?;
+                let canonical_file_path = file_path.canonicalize()?;
+
+                if !canonical_plugin_dir.starts_with(&canonical_plugins_dir) {
+                    return Err(permission_denied(
+                        "Plugin directory escapes plugins directory",
+                    ));
+                }
+
+                if !canonical_admin_dir.starts_with(&canonical_plugin_dir) {
+                    return Err(permission_denied(
+                        "Plugin admin directory escapes plugin directory",
+                    ));
+                }
+
+                if !canonical_file_path.starts_with(&canonical_admin_dir) {
+                    return Err(permission_denied(
+                        "Plugin admin asset path escapes admin directory",
+                    ));
+                }
+
+                let metadata = std::fs::symlink_metadata(&canonical_file_path)?;
+                if metadata.file_type().is_symlink() || !metadata.is_file() {
+                    return Err(permission_denied(
+                        "Refusing to serve non-file plugin admin asset",
+                    ));
+                }
+
+                std::fs::read(canonical_file_path)
+            }
+        })
+        .await
+        .map_err(|e| AppError::internal(format!("Failed to spawn blocking task: {}", e)))?
+        .map_err(|e| AppError::internal(format!("Failed to load plugin admin asset: {}", e)))
+    }
+
     /// Uninstall a plugin (remove from database and filesystem)
     pub async fn uninstall_plugin(&self, plugin_name: &str) -> Result<(), AppError> {
         debug!("Uninstalling plugin: {}", plugin_name);

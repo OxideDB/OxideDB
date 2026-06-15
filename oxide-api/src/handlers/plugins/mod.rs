@@ -3,6 +3,7 @@
 //! This module provides HTTP handlers for plugin-registered routes,
 //! including authorization and security validation.
 
+pub mod admin_pages;
 pub mod analysis;
 pub mod audit;
 pub mod capabilities;
@@ -15,6 +16,7 @@ pub mod types;
 use crate::{errors::ApiError, extractors::AuthenticatedUser};
 
 // Re-export commonly used types and functions
+pub use admin_pages::*;
 pub use analysis::*;
 pub use audit::*;
 pub use capabilities::*;

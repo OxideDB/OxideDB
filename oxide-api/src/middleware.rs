@@ -1007,8 +1007,16 @@ fn origin_from_host(headers: &HeaderMap) -> Option<String> {
         .and_then(|value| value.to_str().ok())?;
     let scheme = forwarded_proto(headers)
         .or_else(|| forwarded_header_proto(headers))
-        .unwrap_or("https");
+        .unwrap_or_else(|| default_scheme_for_host(host));
     normalize_origin(&format!("{scheme}://{host}"))
+}
+
+fn default_scheme_for_host(host: &str) -> &'static str {
+    if host_is_loopback(host) {
+        "http"
+    } else {
+        "https"
+    }
 }
 
 fn local_http_origin_from_host(headers: &HeaderMap) -> Option<String> {
@@ -1191,6 +1199,17 @@ mod tests {
     }
 
     #[test]
+    fn origin_from_host_defaults_to_http_for_loopback_hosts() {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::HOST, HeaderValue::from_static("localhost:8080"));
+
+        assert_eq!(
+            origin_from_host(&headers).as_deref(),
+            Some("http://localhost:8080")
+        );
+    }
+
+    #[test]
     fn cookie_auth_write_requires_origin_or_referer() {
         let mut headers = HeaderMap::new();
         headers.insert(
@@ -1294,6 +1313,15 @@ mod tests {
         );
         assert_eq!(public_endpoint_access("/admin/api-keys"), None);
         assert_eq!(public_endpoint_access("/admin/settings/security"), None);
+        assert_eq!(public_endpoint_access("/admin/plugin-pages"), None);
+        assert_eq!(
+            public_endpoint_access("/admin/plugin-pages/assets/hello-plugin/index.html"),
+            None
+        );
+        assert_eq!(
+            public_endpoint_access("/admin/plugin-pages/style.css"),
+            Some(PublicEndpointAccess::BypassAuthorization)
+        );
         assert_eq!(public_endpoint_access("/adminish"), None);
     }
 

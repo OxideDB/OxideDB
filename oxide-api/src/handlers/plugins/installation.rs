@@ -19,6 +19,7 @@ use tracing::{debug, error, info, warn};
 use zip::ZipArchive;
 
 use super::{
+    admin_pages::{admin_pages_from_manifest, validate_admin_pages},
     audit::record_plugin_audit_event,
     capabilities::{
         capability_satisfies, is_capability_allowed_for_trust_level,
@@ -430,6 +431,8 @@ pub async fn register_plugin(
     .await;
 
     // Return plugin info based on manifest data
+    let admin_pages =
+        admin_pages_from_manifest(&plugin_name, &plugin_version, true, &package.manifest);
     let plugin_info = PluginInfo {
         name: plugin_name.clone(),
         status: PluginStatus::Enabled,
@@ -439,6 +442,7 @@ pub async fn register_plugin(
         capabilities: final_capabilities,
         trust_level: user_trust_level,
         routes: vec![], // Routes will be populated by the runtime
+        admin_pages,
         executions: 0,
         errors: 0,
         last_execution: None,
@@ -643,6 +647,8 @@ pub fn extract_plugin_package(package_data: &[u8]) -> Result<PluginPackage, ApiE
             manifest.plugin.version
         )));
     }
+
+    validate_admin_pages(&manifest, &temp_dir)?;
 
     info!(
         "✅ Successfully extracted plugin package: {} v{} to {}",
@@ -1186,6 +1192,7 @@ recommended_trust_level = "Untrusted"
                     security_advisories: None,
                     audit_info: None,
                 },
+                admin: None,
                 dependencies: None,
                 config: None,
             },

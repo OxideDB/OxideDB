@@ -3,7 +3,10 @@
 //! This module provides high-level plugin management functionality including
 //! plugin loading, event system integration, and lifecycle management.
 
-use crate::WasmtimePluginRuntime;
+use crate::{
+    host_state::{lock_host_state, HostState, HostStateRef},
+    WasmtimePluginRuntime,
+};
 use oxide_core::{
     plugin_api::{plugin_exports, EventPayload, PluginError, PluginRuntime},
     plugin_config::PluginConfiguration,
@@ -726,12 +729,26 @@ fn plugin_signature_verified(
 /// Bridge to connect WASM plugins with the EventBus system
 pub struct PluginEventBridge {
     plugin_runtime: Arc<Mutex<WasmtimePluginRuntime>>,
+    host_state: HostStateRef,
 }
 
 impl PluginEventBridge {
     /// Create a new plugin event bridge
     pub fn new(plugin_runtime: Arc<Mutex<WasmtimePluginRuntime>>) -> Self {
-        Self { plugin_runtime }
+        let host_state = match plugin_runtime.lock() {
+            Ok(runtime) => runtime.get_host_state(),
+            Err(_) => {
+                warn!(
+                    "Failed to acquire plugin runtime lock while creating event bridge; using isolated host state"
+                );
+                Arc::new(Mutex::new(HostState::default()))
+            }
+        };
+
+        Self {
+            plugin_runtime,
+            host_state,
+        }
     }
 
     /// Create an event handler that calls the plugin for Before record events.
@@ -741,9 +758,11 @@ impl PluginEventBridge {
         function_name: &'static str,
     ) -> BeforeHandler {
         let runtime = Arc::clone(&self.plugin_runtime);
+        let host_state = Arc::clone(&self.host_state);
 
         Arc::new(move |context: &mut BeforeEventContext| {
             let runtime = Arc::clone(&runtime);
+            let host_state = Arc::clone(&host_state);
             let plugin_name = plugin_name.clone();
             let function_name = function_name.to_string();
             Box::pin(async move {
@@ -752,12 +771,20 @@ impl PluginEventBridge {
                     plugin_name, function_name
                 );
 
-                // Check if we can acquire the runtime lock without blocking
-                // If we can't, it means the same plugin is already executing (likely an HTTP request)
-                // and we should skip this event to avoid deadlock
+                // Check if we can acquire the runtime lock without blocking. A plugin HTTP
+                // handler can trigger database events while it already owns the runtime lock;
+                // skip only that recursive same-plugin case and keep other busy states fail-closed.
                 let mut runtime_guard = match runtime.try_lock() {
                     Ok(guard) => guard,
                     Err(_) => {
+                        if Self::is_same_plugin_http_execution(&host_state, &plugin_name) {
+                            info!(
+                                "🔌 Plugin '{}' is handling HTTP request, skipping before event '{}' to prevent recursion",
+                                plugin_name, function_name
+                            );
+                            return Ok(());
+                        }
+
                         return Err(AppError::plugin(
                             plugin_name.clone(),
                             "Plugin runtime is busy; before hook failed closed".to_string(),
@@ -795,17 +822,12 @@ impl PluginEventBridge {
 
                 // Check if this plugin is currently handling an HTTP request
                 // If so, skip the event handler to prevent recursive calls
-                {
-                    let host_state = runtime_guard.get_host_state();
-                    let state = host_state.lock().map_err(|_| {
-                        AppError::internal("Failed to acquire plugin host state lock")
-                    })?;
-                    if let Some(current_plugin) = &state.current_plugin {
-                        if current_plugin == &plugin_name && state.current_http_request.is_some() {
-                            info!("🔌 Plugin '{}' is handling HTTP request, skipping BeforeRecordCreate event to prevent recursion", plugin_name);
-                            return Ok(());
-                        }
-                    }
+                if Self::is_same_plugin_http_execution(&host_state, &plugin_name) {
+                    info!(
+                        "🔌 Plugin '{}' is handling HTTP request, skipping before event '{}' to prevent recursion",
+                        plugin_name, function_name
+                    );
+                    return Ok(());
                 }
 
                 // Convert BeforeEventContext to EventPayload
@@ -860,6 +882,19 @@ impl PluginEventBridge {
                 }
             })
         })
+    }
+
+    fn is_same_plugin_http_execution(host_state: &HostStateRef, plugin_name: &str) -> bool {
+        let Some(state) = lock_host_state(host_state, "checking current plugin HTTP execution")
+        else {
+            return false;
+        };
+
+        state
+            .current_plugin
+            .as_deref()
+            .is_some_and(|current_plugin| current_plugin == plugin_name)
+            && state.current_http_request.is_some()
     }
 
     /// Create an event handler that calls the plugin for After record events.
@@ -1115,6 +1150,84 @@ mod tests {
 
         // Bridge should be created successfully
         assert!(std::ptr::addr_of!(bridge) as usize > 0);
+    }
+
+    fn test_runtime_and_bridge() -> (Arc<Mutex<WasmtimePluginRuntime>>, PluginEventBridge) {
+        let policies = SecurityPolicies::default();
+        let auth_config = AuthServiceConfig::new("test_secret".to_string());
+        let auth_service = Arc::new(AuthService::new(auth_config));
+        let event_bus = Arc::new(InMemoryEventBus::new());
+        let db = SqliteDb::new(":memory:", event_bus, auth_service).unwrap();
+        let runtime =
+            WasmtimePluginRuntime::new_with_security_policies(Arc::new(db), policies).unwrap();
+        let runtime = Arc::new(Mutex::new(runtime));
+        let bridge = PluginEventBridge::new(Arc::clone(&runtime));
+        (runtime, bridge)
+    }
+
+    fn sample_http_request_context() -> oxide_core::plugin_api::HttpRequestContext {
+        oxide_core::plugin_api::HttpRequestContext {
+            method: "POST".to_string(),
+            path: "/api/hello/settings".to_string(),
+            query_params: HashMap::new(),
+            headers: HashMap::new(),
+            body: None,
+            path_params: HashMap::new(),
+            user: None,
+        }
+    }
+
+    fn sample_before_update_context() -> BeforeEventContext {
+        BeforeEventContext::new_update(
+            "_plugins".to_string(),
+            "plugin-record".to_string(),
+            serde_json::json!({"name": "hello-plugin"}),
+            serde_json::json!({"name": "hello-plugin"}),
+        )
+    }
+
+    #[test]
+    fn busy_before_handler_skips_same_plugin_http_recursion() {
+        let (runtime, bridge) = test_runtime_and_bridge();
+        {
+            let mut state = bridge.host_state.lock().unwrap();
+            state.current_plugin = Some("hello-plugin".to_string());
+            state.current_http_request = Some(sample_http_request_context());
+        }
+
+        let handler = bridge.create_before_handler("hello-plugin".to_string(), "on_before_update");
+        let _runtime_guard = runtime.lock().unwrap();
+        let mut context = sample_before_update_context();
+        let tokio_runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        let result = tokio_runtime.block_on(handler(&mut context));
+
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn busy_before_handler_fails_closed_for_unrelated_execution() {
+        let (runtime, bridge) = test_runtime_and_bridge();
+        {
+            let mut state = bridge.host_state.lock().unwrap();
+            state.current_plugin = Some("other-plugin".to_string());
+            state.current_http_request = Some(sample_http_request_context());
+        }
+
+        let handler = bridge.create_before_handler("hello-plugin".to_string(), "on_before_update");
+        let _runtime_guard = runtime.lock().unwrap();
+        let mut context = sample_before_update_context();
+        let tokio_runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        let result = tokio_runtime.block_on(handler(&mut context));
+
+        assert!(matches!(result, Err(AppError::Plugin { .. })));
     }
 
     fn test_manager_with_policies(policies: SecurityPolicies) -> PluginManager {
