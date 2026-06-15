@@ -970,7 +970,6 @@ export interface GeneralSettings {
   default_timezone: string;
   default_locale: string;
   max_upload_size: number;
-  allow_user_registration: boolean;
   allow_public_api: boolean;
   api_rate_limit: number;
   maintenance: MaintenanceSettings;
@@ -978,7 +977,6 @@ export interface GeneralSettings {
 }
 
 export interface SecuritySettings {
-  require_email_verification: boolean;
   password_min_length: number;
   password_require_complexity: boolean;
   session_timeout_minutes: number;

@@ -188,8 +188,8 @@ impl SiteSettingsHandlers {
         // Validate section name
         Self::validate_section_name(&section)?;
 
-        // Validate section data based on section type
-        Self::validate_section_data(&section, &data)?;
+        // Validate and normalize section data based on section type.
+        let data = Self::validate_section_data(&section, &data)?;
 
         db.update_settings_section(&section, &data)
             .await
@@ -413,41 +413,51 @@ impl SiteSettingsHandlers {
     }
 
     /// Validate section data based on section type
-    fn validate_section_data(section: &str, data: &Value) -> Result<(), ApiError> {
+    fn validate_section_data(section: &str, data: &Value) -> Result<Value, ApiError> {
         match section {
             settings_sections::BRANDING => {
-                let _branding: oxide_core::site_settings::BrandingSettings =
+                let branding: oxide_core::site_settings::BrandingSettings =
                     serde_json::from_value(data.clone()).map_err(|e| {
                         ApiError::bad_request(format!("Invalid branding data: {}", e))
                     })?;
-                Ok(())
+                serde_json::to_value(&branding).map_err(|e| {
+                    ApiError::internal(format!("Failed to normalize branding settings: {}", e))
+                })
             }
             settings_sections::EMAIL => {
-                let _email: oxide_core::site_settings::EmailSettings =
+                let email: oxide_core::site_settings::EmailSettings =
                     serde_json::from_value(data.clone())
                         .map_err(|e| ApiError::bad_request(format!("Invalid email data: {}", e)))?;
-                Ok(())
+                serde_json::to_value(&email).map_err(|e| {
+                    ApiError::internal(format!("Failed to normalize email settings: {}", e))
+                })
             }
             settings_sections::SYSTEM_INFO => {
-                let _system_info: oxide_core::site_settings::SystemInfoSettings =
+                let system_info: oxide_core::site_settings::SystemInfoSettings =
                     serde_json::from_value(data.clone()).map_err(|e| {
                         ApiError::bad_request(format!("Invalid system info data: {}", e))
                     })?;
-                Ok(())
+                serde_json::to_value(&system_info).map_err(|e| {
+                    ApiError::internal(format!("Failed to normalize system info settings: {}", e))
+                })
             }
             settings_sections::GENERAL => {
-                let _general: oxide_core::site_settings::GeneralSettings =
+                let general: oxide_core::site_settings::GeneralSettings =
                     serde_json::from_value(data.clone()).map_err(|e| {
                         ApiError::bad_request(format!("Invalid general settings data: {}", e))
                     })?;
-                Ok(())
+                serde_json::to_value(&general).map_err(|e| {
+                    ApiError::internal(format!("Failed to normalize general settings: {}", e))
+                })
             }
             settings_sections::SECURITY => {
-                let _security: oxide_core::site_settings::SecuritySettings =
+                let security: oxide_core::site_settings::SecuritySettings =
                     serde_json::from_value(data.clone()).map_err(|e| {
                         ApiError::bad_request(format!("Invalid security settings data: {}", e))
                     })?;
-                Ok(())
+                serde_json::to_value(&security).map_err(|e| {
+                    ApiError::internal(format!("Failed to normalize security settings: {}", e))
+                })
             }
             _ => Err(ApiError::bad_request(format!(
                 "Unknown settings section: {}",

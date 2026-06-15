@@ -117,8 +117,6 @@ pub struct GeneralSettings {
     pub default_locale: String,
     /// Maximum file upload size in bytes
     pub max_upload_size: u64,
-    /// Enable user registration
-    pub allow_user_registration: bool,
     /// Enable public API access
     pub allow_public_api: bool,
     /// Maximum API requests per minute per user
@@ -132,8 +130,6 @@ pub struct GeneralSettings {
 /// Security and authentication settings
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SecuritySettings {
-    /// Require email verification for new users
-    pub require_email_verification: bool,
     /// Password minimum length
     pub password_min_length: u8,
     /// Require password complexity
@@ -371,7 +367,6 @@ impl Default for GeneralSettings {
             default_timezone: "UTC".to_string(),
             default_locale: "en-US".to_string(),
             max_upload_size: 10 * 1024 * 1024, // 10MB
-            allow_user_registration: true,
             allow_public_api: false,
             api_rate_limit: 1000, // requests per minute
             maintenance: MaintenanceSettings::default(),
@@ -383,7 +378,6 @@ impl Default for GeneralSettings {
 impl Default for SecuritySettings {
     fn default() -> Self {
         Self {
-            require_email_verification: true,
             password_min_length: 8,
             password_require_complexity: true,
             session_timeout_minutes: 480, // 8 hours

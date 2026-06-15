@@ -23,6 +23,7 @@ use oxide_core::{
 };
 use std::{
     collections::HashMap,
+    net::IpAddr,
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
@@ -46,6 +47,13 @@ pub struct RequestStartTime(pub Instant);
 /// Extension key for storing correlation ID
 #[derive(Clone)]
 pub struct CorrelationId(pub String);
+
+const LOCAL_DEVELOPMENT_COOKIE_ORIGINS: &[&str] = &[
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+];
 
 /// Shared fixed-window rate limiter for sensitive public endpoints.
 #[derive(Clone)]
@@ -782,6 +790,18 @@ fn trusted_cookie_origins(headers: &HeaderMap) -> Vec<String> {
         origins.push(host_origin);
     }
 
+    if request_host_is_loopback(headers) {
+        if let Some(local_host_origin) = local_http_origin_from_host(headers) {
+            origins.push(local_host_origin);
+        }
+
+        origins.extend(
+            LOCAL_DEVELOPMENT_COOKIE_ORIGINS
+                .iter()
+                .filter_map(|origin| normalize_origin(origin)),
+        );
+    }
+
     if let Ok(configured) = std::env::var("OXIDEDB_CORS_ALLOWED_ORIGINS") {
         origins.extend(configured.split(',').filter_map(normalize_origin));
     }
@@ -799,6 +819,17 @@ fn origin_from_host(headers: &HeaderMap) -> Option<String> {
         .or_else(|| forwarded_header_proto(headers))
         .unwrap_or("https");
     normalize_origin(&format!("{scheme}://{host}"))
+}
+
+fn local_http_origin_from_host(headers: &HeaderMap) -> Option<String> {
+    let host = headers
+        .get(header::HOST)
+        .and_then(|value| value.to_str().ok())?;
+    if host_is_loopback(host) {
+        normalize_origin(&format!("http://{host}"))
+    } else {
+        None
+    }
 }
 
 fn origin_from_referer(referer: &str) -> Option<String> {
@@ -819,6 +850,41 @@ fn normalize_origin(origin: &str) -> Option<String> {
     } else {
         None
     }
+}
+
+fn request_host_is_loopback(headers: &HeaderMap) -> bool {
+    headers
+        .get(header::HOST)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(host_is_loopback)
+}
+
+fn host_is_loopback(host: &str) -> bool {
+    let Some(hostname) = hostname_from_host(host) else {
+        return false;
+    };
+
+    if hostname.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+
+    hostname
+        .parse::<IpAddr>()
+        .is_ok_and(|addr| addr.is_loopback())
+}
+
+fn hostname_from_host(host: &str) -> Option<&str> {
+    let host = host.trim();
+    if host.is_empty() {
+        return None;
+    }
+
+    if let Some(rest) = host.strip_prefix('[') {
+        let (hostname, _) = rest.split_once(']')?;
+        return Some(hostname);
+    }
+
+    Some(host.split_once(':').map_or(host, |(hostname, _)| hostname))
 }
 
 fn request_is_https(headers: &HeaderMap) -> bool {
@@ -956,6 +1022,54 @@ mod tests {
         );
 
         assert!(validate_cookie_auth_request(&Method::POST, &headers).is_ok());
+    }
+
+    #[test]
+    fn cookie_auth_write_allows_local_dev_origin_for_loopback_api_host() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::COOKIE,
+            HeaderValue::from_static("oxidedb_access_token=token"),
+        );
+        headers.insert(header::HOST, HeaderValue::from_static("localhost:8080"));
+        headers.insert(
+            header::ORIGIN,
+            HeaderValue::from_static("http://localhost:3000"),
+        );
+
+        assert!(validate_cookie_auth_request(&Method::POST, &headers).is_ok());
+    }
+
+    #[test]
+    fn cookie_auth_write_allows_http_same_origin_for_loopback_api_host() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::COOKIE,
+            HeaderValue::from_static("oxidedb_access_token=token"),
+        );
+        headers.insert(header::HOST, HeaderValue::from_static("127.0.0.1:8080"));
+        headers.insert(
+            header::ORIGIN,
+            HeaderValue::from_static("http://127.0.0.1:8080"),
+        );
+
+        assert!(validate_cookie_auth_request(&Method::POST, &headers).is_ok());
+    }
+
+    #[test]
+    fn cookie_auth_write_rejects_local_dev_origin_for_remote_api_host() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::COOKIE,
+            HeaderValue::from_static("oxidedb_access_token=token"),
+        );
+        headers.insert(header::HOST, HeaderValue::from_static("api.example.com"));
+        headers.insert(
+            header::ORIGIN,
+            HeaderValue::from_static("http://localhost:3000"),
+        );
+
+        assert!(validate_cookie_auth_request(&Method::POST, &headers).is_err());
     }
 
     #[test]
