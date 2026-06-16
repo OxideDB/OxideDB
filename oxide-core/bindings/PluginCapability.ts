@@ -70,11 +70,11 @@ collections: Array<string>, } } | { "DeleteRecords": {
 /**
  * Collections the plugin can delete from
  */
-collections: Array<string>, } } | { "ManageCollections": {
+collections: Array<string>, } } | { "ManageCollections": { 
 /**
  * Collection names or patterns the plugin can manage
  */
-collections: Array<string>,
+collections: Array<string>, 
 /**
  * Collection management operations allowed on those collections
  */

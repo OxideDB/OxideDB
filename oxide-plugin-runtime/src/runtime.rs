@@ -7,7 +7,7 @@ use crate::host_functions::{
     define_database_functions, define_event_functions, define_http_functions,
     define_logging_functions, register_vfs_functions,
 };
-use crate::host_state::{ExecutionContext, HostState, PluginStoreData};
+use crate::host_state::{ExecutionContext, HostState, HostStateRef, PluginStoreData};
 use oxide_core::{
     plugin_api::{
         plugin_exports, EventPayload, PluginError, PluginResponse, PluginResult, PluginRuntime,
@@ -30,11 +30,16 @@ const DEFAULT_PLUGIN_FUEL_PER_MILLISECOND: u64 = 10_000;
 pub struct WasmtimePluginRuntime {
     engine: Engine,
     linker: Linker<PluginStoreData>,
-    store: Store<PluginStoreData>,
+    host_state: HostStateRef,
     modules: HashMap<String, Module>,
-    instances: HashMap<String, Instance>,
+    instances: HashMap<String, PluginInstanceRuntime>,
     security_manager: PluginSecurityManager,
     database: Arc<dyn Db>,
+}
+
+struct PluginInstanceRuntime {
+    store: Store<PluginStoreData>,
+    instance: Instance,
 }
 
 fn configured_engine() -> PluginResult<Engine> {
@@ -45,8 +50,7 @@ fn configured_engine() -> PluginResult<Engine> {
     })
 }
 
-fn configured_store(engine: &Engine) -> Store<PluginStoreData> {
-    let host_state = Arc::new(Mutex::new(HostState::default()));
+fn configured_store(engine: &Engine, host_state: HostStateRef) -> Store<PluginStoreData> {
     let mut store = Store::new(engine, PluginStoreData::new(host_state));
     store.limiter(|state| state);
     store
@@ -57,7 +61,7 @@ impl WasmtimePluginRuntime {
     pub fn new(database: Arc<dyn Db>) -> PluginResult<Self> {
         let engine = configured_engine()?;
         let linker = Linker::new(&engine);
-        let store = configured_store(&engine);
+        let host_state = Arc::new(Mutex::new(HostState::default()));
 
         // Create security manager with default policies
         let security_manager = PluginSecurityManager::new();
@@ -66,7 +70,7 @@ impl WasmtimePluginRuntime {
         let mut runtime = Self {
             engine,
             linker,
-            store,
+            host_state,
             modules: HashMap::new(),
             instances: HashMap::new(),
             security_manager,
@@ -84,7 +88,7 @@ impl WasmtimePluginRuntime {
     ) -> PluginResult<Self> {
         let engine = configured_engine()?;
         let linker = Linker::new(&engine);
-        let store = configured_store(&engine);
+        let host_state = Arc::new(Mutex::new(HostState::default()));
 
         // Create security manager with custom policies
         let security_manager = PluginSecurityManager::with_policies(policies);
@@ -93,7 +97,7 @@ impl WasmtimePluginRuntime {
         let mut runtime = Self {
             engine,
             linker,
-            store,
+            host_state,
             modules: HashMap::new(),
             instances: HashMap::new(),
             security_manager,
@@ -132,7 +136,7 @@ impl WasmtimePluginRuntime {
     }
 
     fn host_state(&self, action: &str) -> PluginResult<MutexGuard<'_, HostState>> {
-        self.store.data().host_state().lock().map_err(|_| {
+        self.host_state.lock().map_err(|_| {
             PluginError::ExecutionFailed(format!(
                 "Plugin host state lock was poisoned while {}",
                 action
@@ -141,7 +145,7 @@ impl WasmtimePluginRuntime {
     }
 
     fn try_host_state(&self, action: &str) -> Option<MutexGuard<'_, HostState>> {
-        match self.store.data().host_state().lock() {
+        match self.host_state.lock() {
             Ok(state) => Some(state),
             Err(_) => {
                 error!("Plugin host state lock was poisoned while {}", action);
@@ -152,7 +156,7 @@ impl WasmtimePluginRuntime {
 
     /// Get the current host state (for testing)
     pub fn get_host_state(&self) -> Arc<Mutex<HostState>> {
-        self.store.data().host_state().clone()
+        self.host_state.clone()
     }
 
     /// Get the error message set by the plugin (for testing)
@@ -166,6 +170,19 @@ impl WasmtimePluginRuntime {
         self.try_host_state("reading plugin logs")
             .map(|state| state.log_messages.clone())
             .unwrap_or_default()
+    }
+
+    fn plugin_runtime_mut(
+        &mut self,
+        plugin_name: &str,
+    ) -> PluginResult<&mut PluginInstanceRuntime> {
+        self.instances
+            .get_mut(plugin_name)
+            .ok_or_else(|| PluginError::PluginNotFound(plugin_name.to_string()))
+    }
+
+    fn set_store_memory_limit(store: &mut Store<PluginStoreData>, limits: &ResourceLimits) {
+        store.data_mut().set_max_memory_bytes(limits.max_memory);
     }
 
     /// Set the current event payload for plugin processing
@@ -184,17 +201,15 @@ impl WasmtimePluginRuntime {
 
     /// Get plugin response from the plugin's response buffer
     fn get_plugin_response(&mut self, plugin_name: &str) -> PluginResult<PluginResponse> {
-        let instance = self
-            .instances
-            .get(plugin_name)
-            .ok_or_else(|| PluginError::PluginNotFound(plugin_name.to_string()))?;
+        let plugin = self.plugin_runtime_mut(plugin_name)?;
 
         // Get response length
-        let get_response_len = instance
-            .get_typed_func::<(), i32>(&mut self.store, "get_response_len")
+        let get_response_len = plugin
+            .instance
+            .get_typed_func::<(), i32>(&mut plugin.store, "get_response_len")
             .map_err(|e| PluginError::FunctionNotExported(format!("get_response_len: {}", e)))?;
 
-        let response_len = get_response_len.call(&mut self.store, ()).map_err(|e| {
+        let response_len = get_response_len.call(&mut plugin.store, ()).map_err(|e| {
             PluginError::ExecutionFailed(format!("Failed to get response length: {}", e))
         })?;
 
@@ -204,20 +219,22 @@ impl WasmtimePluginRuntime {
         }
 
         // Get response pointer
-        let get_response_ptr = instance
-            .get_typed_func::<(), i32>(&mut self.store, "get_response_ptr")
+        let get_response_ptr = plugin
+            .instance
+            .get_typed_func::<(), i32>(&mut plugin.store, "get_response_ptr")
             .map_err(|e| PluginError::FunctionNotExported(format!("get_response_ptr: {}", e)))?;
 
-        let response_ptr = get_response_ptr.call(&mut self.store, ()).map_err(|e| {
+        let response_ptr = get_response_ptr.call(&mut plugin.store, ()).map_err(|e| {
             PluginError::ExecutionFailed(format!("Failed to get response pointer: {}", e))
         })?;
 
         // Read response from plugin memory
-        let memory = instance
-            .get_memory(&mut self.store, "memory")
+        let memory = plugin
+            .instance
+            .get_memory(&mut plugin.store, "memory")
             .ok_or_else(|| PluginError::ExecutionFailed("Plugin memory not found".to_string()))?;
 
-        let data = memory.data(&self.store);
+        let data = memory.data(&plugin.store);
         let response_start = usize::try_from(response_ptr).map_err(|_| {
             PluginError::InvalidResponse(format!(
                 "Plugin returned negative response pointer: {}",
@@ -254,10 +271,6 @@ impl WasmtimePluginRuntime {
         let result = (|| {
             self.reset_execution_metrics()?;
             self.reset_execution_budget(name)?;
-            let instance = self
-                .instances
-                .get(name)
-                .ok_or_else(|| PluginError::PluginNotFound(name.to_string()))?;
 
             {
                 let mut state = self.host_state("preparing plugin initialization")?;
@@ -267,22 +280,26 @@ impl WasmtimePluginRuntime {
                 state.set_execution_context(ExecutionContext::Idle);
             }
 
-            let init = instance
-                .get_typed_func::<(), i32>(&mut self.store, plugin_exports::PLUGIN_INIT)
-                .map_err(|e| {
-                    PluginError::FunctionNotExported(format!(
-                        "{}: {}",
-                        plugin_exports::PLUGIN_INIT,
-                        e
-                    ))
-                })?;
+            let code = {
+                let plugin = self.plugin_runtime_mut(name)?;
+                let init = plugin
+                    .instance
+                    .get_typed_func::<(), i32>(&mut plugin.store, plugin_exports::PLUGIN_INIT)
+                    .map_err(|e| {
+                        PluginError::FunctionNotExported(format!(
+                            "{}: {}",
+                            plugin_exports::PLUGIN_INIT,
+                            e
+                        ))
+                    })?;
 
-            let code = init.call(&mut self.store, ()).map_err(|e| {
-                PluginError::InitializationFailed(format!(
-                    "Plugin '{}' initialization failed: {}",
-                    name, e
-                ))
-            })?;
+                init.call(&mut plugin.store, ()).map_err(|e| {
+                    PluginError::InitializationFailed(format!(
+                        "Plugin '{}' initialization failed: {}",
+                        name, e
+                    ))
+                })?
+            };
             self.ensure_no_host_security_error()?;
 
             if code != 0 {
@@ -335,10 +352,6 @@ impl WasmtimePluginRuntime {
         let result = (|| {
             self.reset_execution_metrics()?;
             self.reset_execution_budget(plugin_name)?;
-            let instance = self
-                .instances
-                .get(plugin_name)
-                .ok_or_else(|| PluginError::PluginNotFound(plugin_name.to_string()))?;
 
             {
                 let mut state = self.host_state("preparing plugin cleanup")?;
@@ -348,22 +361,26 @@ impl WasmtimePluginRuntime {
                 state.set_execution_context(ExecutionContext::Idle);
             }
 
-            let cleanup = instance
-                .get_typed_func::<(), i32>(&mut self.store, plugin_exports::PLUGIN_CLEANUP)
-                .map_err(|e| {
-                    PluginError::FunctionNotExported(format!(
-                        "{}: {}",
-                        plugin_exports::PLUGIN_CLEANUP,
-                        e
-                    ))
-                })?;
+            let code = {
+                let plugin = self.plugin_runtime_mut(plugin_name)?;
+                let cleanup = plugin
+                    .instance
+                    .get_typed_func::<(), i32>(&mut plugin.store, plugin_exports::PLUGIN_CLEANUP)
+                    .map_err(|e| {
+                        PluginError::FunctionNotExported(format!(
+                            "{}: {}",
+                            plugin_exports::PLUGIN_CLEANUP,
+                            e
+                        ))
+                    })?;
 
-            let code = cleanup.call(&mut self.store, ()).map_err(|e| {
-                PluginError::ExecutionFailed(format!(
-                    "Plugin '{}' cleanup failed: {}",
-                    plugin_name, e
-                ))
-            })?;
+                cleanup.call(&mut plugin.store, ()).map_err(|e| {
+                    PluginError::ExecutionFailed(format!(
+                        "Plugin '{}' cleanup failed: {}",
+                        plugin_name, e
+                    ))
+                })?
+            };
             self.ensure_no_host_security_error()?;
 
             if code != 0 {
@@ -424,15 +441,13 @@ impl WasmtimePluginRuntime {
             PluginError::InitializationFailed(format!("Failed to compile module: {}", e))
         })?;
 
-        self.set_active_memory_limit(&limits);
+        let mut store = configured_store(&self.engine, self.host_state.clone());
+        Self::set_store_memory_limit(&mut store, &limits);
 
         // Instantiate the module
-        let instance = self
-            .linker
-            .instantiate(&mut self.store, &module)
-            .map_err(|e| {
-                PluginError::InitializationFailed(format!("Failed to instantiate module: {}", e))
-            })?;
+        let instance = self.linker.instantiate(&mut store, &module).map_err(|e| {
+            PluginError::InitializationFailed(format!("Failed to instantiate module: {}", e))
+        })?;
 
         if self.instances.contains_key(name) {
             if let Err(error) = self.cleanup_plugin(name) {
@@ -469,7 +484,8 @@ impl WasmtimePluginRuntime {
 
         // Store module and instance
         self.modules.insert(name.to_string(), module);
-        self.instances.insert(name.to_string(), instance);
+        self.instances
+            .insert(name.to_string(), PluginInstanceRuntime { store, instance });
 
         if let Err(e) = self.initialize_plugin(name) {
             self.remove_plugin_runtime_state(name);
@@ -644,15 +660,8 @@ impl WasmtimePluginRuntime {
             })
     }
 
-    fn set_active_memory_limit(&mut self, limits: &ResourceLimits) {
-        self.store
-            .data_mut()
-            .set_max_memory_bytes(limits.max_memory);
-    }
-
     fn reset_execution_budget(&mut self, plugin_name: &str) -> PluginResult<()> {
         let limits = self.resource_limits_for_plugin(plugin_name);
-        self.set_active_memory_limit(&limits);
         {
             let mut state = self.host_state("setting plugin host call budget")?;
             state.set_max_host_calls_per_execution(limits.max_host_calls);
@@ -662,7 +671,10 @@ impl WasmtimePluginRuntime {
             .saturating_mul(DEFAULT_PLUGIN_FUEL_PER_MILLISECOND)
             .max(DEFAULT_PLUGIN_FUEL_PER_MILLISECOND);
 
-        self.store
+        let plugin = self.plugin_runtime_mut(plugin_name)?;
+        Self::set_store_memory_limit(&mut plugin.store, &limits);
+        plugin
+            .store
             .set_fuel(fuel)
             .map_err(|e| PluginError::ExecutionFailed(format!("Failed to set plugin fuel: {}", e)))
     }
@@ -702,9 +714,14 @@ impl WasmtimePluginRuntime {
     /// Return the current WebAssembly memory size for a plugin.
     fn get_plugin_memory_usage(&mut self, plugin_name: &str) -> u64 {
         self.instances
-            .get(plugin_name)
-            .and_then(|instance| instance.get_memory(&mut self.store, "memory"))
-            .map(|memory| memory.data_size(&self.store) as u64)
+            .get_mut(plugin_name)
+            .map(|plugin| {
+                plugin
+                    .instance
+                    .get_memory(&mut plugin.store, "memory")
+                    .map(|memory| memory.data_size(&plugin.store) as u64)
+                    .unwrap_or(0)
+            })
             .unwrap_or(0)
     }
 
@@ -770,20 +787,20 @@ impl WasmtimePluginRuntime {
             state.set_execution_context(ExecutionContext::HttpRequest);
         }
 
-        // Get the instance and call the generic HTTP handler function
-        let instance = self
-            .instances
-            .get(plugin_name)
-            .ok_or_else(|| PluginError::PluginNotFound(plugin_name.to_string()))?;
+        // Call the generic handle_http_request function that the SDK exports.
+        let result = {
+            let plugin = self.plugin_runtime_mut(plugin_name)?;
+            let func = plugin
+                .instance
+                .get_typed_func::<(), i32>(&mut plugin.store, "handle_http_request")
+                .map_err(|e| {
+                    PluginError::FunctionNotExported(format!("handle_http_request: {}", e))
+                })?;
 
-        // Call the generic handle_http_request function that the SDK exports
-        let func = instance
-            .get_typed_func::<(), i32>(&mut self.store, "handle_http_request")
-            .map_err(|e| PluginError::FunctionNotExported(format!("handle_http_request: {}", e)))?;
-
-        let result = func.call(&mut self.store, ()).map_err(|e| {
-            PluginError::ExecutionFailed(format!("HTTP handler call failed: {}", e))
-        })?;
+            func.call(&mut plugin.store, ()).map_err(|e| {
+                PluginError::ExecutionFailed(format!("HTTP handler call failed: {}", e))
+            })?
+        };
         self.ensure_no_host_security_error()?;
 
         if result != 0 {
@@ -878,15 +895,13 @@ impl PluginRuntime for WasmtimePluginRuntime {
             .policies()
             .default_resource_limits
             .clone();
-        self.set_active_memory_limit(&limits);
+        let mut store = configured_store(&self.engine, self.host_state.clone());
+        Self::set_store_memory_limit(&mut store, &limits);
 
         // Instantiate the module
-        let instance = self
-            .linker
-            .instantiate(&mut self.store, &module)
-            .map_err(|e| {
-                PluginError::InitializationFailed(format!("Failed to instantiate module: {}", e))
-            })?;
+        let instance = self.linker.instantiate(&mut store, &module).map_err(|e| {
+            PluginError::InitializationFailed(format!("Failed to instantiate module: {}", e))
+        })?;
 
         self.remove_plugin_runtime_state(name);
 
@@ -919,7 +934,8 @@ impl PluginRuntime for WasmtimePluginRuntime {
 
         // Store module and instance
         self.modules.insert(name.to_string(), module);
-        self.instances.insert(name.to_string(), instance);
+        self.instances
+            .insert(name.to_string(), PluginInstanceRuntime { store, instance });
 
         if let Err(e) = self.initialize_plugin(name) {
             self.remove_plugin_runtime_state(name);
@@ -1000,32 +1016,30 @@ impl PluginRuntime for WasmtimePluginRuntime {
                 plugin_name, function_name
             );
 
-            // Get the instance and call the function
-            let instance = self
-                .instances
-                .get(plugin_name)
-                .ok_or_else(|| PluginError::PluginNotFound(plugin_name.to_string()))?;
-
             debug!(
                 "Got plugin instance, about to get typed function: {}",
                 function_name
             );
 
             // Call the plugin function
-            let func = instance
-                .get_typed_func::<(), i32>(&mut self.store, function_name)
-                .map_err(|e| {
-                    PluginError::FunctionNotExported(format!("{}: {}", function_name, e))
-                })?;
+            let result = {
+                let plugin = self.plugin_runtime_mut(plugin_name)?;
+                let func = plugin
+                    .instance
+                    .get_typed_func::<(), i32>(&mut plugin.store, function_name)
+                    .map_err(|e| {
+                        PluginError::FunctionNotExported(format!("{}: {}", function_name, e))
+                    })?;
 
-            debug!(
-                "Got typed function, about to call plugin function: {}::{}",
-                plugin_name, function_name
-            );
+                debug!(
+                    "Got typed function, about to call plugin function: {}::{}",
+                    plugin_name, function_name
+                );
 
-            let result = func.call(&mut self.store, ()).map_err(|e| {
-                PluginError::ExecutionFailed(format!("Function call failed: {}", e))
-            })?;
+                func.call(&mut plugin.store, ()).map_err(|e| {
+                    PluginError::ExecutionFailed(format!("Function call failed: {}", e))
+                })?
+            };
             self.ensure_no_host_security_error()?;
 
             debug!(
@@ -1161,6 +1175,65 @@ mod tests {
         let routes = runtime.get_registered_routes();
         assert_eq!(routes.len(), 1);
         assert_eq!(routes[0].plugin_name, "other-plugin");
+    }
+
+    #[test]
+    fn loaded_plugins_get_distinct_wasmtime_stores() {
+        let mut runtime = test_runtime();
+        let wasm = br#"
+            (module
+              (memory (export "memory") 1)
+              (func (export "plugin_init") (result i32)
+                i32.const 0)
+              (func (export "get_response_len") (result i32)
+                i32.const 0)
+              (func (export "get_response_ptr") (result i32)
+                i32.const 0))
+        "#;
+
+        runtime
+            .load_plugin_with_trust(
+                "first-plugin",
+                wasm,
+                PluginTrustLevel::PartiallyTrusted,
+                vec![PluginCapability::ReadEventData],
+                ResourceLimits::default(),
+            )
+            .unwrap();
+        runtime
+            .load_plugin_with_trust(
+                "second-plugin",
+                wasm,
+                PluginTrustLevel::PartiallyTrusted,
+                vec![PluginCapability::ReadEventData],
+                ResourceLimits::default(),
+            )
+            .unwrap();
+
+        let (first_store, first_host_state) = {
+            let plugin = runtime
+                .instances
+                .get("first-plugin")
+                .expect("first plugin should be loaded");
+            (
+                std::ptr::addr_of!(plugin.store),
+                plugin.store.data().host_state().clone(),
+            )
+        };
+        let (second_store, second_host_state) = {
+            let plugin = runtime
+                .instances
+                .get("second-plugin")
+                .expect("second plugin should be loaded");
+            (
+                std::ptr::addr_of!(plugin.store),
+                plugin.store.data().host_state().clone(),
+            )
+        };
+
+        assert_ne!(first_store, second_store);
+        assert!(Arc::ptr_eq(&first_host_state, &runtime.host_state));
+        assert!(Arc::ptr_eq(&second_host_state, &runtime.host_state));
     }
 
     #[test]
