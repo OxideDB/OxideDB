@@ -157,14 +157,9 @@ impl SchemaAdapter for SqliteSchemaAdapter {
         let table_name = self.get_table_name(&schema.name);
         let mut index_statements = Vec::new();
 
-        // Always create index on created_at for sorting
-        let created_at_index_name = format!("idx_{}_{}", table_name, "created_at");
-        index_statements.push(format!(
-            "CREATE INDEX IF NOT EXISTS {} ON {}({})",
-            quote_identifier(&created_at_index_name),
-            quote_identifier(&table_name),
-            quote_identifier("created_at")
-        ));
+        // Always create indexes on metadata fields commonly used for sorting.
+        index_statements.push(create_field_index_sql(&table_name, "created_at"));
+        index_statements.push(create_field_index_sql(&table_name, "updated_at"));
 
         // Create indexes defined in schema
         for index_def in &schema.indexes {
@@ -559,13 +554,18 @@ mod tests {
 
         let indexes = adapter.generate_index_sql(&schema);
 
-        // Should have created_at index, unique field index, and custom index
-        assert!(indexes.len() >= 3);
+        // Should have metadata indexes, unique field index, indexed field index, and custom index.
+        assert!(indexes.len() >= 5);
 
         // Check for created_at index
         assert!(indexes
             .iter()
             .any(|sql| sql.contains("idx_collection_posts_created_at")));
+
+        // Check for updated_at index
+        assert!(indexes
+            .iter()
+            .any(|sql| sql.contains("idx_collection_posts_updated_at")));
 
         // Check for unique field index
         assert!(indexes

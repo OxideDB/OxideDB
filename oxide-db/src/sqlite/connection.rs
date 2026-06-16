@@ -17,6 +17,12 @@ use tokio::task::spawn_blocking;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
+const SQLITE_STATEMENT_CACHE_CAPACITY: usize = 256;
+const SQLITE_CACHE_SIZE_KIB: i64 = -20_000;
+const SQLITE_MMAP_SIZE_BYTES: i64 = 256 * 1024 * 1024;
+const SQLITE_WAL_AUTOCHECKPOINT_PAGES: i64 = 1_000;
+const SQLITE_JOURNAL_SIZE_LIMIT_BYTES: i64 = 64 * 1024 * 1024;
+
 /// SQLite implementation of the Db trait
 ///
 /// This implementation uses SQLite as the underlying database and integrates
@@ -288,6 +294,9 @@ impl SqliteDb {
         // Initialize system collections
         self.initialize_system_collections().await?;
 
+        // Ensure existing collection tables have the current default indexes.
+        self.ensure_collection_indexes().await?;
+
         Ok(())
     }
 
@@ -496,6 +505,43 @@ impl SqliteDb {
             let _result: i32 = stmt
                 .query_row([], |row| row.get(0))
                 .map_err(|e| AppError::database(format!("Health check query failed: {}", e)))?;
+
+            Ok::<(), AppError>(())
+        })
+        .await
+        .map_err(|e| AppError::internal(format!("Task join error: {}", e)))??;
+
+        Ok(())
+    }
+
+    async fn ensure_collection_indexes(&self) -> Result<(), AppError> {
+        let collections = self.list_collections().await?;
+        let index_statements = collections
+            .iter()
+            .map(|schema| {
+                (
+                    schema.name.clone(),
+                    self.schema_adapter.generate_index_sql(schema),
+                )
+            })
+            .collect::<Vec<_>>();
+        let connection = self.connection.clone();
+
+        spawn_blocking(move || {
+            let conn = connection
+                .lock()
+                .map_err(|_| AppError::database("Failed to acquire database lock"))?;
+
+            for (collection_name, statements) in index_statements {
+                for statement in statements {
+                    conn.execute(&statement, []).map_err(|e| {
+                        AppError::database(format!(
+                            "Failed to ensure index for collection '{}': {}",
+                            collection_name, e
+                        ))
+                    })?;
+                }
+            }
 
             Ok::<(), AppError>(())
         })
@@ -1274,9 +1320,19 @@ impl SqliteDb {
 }
 
 fn configure_connection(connection: &Connection, database_path: &str) -> Result<(), AppError> {
+    connection.set_prepared_statement_cache_capacity(SQLITE_STATEMENT_CACHE_CAPACITY);
+
     connection
         .busy_timeout(Duration::from_secs(5))
         .map_err(|e| AppError::database(format!("Failed to set SQLite busy timeout: {}", e)))?;
+
+    connection
+        .pragma_update(None, "cache_size", SQLITE_CACHE_SIZE_KIB)
+        .map_err(|e| AppError::database(format!("Failed to set SQLite cache size: {}", e)))?;
+
+    connection
+        .pragma_update(None, "temp_store", "MEMORY")
+        .map_err(|e| AppError::database(format!("Failed to set SQLite temp storage: {}", e)))?;
 
     connection
         .pragma_update(None, "foreign_keys", "ON")
@@ -1286,6 +1342,22 @@ fn configure_connection(connection: &Connection, database_path: &str) -> Result<
         connection
             .pragma_update(None, "journal_mode", "WAL")
             .map_err(|e| AppError::database(format!("Failed to enable SQLite WAL: {}", e)))?;
+
+        connection
+            .pragma_update(None, "mmap_size", SQLITE_MMAP_SIZE_BYTES)
+            .map_err(|e| AppError::database(format!("Failed to set SQLite mmap size: {}", e)))?;
+
+        connection
+            .pragma_update(None, "wal_autocheckpoint", SQLITE_WAL_AUTOCHECKPOINT_PAGES)
+            .map_err(|e| {
+                AppError::database(format!("Failed to set SQLite WAL autocheckpoint: {}", e))
+            })?;
+
+        connection
+            .pragma_update(None, "journal_size_limit", SQLITE_JOURNAL_SIZE_LIMIT_BYTES)
+            .map_err(|e| {
+                AppError::database(format!("Failed to set SQLite journal size limit: {}", e))
+            })?;
     }
 
     connection

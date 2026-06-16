@@ -263,6 +263,21 @@ pub trait Db: Send + Sync + UserPreferencesService + SiteSettingsService {
         params: ListParams,
     ) -> Result<Vec<Record>, AppError>;
 
+    /// List records and return the total filtered count in one operation when supported.
+    ///
+    /// Implementations may override this to avoid running the same filters once
+    /// for the page and again for the total. The default preserves compatibility
+    /// by delegating to `list_records` and `count_records_with_params`.
+    async fn list_records_with_total(
+        &self,
+        collection: &str,
+        params: ListParams,
+    ) -> Result<(Vec<Record>, usize), AppError> {
+        let records = self.list_records(collection, params.clone()).await?;
+        let total_count = self.count_records_with_params(collection, params).await?;
+        Ok((records, total_count))
+    }
+
     /// Create a new collection with the given schema
     ///
     /// This method dispatches `BeforeCollectionCreate` and `AfterCollectionCreate` events.

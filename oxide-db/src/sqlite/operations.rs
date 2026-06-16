@@ -21,6 +21,8 @@ use serde_json::Value as JsonValue;
 use tokio::task::spawn_blocking;
 use tracing::debug;
 
+const LIST_TOTAL_COUNT_COLUMN: &str = "__oxide.total_count";
+
 impl SqliteDb {
     /// Convert a record data JSON to SQL values for a specific schema
     fn record_data_to_sql_values(
@@ -28,7 +30,7 @@ impl SqliteDb {
         data: &RecordData,
         schema: &oxide_core::CollectionSchema,
     ) -> Result<Vec<(String, SqlValue)>, AppError> {
-        let mut sql_values = Vec::new();
+        let mut sql_values = Vec::with_capacity(schema.fields.len());
 
         for (field_name, field_def) in &schema.fields {
             if let Some(value) = data.get(field_name) {
@@ -100,7 +102,7 @@ impl SqliteDb {
         collection: &str,
         schema: &oxide_core::CollectionSchema,
     ) -> Result<Record, rusqlite::Error> {
-        let mut data = serde_json::Map::new();
+        let mut data = serde_json::Map::with_capacity(schema.fields.len());
 
         // Extract schema fields from the row
         for (field_name, field_def) in &schema.fields {
@@ -289,8 +291,9 @@ fn append_filter_clauses(
         .map(str::trim)
         .filter(|value| !value.is_empty())
     {
+        let search_pattern = format!("%{}%", escape_like(search));
         let mut search_clauses = vec![format!("{} LIKE ? ESCAPE '\\'", quote_identifier("id"))];
-        bind_params.push(SqlValue::Text(format!("%{}%", escape_like(search))));
+        bind_params.push(SqlValue::Text(search_pattern.clone()));
 
         for (field_name, field_def) in &schema.fields {
             if is_searchable_field(&field_def.field_type) {
@@ -298,7 +301,7 @@ fn append_filter_clauses(
                     "CAST({} AS TEXT) LIKE ? ESCAPE '\\'",
                     quote_identifier(field_name)
                 ));
-                bind_params.push(SqlValue::Text(format!("%{}%", escape_like(search))));
+                bind_params.push(SqlValue::Text(search_pattern.clone()));
             }
         }
 
@@ -377,6 +380,43 @@ fn append_filter_clauses(
     }
 
     Ok(())
+}
+
+fn append_sort_clause(
+    query: &mut String,
+    schema: &CollectionSchema,
+    params: &ListParams,
+) -> Result<(), AppError> {
+    if let Some(sort_field) = &params.sort_field {
+        let sort_column = quote_identifier(&resolve_record_column(schema, sort_field)?);
+        let direction = if params.sort_ascending.unwrap_or(true) {
+            "ASC"
+        } else {
+            "DESC"
+        };
+        query.push_str(&format!(" ORDER BY {} {}", sort_column, direction));
+    } else {
+        query.push_str(&format!(" ORDER BY {} ASC", quote_identifier("created_at")));
+    }
+
+    Ok(())
+}
+
+fn append_limit_offset(
+    query: &mut String,
+    bind_params: &mut Vec<SqlValue>,
+    limit: usize,
+    offset: usize,
+) {
+    // Always apply a bounded LIMIT so omitted query parameters cannot
+    // accidentally trigger an unbounded table scan.
+    query.push_str(" LIMIT ?");
+    bind_params.push(SqlValue::Integer(limit as i64));
+
+    if offset > 0 {
+        query.push_str(" OFFSET ?");
+        bind_params.push(SqlValue::Integer(offset as i64));
+    }
 }
 
 #[async_trait::async_trait]
@@ -955,28 +995,8 @@ impl Db for SqliteDb {
 
             append_filter_clauses(&mut query, &schema, &params, &mut bind_params)?;
 
-            // Add sorting
-            if let Some(sort_field) = &params.sort_field {
-                let sort_column = quote_identifier(&resolve_record_column(&schema, sort_field)?);
-                let direction = if params.sort_ascending.unwrap_or(true) {
-                    "ASC"
-                } else {
-                    "DESC"
-                };
-                query.push_str(&format!(" ORDER BY {} {}", sort_column, direction));
-            } else {
-                query.push_str(&format!(" ORDER BY {} ASC", quote_identifier("created_at")));
-            }
-
-            // Always apply a bounded LIMIT so omitted query parameters cannot
-            // accidentally trigger an unbounded table scan.
-            query.push_str(" LIMIT ?");
-            bind_params.push(SqlValue::Integer(limit as i64));
-
-            if offset > 0 {
-                query.push_str(" OFFSET ?");
-                bind_params.push(SqlValue::Integer(offset as i64));
-            }
+            append_sort_clause(&mut query, &schema, &params)?;
+            append_limit_offset(&mut query, &mut bind_params, limit, offset);
 
             let mut stmt = conn
                 .prepare_cached(&query)
@@ -1000,6 +1020,85 @@ impl Db for SqliteDb {
             table_name_for_debug
         );
         Ok(records)
+    }
+
+    async fn list_records_with_total(
+        &self,
+        collection: &str,
+        params: ListParams,
+    ) -> Result<(Vec<Record>, usize), AppError> {
+        let schema = self.get_collection_schema(collection).await?;
+        let schema_adapter = super::schema_adapter::SqliteSchemaAdapter::new();
+        let table_name = schema_adapter.get_table_name(&schema.name);
+        let table_name_for_debug = table_name.clone();
+
+        let collection_name = collection.to_string();
+        let connection = self.connection.clone();
+        let limit = params.effective_limit();
+        let offset = params.effective_offset();
+        let fallback_params = params.clone();
+
+        let (records, total_count) = spawn_blocking(move || {
+            let conn = connection
+                .lock()
+                .map_err(|_| AppError::database("Failed to acquire database lock"))?;
+
+            let mut query = format!(
+                "SELECT COUNT(*) OVER() AS {}, * FROM {}",
+                quote_identifier(LIST_TOTAL_COUNT_COLUMN),
+                quote_identifier(&table_name)
+            );
+            let mut bind_params: Vec<SqlValue> = Vec::new();
+
+            append_filter_clauses(&mut query, &schema, &params, &mut bind_params)?;
+            append_sort_clause(&mut query, &schema, &params)?;
+            append_limit_offset(&mut query, &mut bind_params, limit, offset);
+
+            let mut stmt = conn
+                .prepare_cached(&query)
+                .map_err(|e| AppError::database(format!("Failed to prepare statement: {}", e)))?;
+            let mut rows = stmt
+                .query(params_from_iter(bind_params.iter()))
+                .map_err(|e| AppError::database(format!("Failed to execute query: {}", e)))?;
+
+            let mut records = Vec::with_capacity(limit);
+            let mut total_count = None;
+
+            while let Some(row) = rows
+                .next()
+                .map_err(|e| AppError::database(format!("Failed to query records: {}", e)))?
+            {
+                if total_count.is_none() {
+                    let count: i64 = row.get(LIST_TOTAL_COUNT_COLUMN).map_err(|e| {
+                        AppError::database(format!("Failed to read total count: {}", e))
+                    })?;
+                    total_count = Some(count as usize);
+                }
+
+                let record = Self::sql_row_to_record(row, &collection_name, &schema)
+                    .map_err(|e| AppError::database(format!("Failed to query records: {}", e)))?;
+                records.push(record);
+            }
+
+            Ok::<(Vec<Record>, Option<usize>), AppError>((records, total_count))
+        })
+        .await
+        .map_err(|e| AppError::internal(format!("Task join error: {}", e)))??;
+
+        let total_count = match total_count {
+            Some(total_count) => total_count,
+            None => {
+                <Self as Db>::count_records_with_params(self, collection, fallback_params).await?
+            }
+        };
+
+        debug!(
+            "Listed {} records from collection table {} (total: {})",
+            records.len(),
+            table_name_for_debug,
+            total_count
+        );
+        Ok((records, total_count))
     }
 
     async fn create_collection(
@@ -1342,5 +1441,56 @@ mod tests {
         .await;
 
         assert!(matches!(result, Err(AppError::Conflict { .. })));
+    }
+
+    #[tokio::test]
+    async fn lists_records_with_total_using_filters_and_offset() {
+        let db = test_db();
+        db.initialize().await.unwrap();
+
+        db.create_collection_with_schema(test_schema())
+            .await
+            .unwrap();
+
+        <SqliteDb as Db>::create_record(
+            &db,
+            "articles",
+            serde_json::json!({ "title": "First", "views": 1.0, "published": true }),
+        )
+        .await
+        .unwrap();
+        <SqliteDb as Db>::create_record(
+            &db,
+            "articles",
+            serde_json::json!({ "title": "Second", "views": 10.0, "published": true }),
+        )
+        .await
+        .unwrap();
+        <SqliteDb as Db>::create_record(
+            &db,
+            "articles",
+            serde_json::json!({ "title": "Third", "views": 20.0, "published": false }),
+        )
+        .await
+        .unwrap();
+
+        let params = ListParams {
+            limit: Some(1),
+            offset: Some(1),
+            sort_field: Some("views".to_string()),
+            filter_field: Some("views".to_string()),
+            filter_op: Some(FilterOp::Gte),
+            filter_value: Some("10".to_string()),
+            ..Default::default()
+        };
+
+        let (records, total_count) =
+            <SqliteDb as Db>::list_records_with_total(&db, "articles", params)
+                .await
+                .unwrap();
+
+        assert_eq!(total_count, 2);
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].data["title"], "Third");
     }
 }

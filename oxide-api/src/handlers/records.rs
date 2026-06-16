@@ -113,10 +113,10 @@ impl RecordHandlers {
 
         Self::ensure_collection_exists(&db, &collection).await?;
 
-        let mut records = db.list_records(&collection, params.clone()).await?;
-        let total_count = db
-            .count_records_with_params(&collection, params.clone())
-            .await? as u64;
+        let (mut records, total_count) = db
+            .list_records_with_total(&collection, params.clone())
+            .await?;
+        let total_count = total_count as u64;
 
         // Populate relationships if requested
         if params.populate_relationships.unwrap_or(false) {
