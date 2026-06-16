@@ -532,7 +532,7 @@ fn generate_api_key() -> String {
 }
 
 fn hash_api_key(key: &str) -> String {
-    format!("{:x}", Sha256::digest(key.as_bytes()))
+    hex::encode(Sha256::digest(key.as_bytes()))
 }
 
 fn normalize_required_string(value: &str, label: &str) -> Result<String, ApiError> {

@@ -58,8 +58,8 @@ oxidebase/
 
 ## 📋 Prerequisites
 
-- **Rust** 1.75+ with `wasm32-unknown-unknown` target
-- **Node.js** 18+ and npm
+- **Rust** 1.93+ with `wasm32-unknown-unknown` target
+- **Node.js** 20.19.x, 22.13+, or 24+ with npm
 - **Git**
 
 ## 🚀 Quick Start

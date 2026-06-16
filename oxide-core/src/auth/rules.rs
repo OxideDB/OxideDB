@@ -489,7 +489,7 @@ fn header_rule_value(value: &str, hash_value: bool) -> String {
 }
 
 fn sha256_hex(value: &str) -> String {
-    format!("{:x}", Sha256::digest(value.as_bytes()))
+    hex::encode(Sha256::digest(value.as_bytes()))
 }
 
 fn lex_rule(input: &str) -> Result<Vec<RuleToken>, AppError> {

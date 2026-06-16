@@ -10,7 +10,7 @@ use std::io::{Read, Write};
 pub fn calculate_content_hash(content: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(content);
-    format!("{:x}", hasher.finalize())
+    hex::encode(hasher.finalize())
 }
 
 /// Compress content using gzip

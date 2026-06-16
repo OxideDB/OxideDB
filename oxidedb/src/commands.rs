@@ -30,7 +30,7 @@ use std::io::{Cursor, Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use tracing::{error, info};
-use zip::{write::FileOptions, ZipArchive, ZipWriter};
+use zip::{write::SimpleFileOptions, ZipArchive, ZipWriter};
 
 const PLUGIN_SIGNATURE_FILE_NAME: &str = "plugin.sig";
 const PLUGIN_SIGNATURE_PAYLOAD_MAGIC: &[u8] = b"OxideDB plugin package signature v1\n";
@@ -992,7 +992,7 @@ impl ManagePluginsCommand {
         })?;
         let mut writer = ZipWriter::new(output_file);
         let file_options =
-            FileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+            SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
 
         for file in files {
             if matches!(file.name.as_str(), "signature" | PLUGIN_SIGNATURE_FILE_NAME) {

@@ -189,7 +189,7 @@ mod tests {
         .with_metadata(metadata);
 
         let evaluator = RuleEvaluator::new(&context);
-        let digest = format!("{:x}", Sha256::digest("secret123".as_bytes()));
+        let digest = hex::encode(Sha256::digest("secret123".as_bytes()));
 
         assert!(evaluator
             .evaluate(&format!("@req.headers.x-api-key.sha256 = '{}'", digest))

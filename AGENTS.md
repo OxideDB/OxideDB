@@ -142,8 +142,8 @@ The React frontend connects to the Rust backend API and provides:
 ## Environment Setup
 
 Required tools:
-- Rust 1.75+ with `wasm32-unknown-unknown` target for plugins
-- Node.js 18+ and npm for the frontend
+- Rust 1.93+ with `wasm32-unknown-unknown` target for plugins
+- Node.js 20.19.x, 22.13+, or 24+ with npm for the frontend
 - SQLite database is embedded, no external setup needed
 
 ## Common Development Workflow

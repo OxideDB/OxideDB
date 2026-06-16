@@ -13,7 +13,7 @@ A modern React-based admin interface for OxideDB built with Vite, TypeScript, an
 
 ## Prerequisites
 
-- Node.js 18+ 
+- Node.js 20.19.x, 22.13+, or 24+
 - npm or yarn
 - OxideDB server running on `localhost:8080`
 

@@ -11,20 +11,21 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
-async-trait = "0.1"
-uuid = { version = "1.0", features = ["v4"] }
+async-trait = "0.1.89"
+hex = "0.4.3"
+uuid = { version = "1.23.3", features = ["v4"] }
 argon2 = { workspace = true }
-getrandom = "0.2"
+getrandom = "0.4.2"
 rand_core = { workspace = true }
 jsonwebtoken = { workspace = true }
 chrono = { workspace = true }
-regex = "1.0"
-unicode-normalization = "0.1"
-ts-rs = { version = "10.1", features = ["serde-compat"] }
-num_cpus = "1.0"
-toml = "0.8"
-base64 = "0.21"
-sha2 = "0.10"
+regex = "1.12.4"
+unicode-normalization = "0.1.25"
+ts-rs = { version = "12.0.1", features = ["serde-compat"] }
+num_cpus = "1.17.0"
+toml = "1.1.2"
+base64 = "0.22.1"
+sha2 = "0.11.0"
 
 [dev-dependencies]
-tempfile = "3.0"
+tempfile = "3.27.0"

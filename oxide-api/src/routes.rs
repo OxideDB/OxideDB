@@ -332,14 +332,14 @@ fn get_static_endpoints(config: &RouteConfig) -> Vec<RegisteredEndpoint> {
         ),
         (
             "POST",
-            "/auth/:collection/login",
+            "/auth/{collection}/login",
             "auth::login_collection",
             false,
             "Login to collection",
         ),
         (
             "POST",
-            "/auth/:collection/register",
+            "/auth/{collection}/register",
             "auth::register_collection",
             false,
             "Register in collection",
@@ -397,14 +397,14 @@ fn get_static_endpoints(config: &RouteConfig) -> Vec<RegisteredEndpoint> {
         ),
         (
             "DELETE",
-            "/collections/:collection",
+            "/collections/{collection}",
             "collections::delete_collection",
             true,
             "Delete collection",
         ),
         (
             "GET",
-            "/collections/:collection/stats",
+            "/collections/{collection}/stats",
             "collections::collection_stats",
             true,
             "Get collection statistics",
@@ -418,14 +418,14 @@ fn get_static_endpoints(config: &RouteConfig) -> Vec<RegisteredEndpoint> {
         ),
         (
             "GET",
-            "/collections/:collection/schema",
+            "/collections/{collection}/schema",
             "collections::collection_schema",
             true,
             "Get collection schema",
         ),
         (
             "PUT",
-            "/collections/:collection/schema",
+            "/collections/{collection}/schema",
             "collections::update_collection_schema",
             true,
             "Update collection schema",
@@ -447,35 +447,35 @@ fn get_static_endpoints(config: &RouteConfig) -> Vec<RegisteredEndpoint> {
     let record_endpoints = vec![
         (
             "GET",
-            "/collections/:collection/records",
+            "/collections/{collection}/records",
             "records::list_records",
             true,
             "List records in collection",
         ),
         (
             "POST",
-            "/collections/:collection/records",
+            "/collections/{collection}/records",
             "records::create_record",
             true,
             "Create new record",
         ),
         (
             "GET",
-            "/collections/:collection/records/:id",
+            "/collections/{collection}/records/{id}",
             "records::get_record",
             true,
             "Get specific record",
         ),
         (
             "PUT",
-            "/collections/:collection/records/:id",
+            "/collections/{collection}/records/{id}",
             "records::update_record",
             true,
             "Update record",
         ),
         (
             "DELETE",
-            "/collections/:collection/records/:id",
+            "/collections/{collection}/records/{id}",
             "records::delete_record",
             true,
             "Delete record",
@@ -504,28 +504,28 @@ fn get_static_endpoints(config: &RouteConfig) -> Vec<RegisteredEndpoint> {
         ),
         (
             "GET",
-            "/collections/:collection/permissions",
+            "/collections/{collection}/permissions",
             "permissions::get_collection_permissions",
             true,
             "Get collection permissions",
         ),
         (
             "PUT",
-            "/collections/:collection/permissions",
+            "/collections/{collection}/permissions",
             "permissions::update_collection_permissions",
             true,
             "Update collection permissions",
         ),
         (
             "POST",
-            "/collections/:collection/permissions/reset",
+            "/collections/{collection}/permissions/reset",
             "permissions::reset_collection_permissions",
             true,
             "Reset collection permissions",
         ),
         (
             "POST",
-            "/collections/:collection/permissions/preset",
+            "/collections/{collection}/permissions/preset",
             "permissions::create_permissions_from_preset",
             true,
             "Create permissions from preset",
@@ -661,14 +661,14 @@ fn get_static_endpoints(config: &RouteConfig) -> Vec<RegisteredEndpoint> {
         ),
         (
             "GET",
-            "/api/admin/settings/:section",
+            "/api/admin/settings/{section}",
             "site_settings::get_settings_section",
             true,
             "Get specific settings section",
         ),
         (
             "PUT",
-            "/api/admin/settings/:section",
+            "/api/admin/settings/{section}",
             "site_settings::update_settings_section",
             true,
             "Update specific settings section",
@@ -704,21 +704,21 @@ fn get_static_endpoints(config: &RouteConfig) -> Vec<RegisteredEndpoint> {
         ),
         (
             "GET",
-            "/user/preferences/:key",
+            "/user/preferences/{key}",
             "user_preferences::get_user_preference",
             true,
             "Get user preference",
         ),
         (
             "PUT",
-            "/user/preferences/:key",
+            "/user/preferences/{key}",
             "user_preferences::store_user_preference",
             true,
             "Store user preference",
         ),
         (
             "DELETE",
-            "/user/preferences/:key",
+            "/user/preferences/{key}",
             "user_preferences::delete_user_preference",
             true,
             "Delete user preference",
@@ -761,49 +761,49 @@ fn get_static_endpoints(config: &RouteConfig) -> Vec<RegisteredEndpoint> {
         ),
         (
             "GET",
-            "/plugins/:plugin_name",
+            "/plugins/{plugin_name}",
             "plugins::get_plugin_details",
             true,
             "Get plugin details",
         ),
         (
             "DELETE",
-            "/plugins/:plugin_name",
+            "/plugins/{plugin_name}",
             "plugins::unregister_plugin",
             true,
             "Unregister/uninstall plugin",
         ),
         (
             "POST",
-            "/plugins/:plugin_name/enable",
+            "/plugins/{plugin_name}/enable",
             "plugins::enable_plugin",
             true,
             "Enable plugin",
         ),
         (
             "POST",
-            "/plugins/:plugin_name/disable",
+            "/plugins/{plugin_name}/disable",
             "plugins::disable_plugin",
             true,
             "Disable plugin",
         ),
         (
             "POST",
-            "/plugins/:plugin_name/capabilities/:capability_name",
+            "/plugins/{plugin_name}/capabilities/{capability_name}",
             "plugins::grant_plugin_capability",
             true,
             "Grant capability to plugin",
         ),
         (
             "DELETE",
-            "/plugins/:plugin_name/capabilities/:capability_name",
+            "/plugins/{plugin_name}/capabilities/{capability_name}",
             "plugins::revoke_plugin_capability",
             true,
             "Revoke capability from plugin",
         ),
         (
             "PUT",
-            "/plugins/:plugin_name/trust-level",
+            "/plugins/{plugin_name}/trust-level",
             "plugins::update_plugin_trust_level",
             true,
             "Update plugin trust level",
@@ -824,7 +824,7 @@ fn get_static_endpoints(config: &RouteConfig) -> Vec<RegisteredEndpoint> {
         ),
         (
             "GET",
-            "/admin/plugin-pages/assets/:plugin_name/*path",
+            "/admin/plugin-pages/assets/{plugin_name}/{*path}",
             "plugins::serve_admin_page_asset",
             true,
             "Serve packaged plugin admin UI assets",
@@ -838,21 +838,21 @@ fn get_static_endpoints(config: &RouteConfig) -> Vec<RegisteredEndpoint> {
         ),
         (
             "GET",
-            "/plugins/:plugin_name/permissions",
+            "/plugins/{plugin_name}/permissions",
             "plugins::get_plugin_permissions",
             true,
             "Get plugin permissions",
         ),
         (
             "PUT",
-            "/plugins/:plugin_name/permissions",
+            "/plugins/{plugin_name}/permissions",
             "plugins::update_plugin_permissions",
             true,
             "Update plugin permissions",
         ),
         (
             "ANY",
-            "/plugin/*path",
+            "/plugin/{*path}",
             "plugins::handle_plugin_route",
             true,
             "Handle plugin routes",
@@ -930,21 +930,21 @@ fn get_static_endpoints(config: &RouteConfig) -> Vec<RegisteredEndpoint> {
         ),
         (
             "GET",
-            "/logs/correlation/:correlation_id",
+            "/logs/correlation/{correlation_id}",
             "logs::get_logs_by_correlation",
             true,
             "Get logs by correlation ID",
         ),
         (
             "GET",
-            "/logs/user/:user_id",
+            "/logs/user/{user_id}",
             "logs::get_user_logs",
             true,
             "Get user-specific logs",
         ),
         (
             "GET",
-            "/logs/collection/:collection",
+            "/logs/collection/{collection}",
             "logs::get_collection_logs",
             true,
             "Get collection-specific logs",
@@ -973,49 +973,49 @@ fn get_static_endpoints(config: &RouteConfig) -> Vec<RegisteredEndpoint> {
     let vfs_endpoints = vec![
         (
             "POST",
-            "/collections/:collection/files",
+            "/collections/{collection}/files",
             "vfs::upload_file",
             true,
             "Upload file to collection",
         ),
         (
             "GET",
-            "/collections/:collection/files",
+            "/collections/{collection}/files",
             "vfs::list_files",
             true,
             "List files in collection",
         ),
         (
             "GET",
-            "/collections/:collection/files/:file_id/metadata",
+            "/collections/{collection}/files/{file_id}/metadata",
             "vfs::get_file_metadata",
             true,
             "Get file metadata from collection",
         ),
         (
             "GET",
-            "/collections/:collection/files/:file_id",
+            "/collections/{collection}/files/{file_id}",
             "vfs::download_file",
             true,
             "Download file from collection",
         ),
         (
             "PATCH",
-            "/collections/:collection/files/:file_id",
+            "/collections/{collection}/files/{file_id}",
             "vfs::move_file",
             true,
             "Move or rename file in collection",
         ),
         (
             "DELETE",
-            "/collections/:collection/files/:file_id",
+            "/collections/{collection}/files/{file_id}",
             "vfs::delete_file",
             true,
             "Delete file from collection",
         ),
         (
             "GET",
-            "/collections/:collection/vfs/usage",
+            "/collections/{collection}/vfs/usage",
             "vfs::get_collection_usage_stats",
             true,
             "Get collection VFS usage statistics",
@@ -1125,13 +1125,24 @@ fn route_pattern_matches(pattern: &str, path: &str) -> bool {
 
     loop {
         match (pattern_iter.next(), path_iter.next()) {
-            (Some(pattern_part), Some(_)) if pattern_part.starts_with('*') => return true,
-            (Some(pattern_part), Some(_)) if pattern_part.starts_with(':') => continue,
+            (Some(pattern_part), Some(_)) if is_catch_all_route_segment(pattern_part) => {
+                return true
+            }
+            (Some(pattern_part), Some(_)) if is_parameter_route_segment(pattern_part) => continue,
             (Some(pattern_part), Some(path_part)) if pattern_part == path_part => continue,
             (None, None) => return true,
             _ => return false,
         }
     }
+}
+
+fn is_catch_all_route_segment(segment: &str) -> bool {
+    segment.starts_with('*') || (segment.starts_with("{*") && segment.ends_with('}'))
+}
+
+fn is_parameter_route_segment(segment: &str) -> bool {
+    segment.starts_with(':')
+        || (segment.starts_with('{') && segment.ends_with('}') && !segment.starts_with("{*"))
 }
 
 /// Build the complete router with default configuration and middleware.
@@ -1152,11 +1163,11 @@ fn auth_routes() -> Router<AppState> {
         // Collection-specific auth routes
         .route("/auth/collections", get(list_auth_collections))
         .route(
-            "/auth/:collection/login",
+            "/auth/{collection}/login",
             axum::routing::post(login_collection),
         )
         .route(
-            "/auth/:collection/register",
+            "/auth/{collection}/register",
             axum::routing::post(register_collection),
         )
         // Common auth routes
@@ -1222,13 +1233,13 @@ fn collection_routes() -> Router<AppState> {
             "/collections",
             get(list_collections).post(create_collection),
         )
-        .route("/collections/:collection", delete(delete_collection))
+        .route("/collections/{collection}", delete(delete_collection))
         // Batched statistics for all collections (replaces N+1 per-collection fanout)
         .route("/collections/stats", get(all_collection_stats))
         // Collection metadata and schema
-        .route("/collections/:collection/stats", get(collection_stats))
+        .route("/collections/{collection}/stats", get(collection_stats))
         .route(
-            "/collections/:collection/schema",
+            "/collections/{collection}/schema",
             get(collection_schema).put(update_collection_schema),
         )
 }
@@ -1238,11 +1249,11 @@ fn record_routes() -> Router<AppState> {
     Router::new()
         // Record CRUD operations
         .route(
-            "/collections/:collection/records",
+            "/collections/{collection}/records",
             get(list_records).post(create_record),
         )
         .route(
-            "/collections/:collection/records/:id",
+            "/collections/{collection}/records/{id}",
             get(get_record).put(update_record).delete(delete_record),
         )
 }
@@ -1254,15 +1265,15 @@ fn permission_routes() -> Router<AppState> {
         .route("/permissions", get(list_all_permissions))
         // Collection-specific permission management
         .route(
-            "/collections/:collection/permissions",
+            "/collections/{collection}/permissions",
             get(get_collection_permissions).put(update_collection_permissions),
         )
         .route(
-            "/collections/:collection/permissions/reset",
+            "/collections/{collection}/permissions/reset",
             axum::routing::post(reset_collection_permissions),
         )
         .route(
-            "/collections/:collection/permissions/preset",
+            "/collections/{collection}/permissions/preset",
             axum::routing::post(create_permissions_from_preset),
         )
 }
@@ -1307,7 +1318,7 @@ fn site_settings_routes() -> Router<AppState> {
             axum::routing::post(test_email_configuration),
         )
         .route(
-            "/api/admin/settings/:section",
+            "/api/admin/settings/{section}",
             get(get_settings_section).put(update_settings_section),
         )
 }
@@ -1321,7 +1332,7 @@ fn user_preferences_routes() -> Router<AppState> {
             get(list_user_preferences).delete(delete_all_user_preferences),
         )
         .route(
-            "/user/preferences/:key",
+            "/user/preferences/{key}",
             get(get_user_preference)
                 .put(store_user_preference)
                 .delete(delete_user_preference),
@@ -1343,24 +1354,24 @@ fn plugin_routes(max_request_size: usize) -> Router<AppState> {
             axum::routing::post(analyze_plugin).layer(DefaultBodyLimit::max(max_request_size)),
         )
         .route(
-            "/plugins/:plugin_name",
+            "/plugins/{plugin_name}",
             get(get_plugin_details).delete(unregister_plugin),
         )
         .route(
-            "/plugins/:plugin_name/enable",
+            "/plugins/{plugin_name}/enable",
             axum::routing::post(enable_plugin),
         )
         .route(
-            "/plugins/:plugin_name/disable",
+            "/plugins/{plugin_name}/disable",
             axum::routing::post(disable_plugin),
         )
         // Plugin capability management
         .route(
-            "/plugins/:plugin_name/capabilities/:capability_name",
+            "/plugins/{plugin_name}/capabilities/{capability_name}",
             axum::routing::post(grant_plugin_capability).delete(revoke_plugin_capability),
         )
         .route(
-            "/plugins/:plugin_name/trust-level",
+            "/plugins/{plugin_name}/trust-level",
             axum::routing::put(update_plugin_trust_level),
         )
         // Plugin route management
@@ -1368,7 +1379,7 @@ fn plugin_routes(max_request_size: usize) -> Router<AppState> {
         // Plugin admin page discovery and packaged admin assets
         .route("/api/admin/plugin-pages", get(list_admin_pages))
         .route(
-            "/admin/plugin-pages/assets/:plugin_name/*path",
+            "/admin/plugin-pages/assets/{plugin_name}/{*path}",
             get(serve_admin_page_asset),
         )
         .route(
@@ -1377,11 +1388,11 @@ fn plugin_routes(max_request_size: usize) -> Router<AppState> {
         )
         // Plugin permission management
         .route(
-            "/plugins/:plugin_name/permissions",
+            "/plugins/{plugin_name}/permissions",
             get(get_plugin_permissions).put(update_plugin_permissions),
         )
         // Catch-all for plugin-registered routes
-        .route("/plugin/*path", axum::routing::any(handle_plugin_route))
+        .route("/plugin/{*path}", axum::routing::any(handle_plugin_route))
 }
 
 /// Logging routes
@@ -1399,11 +1410,11 @@ fn logging_routes() -> Router<AppState> {
         )
         .route("/logs/flush", axum::routing::post(flush_logs))
         .route(
-            "/logs/correlation/:correlation_id",
+            "/logs/correlation/{correlation_id}",
             get(get_logs_by_correlation),
         )
-        .route("/logs/user/:user_id", get(get_user_logs))
-        .route("/logs/collection/:collection", get(get_collection_logs))
+        .route("/logs/user/{user_id}", get(get_user_logs))
+        .route("/logs/collection/{collection}", get(get_collection_logs))
         .route("/logs/health", get(logging_health))
 }
 
@@ -1411,31 +1422,31 @@ fn logging_routes() -> Router<AppState> {
 fn vfs_routes() -> Router<AppState> {
     Router::new()
         .route(
-            "/collections/:collection/files",
+            "/collections/{collection}/files",
             axum::routing::post(vfs::upload_file),
         )
         .route(
-            "/collections/:collection/files",
+            "/collections/{collection}/files",
             axum::routing::get(vfs::list_files),
         )
         .route(
-            "/collections/:collection/files/:file_id",
+            "/collections/{collection}/files/{file_id}",
             axum::routing::get(vfs::download_file),
         )
         .route(
-            "/collections/:collection/files/:file_id",
+            "/collections/{collection}/files/{file_id}",
             patch(vfs::move_file),
         )
         .route(
-            "/collections/:collection/files/:file_id/metadata",
+            "/collections/{collection}/files/{file_id}/metadata",
             axum::routing::get(vfs::get_file_metadata),
         )
         .route(
-            "/collections/:collection/files/:file_id",
+            "/collections/{collection}/files/{file_id}",
             axum::routing::delete(vfs::delete_file),
         )
         .route(
-            "/collections/:collection/vfs/usage",
+            "/collections/{collection}/vfs/usage",
             axum::routing::get(vfs::get_collection_usage_stats),
         )
         .route("/vfs/usage", axum::routing::get(vfs::get_usage_stats))
@@ -1512,9 +1523,9 @@ fn admin_trailing_slash_path(admin_path: &str) -> Option<String> {
 
 fn admin_wildcard_path(admin_path: &str) -> String {
     if admin_path == "/" {
-        "/*path".to_string()
+        "/{*path}".to_string()
     } else {
-        format!("{}/*path", admin_path)
+        format!("{}/{{*path}}", admin_path)
     }
 }
 
@@ -1700,7 +1711,7 @@ mod tests {
     #[test]
     fn route_pattern_matching_respects_path_segments() {
         assert!(route_pattern_matches(
-            "/api/admin/settings/:section",
+            "/api/admin/settings/{section}",
             "/api/admin/settings/auth"
         ));
         assert!(!route_pattern_matches(
@@ -1708,7 +1719,7 @@ mod tests {
             "/api/admin/settings/auth"
         ));
         assert!(!route_pattern_matches(
-            "/api/admin/settings/:section",
+            "/api/admin/settings/{section}",
             "/api/admin/settings/auth/extra"
         ));
     }
@@ -1720,7 +1731,7 @@ mod tests {
             admin_trailing_slash_path("/admin"),
             Some("/admin/".to_string())
         );
-        assert_eq!(admin_wildcard_path("/admin"), "/admin/*path");
+        assert_eq!(admin_wildcard_path("/admin"), "/admin/{*path}");
 
         let admin_paths: Vec<String> = get_static_endpoints(&RouteConfig::default())
             .into_iter()

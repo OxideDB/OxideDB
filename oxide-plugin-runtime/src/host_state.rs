@@ -73,9 +73,9 @@ impl ResourceLimiter for PluginStoreData {
 
     fn table_growing(
         &mut self,
-        _current: u32,
-        desired: u32,
-        maximum: Option<u32>,
+        _current: usize,
+        desired: usize,
+        maximum: Option<usize>,
     ) -> wasmtime::Result<bool> {
         Ok(maximum.map(|max| desired <= max).unwrap_or(true))
     }

@@ -694,7 +694,7 @@ impl PluginManager {
         // Calculate SHA-256 hash of the WASM file
         let mut hasher = Sha256::new();
         hasher.update(wasm_bytes);
-        let calculated_hash = format!("{:x}", hasher.finalize());
+        let calculated_hash = hex::encode(hasher.finalize());
 
         match expected_hash {
             Some(expected) => {

@@ -13,7 +13,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
   const [isLoading, setIsLoading] = useState(true);
   const [authCollections, setAuthCollections] = useState<{ name: string; identifier_field: string; registration_enabled: boolean; email_verification_required: boolean }[]>([]);
   const collectionsLoadingRef = useRef(false);
-  const refreshIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const refreshIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const isAuthenticated = !!user && apiService.isAuthenticated();
   const hasRefreshToken = apiService.hasRefreshToken();

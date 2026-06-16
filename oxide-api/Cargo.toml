@@ -12,26 +12,27 @@ oxide-logging = { path = "../oxide-logging" }
 oxide-vfs = { path = "../oxide-vfs" }
 oxide-plugin-runtime = { path = "../oxide-plugin-runtime" }
 oxide-plugin-sdk = { path = "../oxide-plugin-sdk" }
-axum = {version = "0.7", features = ["multipart"]}
-tower = "0.4"
-tower-http = { version = "0.5", features = ["cors", "trace", "fs"] }
-hyper = { version = "1.0", features = ["full"] }
+axum = { version = "0.8.9", features = ["multipart"] }
+tower = "0.5.3"
+tower-http = { version = "0.7.0", features = ["cors", "trace", "fs"] }
+hyper = { version = "1.10.1", features = ["full"] }
+hex = "0.4.3"
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
-ts-rs = { version = "10.1", features = ["serde-compat"] }
-include_dir = "0.7"
-mime_guess = "2.0"
-async-trait = "0.1"
-async-stream = "0.3"
-bytes = "1"
-chrono = { version = "0.4", features = ["serde"] }
-futures-util = "0.3"
-uuid = { version = "1.0", features = ["v4", "serde"] }
-sha2 = "0.10"
-zip = "2.1"
-toml = "0.8"
-base64 = "0.21"
-ed25519-dalek = "2"
+ts-rs = { version = "12.0.1", features = ["serde-compat"] }
+include_dir = "0.7.4"
+mime_guess = "2.0.5"
+async-trait = "0.1.89"
+async-stream = "0.3.6"
+bytes = "1.11.1"
+chrono = { version = "0.4.45", features = ["serde"] }
+futures-util = "0.3.32"
+uuid = { version = "1.23.3", features = ["v4", "serde"] }
+sha2 = "0.11.0"
+zip = "8.6.0"
+toml = "1.1.2"
+base64 = "0.22.1"
+ed25519-dalek = "2.2.0"

@@ -3,8 +3,12 @@
 //! This module provides custom extractors for common request data like
 //! authenticated user information, request IDs, etc.
 
-use axum::{async_trait, extract::FromRequestParts, http::request::Parts};
+use axum::{
+    extract::{FromRequestParts, OptionalFromRequestParts},
+    http::request::Parts,
+};
 use oxide_core::Claims;
+use std::future::{ready, Future};
 
 use crate::{errors::ApiError, middleware::ClaimsExtension};
 
@@ -39,25 +43,49 @@ impl AuthenticatedUser {
     }
 }
 
-#[async_trait]
 impl<S> FromRequestParts<S> for AuthenticatedUser
 where
     S: Send + Sync,
 {
     type Rejection = ApiError;
 
-    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
+    fn from_request_parts(
+        parts: &mut Parts,
+        _state: &S,
+    ) -> impl Future<Output = Result<Self, Self::Rejection>> + Send {
         // Extract claims from request extensions
-        let claims_ext = parts
+        let result = parts
             .extensions
             .get::<ClaimsExtension>()
-            .ok_or_else(|| ApiError::auth("Authentication required"))?;
+            .ok_or_else(|| ApiError::auth("Authentication required"))
+            .and_then(|claims_ext| {
+                claims_ext
+                    .0
+                    .clone()
+                    .ok_or_else(|| ApiError::auth("Invalid authentication token"))
+            })
+            .map(|claims| AuthenticatedUser { claims });
 
-        let claims = claims_ext
-            .0
-            .clone()
-            .ok_or_else(|| ApiError::auth("Invalid authentication token"))?;
+        ready(result)
+    }
+}
 
-        Ok(AuthenticatedUser { claims })
+impl<S> OptionalFromRequestParts<S> for AuthenticatedUser
+where
+    S: Send + Sync,
+{
+    type Rejection = ApiError;
+
+    fn from_request_parts(
+        parts: &mut Parts,
+        _state: &S,
+    ) -> impl Future<Output = Result<Option<Self>, Self::Rejection>> + Send {
+        let user = parts
+            .extensions
+            .get::<ClaimsExtension>()
+            .and_then(|claims_ext| claims_ext.0.clone())
+            .map(|claims| AuthenticatedUser { claims });
+
+        ready(Ok(user))
     }
 }

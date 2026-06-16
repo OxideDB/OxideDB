@@ -25,7 +25,7 @@ pub async fn handle_plugin_route(
     Path(route_path): Path<String>,
     Query(query_params): Query<HashMap<String, String>>,
     headers: HeaderMap,
-    body: Option<String>,
+    body: String,
 ) -> Result<Response<axum::body::Body>, ApiError> {
     debug!("🔌 Plugin route request: {} /{}", method, route_path);
 
@@ -50,7 +50,7 @@ pub async fn handle_plugin_route(
         route_path.clone(),
         query_params,
         headers,
-        body,
+        if body.is_empty() { None } else { Some(body) },
         user_claims.as_ref(),
         path_params,
     )?;

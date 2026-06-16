@@ -190,7 +190,7 @@ impl PluginConfigService {
                 use sha2::{Digest, Sha256};
                 let mut hasher = Sha256::new();
                 hasher.update(&wasm_data);
-                let wasm_hash = format!("{:x}", hasher.finalize());
+                let wasm_hash = hex::encode(hasher.finalize());
 
                 Ok((wasm_size, wasm_hash))
             })
@@ -348,7 +348,7 @@ impl PluginConfigService {
                     use sha2::{Digest, Sha256};
                     let mut hasher = Sha256::new();
                     hasher.update(&wasm_data_copy);
-                    let actual_hash = format!("{:x}", hasher.finalize());
+                    let actual_hash = hex::encode(hasher.finalize());
                     actual_hash == expected_hash
                 }
             })

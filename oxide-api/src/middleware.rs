@@ -1423,7 +1423,10 @@ mod tests {
 
         let state = test_state(event_bus);
         let mut app = Router::new()
-            .route("/auth/:collection/login", post(|| async { StatusCode::OK }))
+            .route(
+                "/auth/{collection}/login",
+                post(|| async { StatusCode::OK }),
+            )
             .route_layer(axum::middleware::from_fn_with_state(state, auth_middleware));
 
         let response = app

@@ -39,7 +39,7 @@ modified_at: bigint,
 /**
  * Custom metadata as key-value pairs
  */
-custom_metadata: { [key in string]?: string }, 
+custom_metadata: { [key in string]: string },
 /**
  * Whether the file is compressed
  */

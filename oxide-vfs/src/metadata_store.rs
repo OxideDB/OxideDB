@@ -21,6 +21,22 @@ use std::time::SystemTime;
 use tokio::sync::Mutex;
 use tracing::{debug, instrument, warn};
 
+fn encode_metadata(metadata: &FileMetadata) -> VfsResult<Vec<u8>> {
+    bincode::serde::encode_to_vec(metadata, bincode::config::legacy()).map_err(|e| {
+        VfsError::EncodingError {
+            message: format!("Failed to serialize metadata: {}", e),
+        }
+    })
+}
+
+fn decode_metadata(metadata_data: &[u8]) -> VfsResult<FileMetadata> {
+    bincode::serde::decode_from_slice(metadata_data, bincode::config::legacy())
+        .map(|(metadata, _bytes_read)| metadata)
+        .map_err(|e| VfsError::EncodingError {
+            message: format!("Failed to deserialize metadata: {}", e),
+        })
+}
+
 /// Cache entry with timestamp for TTL
 #[derive(Debug, Clone)]
 struct CacheEntry {
@@ -136,10 +152,8 @@ impl MetadataStore {
         let path_cache_key = format!("{}:path:{}", namespace, metadata.path);
         let mut cache_keys_to_invalidate = vec![metadata_key.clone(), path_cache_key.clone()];
 
-        // Serialize metadata using fast binary encoding
-        let metadata_data = bincode::serialize(metadata).map_err(|e| VfsError::EncodingError {
-            message: format!("Failed to serialize metadata: {}", e),
-        })?;
+        // Serialize metadata using fast binary encoding.
+        let metadata_data = encode_metadata(metadata)?;
 
         // Write to LMDB with atomic transaction
         {
@@ -148,13 +162,7 @@ impl MetadataStore {
             })?;
 
             let existing_by_id = match txn.get(self.metadata_db, &metadata_key) {
-                Ok(existing_data) => Some(
-                    bincode::deserialize::<FileMetadata>(existing_data).map_err(|e| {
-                        VfsError::EncodingError {
-                            message: format!("Failed to deserialize existing metadata: {}", e),
-                        }
-                    })?,
-                ),
+                Ok(existing_data) => Some(decode_metadata(existing_data)?),
                 Err(_) => None,
             };
 
@@ -390,7 +398,7 @@ impl MetadataStore {
                     break;
                 }
 
-                match bincode::deserialize::<FileMetadata>(value) {
+                match decode_metadata(value) {
                     Ok(metadata) => results.push(metadata),
                     Err(e) => {
                         warn!("Failed to deserialize metadata for key {}: {}", key_str, e);
@@ -480,11 +488,7 @@ impl MetadataStore {
             }
         };
 
-        let metadata = bincode::deserialize::<FileMetadata>(metadata_data).map_err(|e| {
-            VfsError::EncodingError {
-                message: format!("Failed to deserialize metadata: {}", e),
-            }
-        })?;
+        let metadata = decode_metadata(metadata_data)?;
 
         Ok(Some(metadata))
     }
@@ -598,13 +602,7 @@ impl MetadataStore {
 
         // Get metadata from main database
         match txn.get(db, &actual_key) {
-            Ok(metadata_bytes) => {
-                bincode::deserialize::<FileMetadata>(metadata_bytes).map_err(|e| {
-                    VfsError::EncodingError {
-                        message: format!("Failed to deserialize metadata: {}", e),
-                    }
-                })
-            }
+            Ok(metadata_bytes) => decode_metadata(metadata_bytes),
             Err(_) => Err(VfsError::FileNotFound {
                 path: match identifier {
                     FileIdentifier::Path(p) => p.clone(),

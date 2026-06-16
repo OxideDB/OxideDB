@@ -587,7 +587,7 @@ pub mod filesystem {
         // Calculate SHA256 hash
         let mut hasher = Sha256::new();
         hasher.update(wasm_data);
-        let hash = format!("{:x}", hasher.finalize());
+        let hash = hex::encode(hasher.finalize());
 
         Ok((filename, size, hash))
     }
@@ -617,7 +617,7 @@ pub mod filesystem {
 
         let mut hasher = Sha256::new();
         hasher.update(&wasm_data);
-        let actual_hash = format!("{:x}", hasher.finalize());
+        let actual_hash = hex::encode(hasher.finalize());
 
         Ok(actual_hash == expected_hash)
     }

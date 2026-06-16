@@ -654,7 +654,7 @@ pub fn extract_plugin_package(package_data: &[u8]) -> Result<PluginPackage, ApiE
         use sha2::{Digest, Sha256};
         let mut hasher = Sha256::new();
         hasher.update(package_data);
-        format!("{:x}", hasher.finalize())
+        hex::encode(hasher.finalize())
     };
 
     // Create temporary directory for extraction

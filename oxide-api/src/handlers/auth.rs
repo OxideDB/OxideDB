@@ -510,7 +510,7 @@ fn refresh_token_record(token_hash: String, claims: &RefreshClaims) -> RefreshTo
 }
 
 fn hash_refresh_token(token: &str) -> String {
-    format!("{:x}", Sha256::digest(token.as_bytes()))
+    hex::encode(Sha256::digest(token.as_bytes()))
 }
 
 fn validate_credential_policy(

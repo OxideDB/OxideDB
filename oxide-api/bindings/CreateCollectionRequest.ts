@@ -18,7 +18,7 @@ collection_type: CollectionType,
 /**
  * Field definitions for this collection
  */
-fields: { [key in string]?: FieldDefinition }, 
+fields: { [key in string]: FieldDefinition },
 /**
  * Index definitions for performance optimization (optional)
  */

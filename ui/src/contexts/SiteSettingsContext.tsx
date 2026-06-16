@@ -127,19 +127,14 @@ function hexToHsl(value?: string): string | null {
   }
 
   const saturation = delta / (1 - Math.abs(2 * lightness - 1));
-  let hue = 0;
+  const hue =
+    max === red
+      ? 60 * (((green - blue) / delta) % 6)
+      : max === green
+        ? 60 * ((blue - red) / delta + 2)
+        : 60 * ((red - green) / delta + 4);
 
-  if (max === red) {
-    hue = 60 * (((green - blue) / delta) % 6);
-  } else if (max === green) {
-    hue = 60 * ((blue - red) / delta + 2);
-  } else {
-    hue = 60 * ((red - green) / delta + 4);
-  }
+  const normalizedHue = hue < 0 ? hue + 360 : hue;
 
-  if (hue < 0) {
-    hue += 360;
-  }
-
-  return `${Math.round(hue)} ${Math.round(saturation * 100)}% ${Math.round(lightness * 100)}%`;
+  return `${Math.round(normalizedHue)} ${Math.round(saturation * 100)}% ${Math.round(lightness * 100)}%`;
 }
