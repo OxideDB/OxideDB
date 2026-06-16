@@ -12,7 +12,7 @@ import type {
   ApiKeyRulesResponse, UpsertApiKeyRuleRequest, UpsertApiKeyRuleResponse,
   RevokeApiKeyRuleRequest, BackupExportResponse, BackupManifestResponse,
   BackupQueryOptions, BackupRestoreRequest, BackupRestoreResponse,
-  PluginAdminPage, PluginCapability
+  PluginAdminPage, PluginCapability, PluginRecordField
 } from '../types/api';
 
 // Plugin-related interfaces
@@ -890,6 +890,14 @@ class ApiService {
 
   async getPluginAdminPages(): Promise<PluginAdminPage[]> {
     const response = await this.get<ApiResponse<PluginAdminPage[]>>('/api/admin/plugin-pages');
+    return response.data || [];
+  }
+
+  async getPluginRecordFields(collection: string): Promise<PluginRecordField[]> {
+    const params = new URLSearchParams({ collection });
+    const response = await this.get<ApiResponse<PluginRecordField[]>>(
+      `/api/admin/plugin-record-fields?${params.toString()}`
+    );
     return response.data || [];
   }
 

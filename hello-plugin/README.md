@@ -25,8 +25,9 @@ The plugin requires the following security capabilities to function:
 
 ### Data Processing
 - Validates collection names for security (blocks access to "admin" and "system" collections)
-- Adds plugin metadata to processed records
-- Preserves original data structure while enhancing it
+- Adds a `name` input to admin record forms through `plugin.toml`
+- Validates and capitalizes the schema-backed `name` field when present
+- Returns plugin processing metadata to the host without adding undeclared record fields
 
 ### Security Integration
 - Works with OxideDB's capability-based security model
@@ -69,7 +70,7 @@ This plugin is compatible with:
 When a create operation is performed on a collection, this plugin:
 
 1. **Security Check**: Validates the collection name
-2. **Data Enhancement**: Adds plugin metadata to the record
+2. **Data Enhancement**: Validates and capitalizes the `name` field when present
 3. **Logging**: Records the processing activity
 4. **Response**: Returns the modified data or blocks the operation
 
@@ -82,7 +83,7 @@ When a create operation is performed on a collection, this plugin:
 }
 ```
 
-Result: Operation proceeds with enhanced data including `plugin_processed_at` and `plugin_name` fields.
+Result: Operation proceeds with `name` normalized to title case and plugin processing details returned as hook metadata.
 
 ### Blocked Operation
 ```json

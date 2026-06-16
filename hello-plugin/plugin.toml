@@ -46,6 +46,15 @@ entry = "admin/index.html"
 icon = "settings"
 nav_group = "Hello Plugin"
 
+[[admin.record_fields]]
+collection = "*"
+name = "name"
+field_type = "text"
+required = false
+unique = false
+index = false
+default = ""
+
 [dependencies]
 [dependencies.plugins]
 # No plugin dependencies

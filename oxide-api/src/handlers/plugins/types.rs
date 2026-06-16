@@ -2,7 +2,9 @@
 
 use oxide_core::{
     auth::CollectionPermissions,
+    field_types::{FieldType, ValidationRules},
     plugin_security::{PluginCapability, PluginTrustLevel},
+    FieldDefinition,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -76,6 +78,9 @@ pub struct PluginAdmin {
     /// Pages that should be mounted inside the OxideDB admin console.
     #[serde(default)]
     pub pages: Vec<PluginAdminPage>,
+    /// Record form fields that should be added to collection admin pages.
+    #[serde(default)]
+    pub record_fields: Vec<PluginAdminRecordField>,
 }
 
 /// A single admin page served from packaged plugin assets.
@@ -93,6 +98,46 @@ pub struct PluginAdminPage {
     pub icon: Option<String>,
     /// Optional navigation group label for organizing plugin pages.
     pub nav_group: Option<String>,
+}
+
+/// A schema-backed field contributed to the admin record form by a plugin.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PluginAdminRecordField {
+    /// Collection name this field applies to, or `*` for all user collections.
+    pub collection: String,
+    /// Field name to add to the collection form.
+    pub name: String,
+    /// The type of this field.
+    pub field_type: FieldType,
+    /// Whether this field is required.
+    #[serde(default)]
+    pub required: bool,
+    /// Whether this field must be unique.
+    #[serde(default)]
+    pub unique: bool,
+    /// Whether this field should be indexed for performance.
+    #[serde(default)]
+    pub index: bool,
+    /// Default value for this field.
+    #[serde(default)]
+    pub default: Option<serde_json::Value>,
+    /// Validation rules for this field.
+    #[serde(default)]
+    pub validation: Option<ValidationRules>,
+}
+
+impl PluginAdminRecordField {
+    /// Convert this manifest declaration into a collection field definition.
+    pub fn definition(&self) -> FieldDefinition {
+        FieldDefinition {
+            field_type: self.field_type.clone(),
+            required: self.required,
+            unique: self.unique,
+            index: self.index,
+            default: self.default.clone(),
+            validation: self.validation.clone(),
+        }
+    }
 }
 
 /// Plugin dependencies
@@ -177,6 +222,23 @@ pub struct PluginAdminPageInfo {
     pub admin_path: String,
     /// URL to the packaged page entry HTML.
     pub source_url: String,
+    /// Whether the owning plugin is currently enabled.
+    pub enabled: bool,
+}
+
+/// Runtime-safe information for a record form field contributed by a plugin.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PluginAdminRecordFieldInfo {
+    /// Plugin that owns the field contribution.
+    pub plugin_name: String,
+    /// Plugin version that supplied the field contribution.
+    pub plugin_version: String,
+    /// Collection target from the plugin manifest.
+    pub collection: String,
+    /// Field name to add to the collection form.
+    pub field_name: String,
+    /// Schema-compatible field definition.
+    pub field: FieldDefinition,
     /// Whether the owning plugin is currently enabled.
     pub enabled: bool,
 }

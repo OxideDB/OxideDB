@@ -195,6 +195,15 @@ export interface PluginAdminPage {
   enabled: boolean;
 }
 
+export interface PluginRecordField {
+  plugin_name: string;
+  plugin_version: string;
+  collection: string;
+  field_name: string;
+  field: FieldDefinition;
+  enabled: boolean;
+}
+
 export interface BackupCollectionSummary {
   name: string;
   collection_type: CollectionType;

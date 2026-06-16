@@ -48,6 +48,25 @@ const getFieldSizeClass = (size: FieldSize): string => {
   }
 };
 
+const getDefaultFieldValue = (fieldDef: FieldDefinition): unknown => {
+  if (fieldDef.default !== undefined && fieldDef.default !== null) {
+    return fieldDef.default;
+  }
+
+  if (typeof fieldDef.field_type === 'object' && 'file' in fieldDef.field_type) {
+    return null;
+  }
+
+  switch (fieldDef.field_type) {
+    case 'boolean':
+      return false;
+    case 'json':
+      return '{}';
+    default:
+      return '';
+  }
+};
+
 const FieldCustomizationControls: React.FC<{
   fieldName: string;
   customization: FieldCustomization;
@@ -220,10 +239,18 @@ export const CustomizableSchemaForm: React.FC<CustomizableSchemaFormProps> = ({
 
   // Initialize form data
   useEffect(() => {
-    if (initialData) {
-      setFormData(initialData);
-    }
-  }, [initialData]);
+    const data: Record<string, unknown> = {};
+
+    Object.entries(schema.fields).forEach(([fieldName, fieldDef]) => {
+      if (initialData && initialData[fieldName] !== undefined) {
+        data[fieldName] = initialData[fieldName];
+      } else {
+        data[fieldName] = getDefaultFieldValue(fieldDef);
+      }
+    });
+
+    setFormData(data);
+  }, [schema, initialData]);
 
   // Get ordered fields based on customization settings
   const getOrderedFields = () => {
@@ -645,4 +672,4 @@ export const CustomizableSchemaForm: React.FC<CustomizableSchemaFormProps> = ({
       </div>
     </form>
   );
-}; 
+};

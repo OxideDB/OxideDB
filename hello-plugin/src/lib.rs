@@ -195,21 +195,10 @@ impl PluginEventHandler for HelloPlugin {
             return Ok(PluginResponse::deny(error_msg));
         }
 
-        // Parse and enhance the data
+        // Parse and enhance schema-backed data only.
         let mut data: JsonValue = serde_json::from_str(&event.data)?;
 
         if let Some(obj) = data.as_object_mut() {
-            // Add comprehensive plugin metadata
-            let runtime_info = Self::get_runtime_info();
-            obj.insert(
-                "plugin_processed_at".to_string(),
-                json!(Self::get_current_timestamp()),
-            );
-            obj.insert("plugin_name".to_string(), json!(PLUGIN_NAME));
-            obj.insert("plugin_version".to_string(), json!(PLUGIN_VERSION));
-            obj.insert("plugin_author".to_string(), json!(PLUGIN_AUTHOR));
-            obj.insert("plugin_runtime_info".to_string(), runtime_info);
-
             // Validate and enhance name field if present
             if let Some(name) = obj.get("name").and_then(|v| v.as_str()) {
                 if name.trim().is_empty() {
@@ -222,7 +211,15 @@ impl PluginEventHandler for HelloPlugin {
         }
 
         log_info!("Data validation and enhancement completed");
-        Ok(PluginResponse::allow_with_data(&data)?)
+        Ok(
+            PluginResponse::allow_with_data(&data)?.with_metadata(json!({
+                "plugin_processed_at": Self::get_current_timestamp(),
+                "plugin_name": PLUGIN_NAME,
+                "plugin_version": PLUGIN_VERSION,
+                "plugin_author": PLUGIN_AUTHOR,
+                "plugin_runtime_info": Self::get_runtime_info()
+            })),
+        )
     }
 
     fn on_after_create(&mut self, event: &EventPayload) -> PluginResult<PluginResponse> {
@@ -264,16 +261,6 @@ impl PluginEventHandler for HelloPlugin {
         let mut data: JsonValue = serde_json::from_str(&event.data)?;
 
         if let Some(obj) = data.as_object_mut() {
-            // Update the last modified timestamp with metadata
-            obj.insert(
-                "plugin_updated_at".to_string(),
-                json!(Self::get_current_timestamp()),
-            );
-            obj.insert(
-                "plugin_updated_by".to_string(),
-                json!(format!("{} v{}", PLUGIN_NAME, PLUGIN_VERSION)),
-            );
-
             // Validate name field if being updated
             if let Some(name) = obj.get("name").and_then(|v| v.as_str()) {
                 if name.trim().is_empty() {
@@ -284,7 +271,12 @@ impl PluginEventHandler for HelloPlugin {
             }
         }
 
-        Ok(PluginResponse::allow_with_data(&data)?)
+        Ok(
+            PluginResponse::allow_with_data(&data)?.with_metadata(json!({
+                "plugin_updated_at": Self::get_current_timestamp(),
+                "plugin_updated_by": format!("{} v{}", PLUGIN_NAME, PLUGIN_VERSION)
+            })),
+        )
     }
 
     fn on_before_delete(&mut self, event: &EventPayload) -> PluginResult<PluginResponse> {

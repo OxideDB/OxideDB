@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { ChevronLeft, Save, Code, FileText, Plus, Settings } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -9,9 +9,34 @@ import { CustomizableSchemaForm } from '@/components/CustomizableSchemaForm';
 import PageLayout from '@/components/PageLayout';
 import ActionDropdown from '@/components/ActionDropdown';
 import { apiService } from '../services/api';
-import type { DbRecord, CollectionSchema } from '../types/api';
+import type { DbRecord, CollectionSchema, PluginRecordField } from '../types/api';
 import { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from '@/components/ui/tooltip';
 import { useFieldCustomization } from '../hooks/useFieldCustomization';
+
+const mergePluginRecordFields = (
+  schema: CollectionSchema | null,
+  pluginFields: PluginRecordField[]
+): CollectionSchema | null => {
+  if (!schema || pluginFields.length === 0) {
+    return schema;
+  }
+
+  const fields = { ...schema.fields };
+
+  pluginFields
+    .filter((field) => field.enabled)
+    .forEach((field) => {
+      if (!fields[field.field_name]) {
+        fields[field.field_name] = field.field;
+      }
+    });
+
+  return { ...schema, fields };
+};
+
+const schemaHasFields = (schema: CollectionSchema | null): boolean => (
+  !!schema && Object.keys(schema.fields).length > 0
+);
 
 const EditRecord: React.FC = () => {
   const { collection, recordId } = useParams<{ collection: string; recordId: string }>();
@@ -27,9 +52,28 @@ const EditRecord: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [useSchemaForm, setUseSchemaForm] = useState(true);
   const [jsonData, setJsonData] = useState('{}');
+  const [pluginRecordFields, setPluginRecordFields] = useState<PluginRecordField[]>([]);
+
+  const effectiveSchema = useMemo(
+    () => mergePluginRecordFields(schema, pluginRecordFields),
+    [schema, pluginRecordFields]
+  );
+  const initialFormData = useMemo(
+    () => (isCreateMode ? {} : record?.data),
+    [isCreateMode, record?.data]
+  );
 
   // Field customization hook
-  const fieldCustomization = useFieldCustomization(collection || '', schema);
+  const fieldCustomization = useFieldCustomization(collection || '', effectiveSchema);
+
+  const fetchPluginRecordFields = useCallback(async (collectionName: string) => {
+    try {
+      return await apiService.getPluginRecordFields(collectionName);
+    } catch (err) {
+      console.error('Failed to fetch plugin record fields:', err);
+      return [];
+    }
+  }, []);
 
   const fetchData = useCallback(async () => {
     if (!collection) return;
@@ -40,7 +84,10 @@ const EditRecord: React.FC = () => {
       
       if (isCreateMode) {
         // For create mode, only fetch schema
-        const schemaData = await apiService.getCollectionSchema(collection).catch(() => null);
+        const [schemaData, pluginFields] = await Promise.all([
+          apiService.getCollectionSchema(collection).catch(() => null),
+          fetchPluginRecordFields(collection),
+        ]);
 
         if (schemaData?.collection_type === 'single') {
           const existingRecords = await apiService.getRecords(collection, { limit: 1 });
@@ -56,26 +103,29 @@ const EditRecord: React.FC = () => {
         }
 
         setSchema(schemaData);
+        setPluginRecordFields(pluginFields);
         setJsonData('{}');
-        setUseSchemaForm(!!schemaData && Object.keys(schemaData.fields).length > 0);
+        setUseSchemaForm(schemaHasFields(mergePluginRecordFields(schemaData, pluginFields)));
       } else {
         // For edit mode, fetch both record and schema
-        const [recordData, schemaData] = await Promise.all([
+        const [recordData, schemaData, pluginFields] = await Promise.all([
           apiService.getRecord(collection, recordId!),
-          apiService.getCollectionSchema(collection).catch(() => null)
+          apiService.getCollectionSchema(collection).catch(() => null),
+          fetchPluginRecordFields(collection),
         ]);
         
         setRecord(recordData);
         setSchema(schemaData);
+        setPluginRecordFields(pluginFields);
         setJsonData(JSON.stringify(recordData.data, null, 2));
-        setUseSchemaForm(!!schemaData && Object.keys(schemaData.fields).length > 0);
+        setUseSchemaForm(schemaHasFields(mergePluginRecordFields(schemaData, pluginFields)));
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : `Failed to fetch ${isCreateMode ? 'schema' : 'record'}`);
     } finally {
       setLoading(false);
     }
-  }, [collection, isCreateMode, navigate, recordId]);
+  }, [collection, fetchPluginRecordFields, isCreateMode, navigate, recordId]);
 
   useEffect(() => {
     if (collection) {
@@ -83,11 +133,46 @@ const EditRecord: React.FC = () => {
     }
   }, [collection, fetchData]);
 
+  const ensurePluginFieldsPersisted = useCallback(async () => {
+    if (!collection || !schema || pluginRecordFields.length === 0) {
+      return;
+    }
+
+    const activePluginFields = pluginRecordFields.filter((field) => field.enabled);
+    if (activePluginFields.length === 0) {
+      return;
+    }
+
+    const freshSchema = await apiService.getCollectionSchema(collection);
+    const missingFields = activePluginFields.filter(
+      (field) => !freshSchema.fields[field.field_name]
+    );
+
+    if (missingFields.length === 0) {
+      setSchema(freshSchema);
+      return;
+    }
+
+    const updatedSchema: CollectionSchema = {
+      ...freshSchema,
+      version: freshSchema.version + 1,
+      fields: { ...freshSchema.fields },
+    };
+
+    missingFields.forEach((field) => {
+      updatedSchema.fields[field.field_name] = field.field;
+    });
+
+    await apiService.updateCollectionSchema(collection, updatedSchema);
+    setSchema(updatedSchema);
+  }, [collection, pluginRecordFields, schema]);
+
   const handleSchemaFormSave = async (data: Record<string, unknown>) => {
     if (!collection) return;
 
     try {
       setSaving(true);
+      await ensurePluginFieldsPersisted();
       if (isCreateMode) {
         await apiService.createRecord(collection, data);
       } else {
@@ -108,6 +193,7 @@ const EditRecord: React.FC = () => {
     try {
       setSaving(true);
       const data = JSON.parse(jsonData);
+      await ensurePluginFieldsPersisted();
       if (isCreateMode) {
         await apiService.createRecord(collection, data);
       } else {
@@ -174,7 +260,7 @@ const EditRecord: React.FC = () => {
     </Button>
   );
 
-  const headerActions = schema && Object.keys(schema.fields).length > 0 ? (
+  const headerActions = effectiveSchema && Object.keys(effectiveSchema.fields).length > 0 ? (
     <ActionDropdown
       actions={[
         {
@@ -203,7 +289,7 @@ const EditRecord: React.FC = () => {
     />
   ) : undefined;
 
-  const isSingleCollection = schema?.collection_type === 'single';
+  const isSingleCollection = effectiveSchema?.collection_type === 'single';
 
   return (
     <PageLayout 
@@ -290,10 +376,10 @@ const EditRecord: React.FC = () => {
           </CardTitle>
         </CardHeader>
         <CardContent className="pt-0">
-          {useSchemaForm && schema && Object.keys(schema.fields).length > 0 ? (
+          {useSchemaForm && effectiveSchema && Object.keys(effectiveSchema.fields).length > 0 ? (
             <CustomizableSchemaForm
-              schema={schema}
-              initialData={isCreateMode ? {} : record?.data}
+              schema={effectiveSchema}
+              initialData={initialFormData}
               onSubmit={handleSchemaFormSave}
               onCancel={handleCancel}
               submitLabel={isCreateMode ? (isSingleCollection ? "Create Entry" : "Create Record") : "Save Changes"}

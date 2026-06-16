@@ -569,6 +569,21 @@ fn resolve_install_scope(
                 ),
             ));
         }
+
+        if !admin.record_fields.is_empty() {
+            notices.push(install_notice(
+                PluginInstallNoticeSeverity::Info,
+                format!(
+                    "Package adds {} record form field{} to the console.",
+                    admin.record_fields.len(),
+                    if admin.record_fields.len() == 1 {
+                        ""
+                    } else {
+                        "s"
+                    }
+                ),
+            ));
+        }
     }
 
     Ok(PluginInstallScope {

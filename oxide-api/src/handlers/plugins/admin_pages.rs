@@ -256,6 +256,12 @@ pub struct AdminPageAssetQuery {
     oxide_theme: Option<String>,
 }
 
+/// Query options accepted when listing plugin-contributed record fields.
+#[derive(Debug, Default, Deserialize)]
+pub struct AdminRecordFieldQuery {
+    collection: Option<String>,
+}
+
 /// List admin pages contributed by installed plugins.
 pub async fn list_admin_pages(
     authenticated_user: AuthenticatedUser,
@@ -281,6 +287,50 @@ pub async fn list_admin_pages(
     });
 
     Ok(Json(ApiResponse::success(pages)))
+}
+
+/// List record form fields contributed by enabled plugins.
+pub async fn list_admin_record_fields(
+    authenticated_user: AuthenticatedUser,
+    State(state): State<AppState>,
+    Query(query): Query<AdminRecordFieldQuery>,
+) -> Result<Json<ApiResponse<Vec<PluginAdminRecordFieldInfo>>>, ApiError> {
+    ensure_plugin_superuser(&authenticated_user, "list plugin record fields")?;
+
+    let plugin_configs = state
+        .plugin_config_service
+        .list_plugin_configs()
+        .await
+        .map_err(|e| ApiError::internal(format!("Failed to get plugin configurations: {}", e)))?;
+
+    let collection_filter = query
+        .collection
+        .as_deref()
+        .map(str::trim)
+        .filter(|collection| !collection.is_empty());
+
+    let mut fields = Vec::new();
+    for config in plugin_configs {
+        fields.extend(
+            admin_record_fields_from_config(&config)
+                .into_iter()
+                .filter(|field| field.enabled)
+                .filter(|field| {
+                    collection_filter.is_none_or(|collection| {
+                        record_field_targets_collection(&field.collection, collection)
+                    })
+                }),
+        );
+    }
+
+    fields.sort_by(|a, b| {
+        a.collection
+            .cmp(&b.collection)
+            .then_with(|| a.field_name.cmp(&b.field_name))
+            .then_with(|| a.plugin_name.cmp(&b.plugin_name))
+    });
+
+    Ok(Json(ApiResponse::success(fields)))
 }
 
 /// Serve the shared stylesheet available to packaged plugin admin pages.
@@ -566,6 +616,21 @@ pub(super) fn admin_pages_from_config(config: &PluginConfiguration) -> Vec<Plugi
     )
 }
 
+pub(super) fn admin_record_fields_from_config(
+    config: &PluginConfiguration,
+) -> Vec<PluginAdminRecordFieldInfo> {
+    let Some(manifest) = manifest_from_metadata(&config.metadata) else {
+        return Vec::new();
+    };
+
+    admin_record_fields_from_manifest(
+        &config.name,
+        &config.version,
+        config.enabled && matches!(config.status, PersistedPluginStatus::Enabled),
+        &manifest,
+    )
+}
+
 pub(super) fn admin_pages_from_manifest(
     plugin_name: &str,
     plugin_version: &str,
@@ -608,6 +673,33 @@ pub(super) fn admin_pages_from_manifest(
         .unwrap_or_default()
 }
 
+pub(super) fn admin_record_fields_from_manifest(
+    plugin_name: &str,
+    plugin_version: &str,
+    enabled: bool,
+    manifest: &PluginManifest,
+) -> Vec<PluginAdminRecordFieldInfo> {
+    manifest
+        .admin
+        .as_ref()
+        .map(|admin| {
+            admin
+                .record_fields
+                .iter()
+                .filter(|field| is_valid_admin_record_field(field))
+                .map(|field| PluginAdminRecordFieldInfo {
+                    plugin_name: plugin_name.to_string(),
+                    plugin_version: plugin_version.to_string(),
+                    collection: field.collection.clone(),
+                    field_name: field.name.clone(),
+                    field: field.definition(),
+                    enabled,
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 pub(super) fn validate_admin_pages(
     manifest: &PluginManifest,
     extraction_path: &std::path::Path,
@@ -638,6 +730,34 @@ pub(super) fn validate_admin_pages(
                 "Admin page '{}' declares missing entry file '{}'",
                 page.slug, page.entry
             )));
+        }
+    }
+
+    for field in &admin.record_fields {
+        if !is_valid_record_field_target(&field.collection) {
+            return Err(ApiError::bad_request(format!(
+                "Invalid admin record field target '{}': use '*' or a non-system collection identifier",
+                field.collection
+            )));
+        }
+
+        if !is_valid_record_field_name(&field.name) {
+            return Err(ApiError::bad_request(format!(
+                "Invalid admin record field name '{}': must be a valid non-reserved field identifier",
+                field.name
+            )));
+        }
+
+        if let Some(default_value) = &field.default {
+            field
+                .definition()
+                .validate_value(&field.name, default_value)
+                .map_err(|error| {
+                    ApiError::bad_request(format!(
+                        "Invalid default for admin record field '{}': {}",
+                        field.name, error
+                    ))
+                })?;
         }
     }
 
@@ -693,6 +813,36 @@ fn is_allowed_admin_asset_path(path: &str) -> bool {
     }
 
     has_component
+}
+
+fn is_valid_admin_record_field(field: &PluginAdminRecordField) -> bool {
+    is_valid_record_field_target(&field.collection) && is_valid_record_field_name(&field.name)
+}
+
+fn is_valid_record_field_target(target: &str) -> bool {
+    target == "*" || (is_valid_schema_identifier(target) && !target.starts_with('_'))
+}
+
+fn record_field_targets_collection(target: &str, collection: &str) -> bool {
+    if collection.starts_with('_') {
+        return false;
+    }
+
+    target == "*" || target == collection
+}
+
+fn is_valid_record_field_name(name: &str) -> bool {
+    is_valid_schema_identifier(name) && !matches!(name, "id" | "created_at" | "updated_at")
+}
+
+fn is_valid_schema_identifier(identifier: &str) -> bool {
+    let mut chars = identifier.chars();
+    match chars.next() {
+        Some(first) if first == '_' || first.is_ascii_alphabetic() => {}
+        _ => return false,
+    }
+
+    chars.all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
 }
 
 #[cfg(test)]
@@ -821,12 +971,23 @@ mod tests {
                     icon: Some("settings".to_string()),
                     nav_group: None,
                 }],
+                record_fields: vec![PluginAdminRecordField {
+                    collection: "posts".to_string(),
+                    name: "plugin_title".to_string(),
+                    field_type: oxide_core::FieldType::Text,
+                    required: true,
+                    unique: false,
+                    index: false,
+                    default: None,
+                    validation: None,
+                }],
             }),
             dependencies: None,
             config: None,
         };
 
         let pages = admin_pages_from_manifest("demo-plugin", "1.0.0", true, &manifest);
+        let fields = admin_record_fields_from_manifest("demo-plugin", "1.0.0", true, &manifest);
 
         assert_eq!(pages.len(), 1);
         assert_eq!(pages[0].admin_path, "/plugins/demo-plugin/pages/settings");
@@ -835,5 +996,31 @@ mod tests {
             "/admin/plugin-pages/assets/demo-plugin/settings/index.html"
         );
         assert_eq!(pages[0].nav_group, "demo-plugin");
+
+        assert_eq!(fields.len(), 1);
+        assert_eq!(fields[0].collection, "posts");
+        assert_eq!(fields[0].field_name, "plugin_title");
+        assert_eq!(fields[0].field.field_type, oxide_core::FieldType::Text);
+        assert!(fields[0].field.required);
+    }
+
+    #[test]
+    fn record_field_targets_only_user_collections() {
+        assert!(record_field_targets_collection("*", "posts"));
+        assert!(record_field_targets_collection("posts", "posts"));
+        assert!(!record_field_targets_collection("posts", "pages"));
+        assert!(!record_field_targets_collection("*", "_plugins"));
+    }
+
+    #[test]
+    fn record_field_manifest_identifiers_are_restricted() {
+        assert!(is_valid_record_field_target("*"));
+        assert!(is_valid_record_field_target("posts"));
+        assert!(!is_valid_record_field_target("_plugins"));
+        assert!(!is_valid_record_field_target("bad-name"));
+
+        assert!(is_valid_record_field_name("plugin_title"));
+        assert!(!is_valid_record_field_name("created_at"));
+        assert!(!is_valid_record_field_name("bad-name"));
     }
 }

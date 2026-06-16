@@ -47,9 +47,9 @@ use crate::{
         plugins::{
             analyze_plugin, disable_plugin, enable_plugin, get_plugin_details,
             get_plugin_permissions, grant_plugin_capability, handle_plugin_route, list_admin_pages,
-            list_plugin_routes, list_plugins, register_plugin, revoke_plugin_capability,
-            serve_admin_page_asset, serve_admin_page_styles, unregister_plugin,
-            update_plugin_permissions, update_plugin_trust_level,
+            list_admin_record_fields, list_plugin_routes, list_plugins, register_plugin,
+            revoke_plugin_capability, serve_admin_page_asset, serve_admin_page_styles,
+            unregister_plugin, update_plugin_permissions, update_plugin_trust_level,
         },
         records::{create_record, delete_record, get_record, list_records, update_record},
         site_settings::{
@@ -824,6 +824,13 @@ fn get_static_endpoints(config: &RouteConfig) -> Vec<RegisteredEndpoint> {
         ),
         (
             "GET",
+            "/api/admin/plugin-record-fields",
+            "plugins::list_admin_record_fields",
+            true,
+            "List plugin-contributed record form fields",
+        ),
+        (
+            "GET",
             "/admin/plugin-pages/assets/{plugin_name}/{*path}",
             "plugins::serve_admin_page_asset",
             true,
@@ -1378,6 +1385,10 @@ fn plugin_routes(max_request_size: usize) -> Router<AppState> {
         .route("/plugins/routes", get(list_plugin_routes))
         // Plugin admin page discovery and packaged admin assets
         .route("/api/admin/plugin-pages", get(list_admin_pages))
+        .route(
+            "/api/admin/plugin-record-fields",
+            get(list_admin_record_fields),
+        )
         .route(
             "/admin/plugin-pages/assets/{plugin_name}/{*path}",
             get(serve_admin_page_asset),
