@@ -371,8 +371,8 @@ mod tests {
         assert!(hook.handle_before_record_create(&mut context).is_err());
     }
 
-    #[test]
-    fn test_integration_password_hashing_then_validation() {
+    #[tokio::test]
+    async fn test_integration_password_hashing_then_validation() {
         use crate::hooks::auth::password_hash::PasswordHashingHook;
         use crate::AuthService;
         use std::sync::Arc;
@@ -430,6 +430,7 @@ mod tests {
         // Step 1: Password hashing hook processes the data
         assert!(password_hook
             .handle_before_record_create(&mut context)
+            .await
             .is_ok());
 
         // Verify password was hashed and stored in the same field

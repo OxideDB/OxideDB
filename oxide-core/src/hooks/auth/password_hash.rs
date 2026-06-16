@@ -84,7 +84,10 @@ impl PasswordHashingHook {
     }
 
     /// Hook that processes BeforeRecordCreate events to hash passwords
-    pub fn handle_before_record_create(
+    ///
+    /// Async because Argon2 hashing is offloaded to the blocking pool via
+    /// [`AuthService::hash_password_async`] to avoid parking the tokio worker.
+    pub async fn handle_before_record_create(
         &self,
         context: &mut BeforeEventContext,
     ) -> Result<(), AppError> {
@@ -92,12 +95,15 @@ impl PasswordHashingHook {
             "Processing password hashing for create in collection: {}",
             context.collection
         );
-        self.hash_passwords_in_data(context)?;
+        self.hash_passwords_in_data(context).await?;
         Ok(())
     }
 
     /// Hook that processes BeforeRecordUpdate events to hash passwords
-    pub fn handle_before_record_update(
+    ///
+    /// Async because Argon2 hashing is offloaded to the blocking pool via
+    /// [`AuthService::hash_password_async`] to avoid parking the tokio worker.
+    pub async fn handle_before_record_update(
         &self,
         context: &mut BeforeEventContext,
     ) -> Result<(), AppError> {
@@ -105,60 +111,79 @@ impl PasswordHashingHook {
             "Processing password hashing for update in collection: {}",
             context.collection
         );
-        self.hash_passwords_in_data(context)?;
+        self.hash_passwords_in_data(context).await?;
         Ok(())
     }
 
     /// Main password hashing logic that works in both schema-aware and config modes
-    fn hash_passwords_in_data(&self, context: &mut BeforeEventContext) -> Result<(), AppError> {
+    async fn hash_passwords_in_data(
+        &self,
+        context: &mut BeforeEventContext,
+    ) -> Result<(), AppError> {
         if self.config.schema_aware {
-            self.hash_passwords_schema_aware(context)
+            self.hash_passwords_schema_aware(context).await
         } else {
-            self.hash_passwords_config_mode(context)
+            self.hash_passwords_config_mode(context).await
         }
     }
 
     /// Hash passwords using schema information (automatically detect password fields)
-    fn hash_passwords_schema_aware(
+    async fn hash_passwords_schema_aware(
         &self,
         context: &mut BeforeEventContext,
     ) -> Result<(), AppError> {
-        let schemas = self
-            .schemas
-            .read()
-            .map_err(|_| AppError::internal("Failed to acquire read lock for schemas"))?;
+        // Snapshot the password fields out of the schema while holding the read
+        // lock, then drop the guard before doing any async hashing work — the
+        // non-Send guard must not be held across an `.await`.
+        let password_fields: Option<Vec<(String, crate::FieldDefinition)>> = {
+            let schemas = self
+                .schemas
+                .read()
+                .map_err(|_| AppError::internal("Failed to acquire read lock for schemas"))?;
 
-        if let Some(schema) = schemas.get(&context.collection) {
-            // Find all password fields in the schema
-            let password_fields: Vec<_> = schema
-                .fields
-                .iter()
-                .filter(|(_, field_def)| field_def.field_type.requires_hashing())
-                .collect();
-
-            if password_fields.is_empty() {
-                debug!(
-                    "No password fields found in schema for collection: {}",
-                    context.collection
-                );
-                return Ok(());
+            match schemas.get(&context.collection) {
+                None => None,
+                Some(schema) => {
+                    // Find all password fields in the schema
+                    let fields: Vec<(String, crate::FieldDefinition)> = schema
+                        .fields
+                        .iter()
+                        .filter(|(_, field_def)| field_def.field_type.requires_hashing())
+                        .map(|(name, def)| (name.clone(), def.clone()))
+                        .collect();
+                    Some(fields)
+                }
             }
+        };
 
-            // Hash each password field found
-            for (field_name, field_def) in password_fields {
-                self.hash_single_password_field(context, field_name, field_def)?;
-            }
-        } else {
+        let Some(password_fields) = password_fields else {
             debug!("No schema found for collection '{}', falling back to config mode for password hashing", context.collection);
-            // Fall back to config mode when no schema is available
-            return self.hash_passwords_config_mode(context);
+            // Fall back to config mode when no schema is available (guard dropped)
+            return self.hash_passwords_config_mode(context).await;
+        };
+
+        if password_fields.is_empty() {
+            debug!(
+                "No password fields found in schema for collection: {}",
+                context.collection
+            );
+            return Ok(());
+        }
+
+        // Hash each password field found (outside the schema read lock)
+        for (field_name, field_def) in password_fields {
+            self.hash_single_password_field(context, &field_name, &field_def)
+                .await?;
         }
 
         Ok(())
     }
 
     /// Hash passwords using configuration mode (legacy approach)
-    fn hash_passwords_config_mode(&self, context: &mut BeforeEventContext) -> Result<(), AppError> {
+    async fn hash_passwords_config_mode(
+        &self,
+        context: &mut BeforeEventContext,
+    ) -> Result<(), AppError> {
         if !self.config.auth_collections.contains(&context.collection) {
             return Ok(());
         }
@@ -179,8 +204,11 @@ impl PasswordHashingHook {
                     self.config.password_field, context.collection
                 );
 
-                // Hash the password using the auth service
-                let password_hash = self.auth_service.hash_password(password_str)?;
+                // Hash the password using the auth service (off the executor)
+                let password_hash = self
+                    .auth_service
+                    .hash_password_async(password_str.to_string())
+                    .await?;
 
                 // Modify the data directly in the context
                 if let Some(data_obj) = context.data.as_object_mut() {
@@ -210,7 +238,7 @@ impl PasswordHashingHook {
     }
 
     /// Hash a single password field from schema
-    fn hash_single_password_field(
+    async fn hash_single_password_field(
         &self,
         context: &mut BeforeEventContext,
         field_name: &str,
@@ -231,8 +259,11 @@ impl PasswordHashingHook {
                     field_name, context.collection
                 );
 
-                // Hash the password using the auth service
-                let password_hash = self.auth_service.hash_password(password_str)?;
+                // Hash the password using the auth service (off the executor)
+                let password_hash = self
+                    .auth_service
+                    .hash_password_async(password_str.to_string())
+                    .await?;
 
                 // Modify the data directly in the context
                 if let Some(data_obj) = context.data.as_object_mut() {
@@ -299,8 +330,8 @@ mod tests {
     use crate::AuthService;
     use serde_json::json;
 
-    #[test]
-    fn test_password_hashing_hook() {
+    #[tokio::test]
+    async fn test_password_hashing_hook() {
         let auth_config = crate::auth::AuthServiceConfig::new("test_secret".to_string());
         let auth_service = Arc::new(AuthService::new(auth_config));
         let config = PasswordHashConfig {
@@ -318,7 +349,7 @@ mod tests {
         );
 
         // Test password hashing
-        assert!(hook.handle_before_record_create(&mut context).is_ok());
+        assert!(hook.handle_before_record_create(&mut context).await.is_ok());
 
         // Verify password was hashed and stored in the same field
         assert!(context.data.get("password").is_some());
@@ -334,8 +365,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_custom_config() {
+    #[tokio::test]
+    async fn test_custom_config() {
         let auth_config = crate::auth::AuthServiceConfig::new("test_secret".to_string());
         let auth_service = Arc::new(AuthService::new(auth_config));
         let config = PasswordHashConfig {
@@ -355,7 +386,7 @@ mod tests {
             }),
         );
 
-        assert!(hook.handle_before_record_create(&mut context).is_ok());
+        assert!(hook.handle_before_record_create(&mut context).await.is_ok());
 
         // Verify password was hashed and stored in the same field
         assert!(context.data.get("pwd").is_some());
@@ -365,8 +396,8 @@ mod tests {
         assert!(context.metadata.get("password_hashed").is_none()); // No metadata
     }
 
-    #[test]
-    fn test_schema_aware_password_hashing() {
+    #[tokio::test]
+    async fn test_schema_aware_password_hashing() {
         let auth_config = crate::auth::AuthServiceConfig::new("test_secret".to_string());
         let auth_service = Arc::new(AuthService::new(auth_config));
         let hook = PasswordHashingHook::new(auth_service); // Uses schema_aware: true by default
@@ -421,7 +452,7 @@ mod tests {
         );
 
         // Test schema-aware password hashing
-        assert!(hook.handle_before_record_create(&mut context).is_ok());
+        assert!(hook.handle_before_record_create(&mut context).await.is_ok());
 
         // Verify both password fields were hashed and stored in the same fields
         assert!(context.data.get("password").is_some());

@@ -712,9 +712,11 @@ mod tests {
 
     #[test]
     fn shared_style_uses_site_branding_colors() {
-        let mut branding = BrandingSettings::default();
-        branding.primary_color = Some("#ff0000".to_string());
-        branding.secondary_color = Some("#00ff00".to_string());
+        let branding = BrandingSettings {
+            primary_color: Some("#ff0000".to_string()),
+            secondary_color: Some("#00ff00".to_string()),
+            ..Default::default()
+        };
 
         let style = plugin_admin_style(&branding);
 
@@ -727,8 +729,10 @@ mod tests {
 
     #[test]
     fn shared_style_includes_custom_css_from_site_settings() {
-        let mut branding = BrandingSettings::default();
-        branding.custom_css = Some(".oxide-panel { border-width: 2px; }".to_string());
+        let branding = BrandingSettings {
+            custom_css: Some(".oxide-panel { border-width: 2px; }".to_string()),
+            ..Default::default()
+        };
 
         let style = plugin_admin_style(&branding);
 

@@ -59,7 +59,12 @@ const RelationshipField: React.FC<RelationshipFieldProps> = ({
     try {
       setLoading(true);
       setFetchError(null);
-      const fetchedRecords = await apiService.getRecords(relationshipConfig.target_collection);
+      // Bound the fetch so a large target collection doesn't load every row
+      // into the picker. Full backend-backed search will land with FTS (Phase 3).
+      const fetchedRecords = await apiService.getRecords(
+        relationshipConfig.target_collection,
+        { limit: 100 }
+      );
       setRecords(fetchedRecords);
     } catch (err) {
       setFetchError(err instanceof Error ? err.message : 'Failed to fetch records');

@@ -23,6 +23,15 @@ pub(crate) fn quote_identifier(identifier: &str) -> String {
     format!("\"{}\"", identifier.replace('"', "\"\""))
 }
 
+/// Quote a value as a safe SQL string literal (single quotes, escaped).
+///
+/// Used when embedding a value into generated SQL (e.g. a label column in a
+/// batched `UNION ALL` count query). Prefer bound parameters for user input;
+/// this is for internally-generated identifiers like collection names.
+pub(crate) fn quote_string_literal(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
+}
+
 fn create_field_index_sql(table_name: &str, field_name: &str) -> String {
     let index_name = format!("idx_{}_{}", table_name, field_name);
     format!(

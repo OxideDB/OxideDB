@@ -40,7 +40,7 @@ import { useAuth } from "@/hooks/useAuth"
 import { useSiteSettings } from "@/hooks/useSiteSettings"
 import { apiService } from "@/services/api"
 import { cn } from "@/lib/utils"
-import type { CollectionSchema, CollectionStats, PluginAdminPage } from "@/types/api"
+import type { CollectionSchema, CollectionStatsEntry, PluginAdminPage } from "@/types/api"
 
 const staticNavigationItems = [
   {
@@ -126,7 +126,7 @@ const pluginPageIcons = {
 
 interface CollectionWithStats {
   schema: CollectionSchema;
-  stats?: CollectionStats;
+  stats?: CollectionStatsEntry;
 }
 
 export function AppSidebar() {
@@ -160,20 +160,21 @@ export function AppSidebar() {
       setLoading(true)
       setError(null)
       const collectionsData = await apiService.getCollections()
-      
-      // Fetch stats for each collection in parallel
-      const collectionsWithStats = await Promise.all(
-        collectionsData.map(async (schema): Promise<CollectionWithStats> => {
-          try {
-            const stats = await apiService.getCollectionStats(schema.name)
-            return { schema, stats }
-          } catch (err) {
-            console.warn(`Failed to fetch stats for collection ${schema.name}:`, err)
-            return { schema }
-          }
-        })
-      )
-      
+
+      // Fetch all collection stats in a single batched request instead of
+      // one request per collection (avoids N+1 fan-out on every navigation).
+      let statsMap: Record<string, CollectionStatsEntry> = {}
+      try {
+        statsMap = await apiService.getAllCollectionStats()
+      } catch (err) {
+        console.warn('Failed to fetch batch collection stats:', err)
+      }
+
+      const collectionsWithStats: CollectionWithStats[] = collectionsData.map((schema) => ({
+        schema,
+        stats: statsMap[schema.name],
+      }))
+
       setCollections(collectionsWithStats)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to fetch collections')
@@ -384,7 +385,7 @@ export function AppSidebar() {
                               {collection.schema.name}
                             </span>
                             <span className="ml-auto text-xs tabular-nums text-sidebar-foreground/55 group-data-[collapsible=icon]:hidden">
-                              {collection.stats?.record_count.toLocaleString() || '?'}
+                              {collection.stats ? Number(collection.stats.record_count).toLocaleString() : '?'}
                             </span>
                           </Link>
                         </SidebarMenuButton>

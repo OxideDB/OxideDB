@@ -1,6 +1,6 @@
-import type { 
-  ApiError, CollectionStats, CreateCollectionRequest, DbRecord, ApiHealthStatus,
-  CollectionSchema, CollectionPermissionsInfo, CollectionPermissions, PermissionPresetType, 
+import type {
+  ApiError, CollectionStats, CollectionStatsEntry, CreateCollectionRequest, DbRecord, ApiHealthStatus,
+  CollectionSchema, CollectionPermissionsInfo, CollectionPermissions, PermissionPresetType,
   ApiResponse, AuthResponse, User, TokenValidationResponse,
   LogQueryParams, AuditQueryParams, LogResponse, LogEntry, SecurityAuditEvent,
   DashboardMetrics, RetentionStats, CreateLogRequest, CreateAuditRequest,
@@ -566,6 +566,18 @@ class ApiService {
     return response.data;
   }
 
+  /**
+   * Fetch statistics for all collections in a single request.
+   *
+   * Replaces the N+1 fan-out where the sidebar and collections page each
+   * issued one `getCollectionStats` call per collection. Returns a map keyed
+   * by collection name.
+   */
+  async getAllCollectionStats(): Promise<Record<string, CollectionStatsEntry>> {
+    const response = await this.request<ApiResponse<Record<string, CollectionStatsEntry>>>('/collections/stats');
+    return response.data;
+  }
+
   async getCollectionSchema(collection: string): Promise<CollectionSchema> {
     const response = await this.request<ApiResponse<CollectionSchema>>(`/collections/${encodeURIComponent(collection)}/schema`);
     return response.data;
@@ -585,6 +597,18 @@ class ApiService {
 
   // Record methods
   async getRecords(collection: string, params?: RecordQueryParams): Promise<DbRecord[]> {
+    const response = await this.getRecordsPaginated(collection, params);
+    return response.data;
+  }
+
+  /**
+   * Fetch records with the full paginated response preserved.
+   *
+   * Unlike `getRecords` (which discards pagination metadata), this returns the
+   * `total`, `has_next`, and page info so callers can render accurate page
+   * counts and "load more" controls instead of guessing.
+   */
+  async getRecordsPaginated(collection: string, params?: RecordQueryParams): Promise<PaginatedResponse<DbRecord>> {
     const searchParams = new URLSearchParams();
     if (params?.limit !== undefined) searchParams.set('limit', params.limit.toString());
     if (params?.offset !== undefined) searchParams.set('offset', params.offset.toString());
@@ -596,13 +620,13 @@ class ApiService {
     if (params?.filter_op) searchParams.set('filter_op', params.filter_op);
     if (params?.filter_value !== undefined) searchParams.set('filter_value', params.filter_value);
     if (params?.search) searchParams.set('search', params.search);
-    
+
     const query = searchParams.toString();
     const endpoint = `/collections/${encodeURIComponent(collection)}/records${query ? `?${query}` : ''}`;
-    
+
     // Note: list_records returns PaginatedResponse, not ApiResponse
     const response = await this.request<PaginatedResponse<DbRecord>>(endpoint);
-    return response.data;
+    return response;
   }
 
   async createRecord(collection: string, data: Record<string, unknown>): Promise<DbRecord> {

@@ -388,7 +388,7 @@ impl EventBus for InMemoryEventBus {
         let event_name = event_type.name();
         let start_time = Instant::now();
 
-        info!(
+        debug!(
             "Dispatching Before event: {} for collection: {}",
             event_name, context.collection
         );
@@ -404,13 +404,10 @@ impl EventBus for InMemoryEventBus {
             return Ok(Vec::new());
         }
 
-        // Sort handlers by priority (higher priority first)
-        let mut sorted_handlers = handlers;
-        sorted_handlers.sort_by_key(|handler| std::cmp::Reverse(handler.metadata.priority));
-
-        // Execute handlers
+        // Handlers are kept pre-sorted by priority at subscription time, so we
+        // execute the cloned snapshot directly without re-sorting on the hot path.
         let results = self
-            .execute_before_handlers(&event_type, context, sorted_handlers)
+            .execute_before_handlers(&event_type, context, handlers)
             .await?;
 
         // Record metrics
@@ -442,7 +439,7 @@ impl EventBus for InMemoryEventBus {
         let event_name = event_type.name();
         let start_time = Instant::now();
 
-        info!("Dispatching After event: {}", event_name);
+        debug!("Dispatching After event: {}", event_name);
 
         // Get handlers (clone them to avoid holding the lock during execution)
         let handlers = {
@@ -455,13 +452,10 @@ impl EventBus for InMemoryEventBus {
             return Ok(Vec::new());
         }
 
-        // Sort handlers by priority (higher priority first)
-        let mut sorted_handlers = handlers;
-        sorted_handlers.sort_by_key(|handler| std::cmp::Reverse(handler.metadata.priority));
-
-        // Execute handlers
+        // Handlers are kept pre-sorted by priority at subscription time, so we
+        // execute the cloned snapshot directly without re-sorting on the hot path.
         let results = self
-            .execute_after_handlers(&event_type, context, sorted_handlers)
+            .execute_after_handlers(&event_type, context, handlers)
             .await?;
 
         // Record metrics
@@ -507,6 +501,12 @@ impl EventBus for InMemoryEventBus {
 
         handlers.push(managed_handler);
 
+        // Keep the stored handler list sorted by priority (desc) at insertion
+        // time so dispatch can skip the per-event re-sort on the hot path.
+        // Rust's sort_by is stable, so equal-priority handlers keep their
+        // insertion order — matching the previous per-dispatch behavior.
+        handlers.sort_by(|a, b| b.metadata.priority.cmp(&a.metadata.priority));
+
         info!(
             "Subscribed Before handler {} to event: {}",
             handler_id, event_name
@@ -539,6 +539,10 @@ impl EventBus for InMemoryEventBus {
         }
 
         handlers.push(managed_handler);
+
+        // Keep the stored handler list sorted by priority (desc) at insertion
+        // time so dispatch can skip the per-event re-sort on the hot path.
+        handlers.sort_by(|a, b| b.metadata.priority.cmp(&a.metadata.priority));
 
         info!(
             "Subscribed After handler {} to event: {}",

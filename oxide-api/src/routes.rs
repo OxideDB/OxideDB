@@ -27,8 +27,8 @@ use crate::{
         },
         backups::{export_backup, export_backup_stream, get_backup_manifest, restore_backup},
         collections::{
-            collection_schema, collection_stats, create_collection, delete_collection,
-            list_collections, update_collection_schema,
+            all_collection_stats, collection_schema, collection_stats, create_collection,
+            delete_collection, list_collections, update_collection_schema,
         },
         dashboard::{
             get_dashboard_statistics, get_recent_dashboard_activities, get_system_statistics,
@@ -408,6 +408,13 @@ fn get_static_endpoints(config: &RouteConfig) -> Vec<RegisteredEndpoint> {
             "collections::collection_stats",
             true,
             "Get collection statistics",
+        ),
+        (
+            "GET",
+            "/collections/stats",
+            "collections::all_collection_stats",
+            true,
+            "Get statistics for all collections in one response",
         ),
         (
             "GET",
@@ -1216,6 +1223,8 @@ fn collection_routes() -> Router<AppState> {
             get(list_collections).post(create_collection),
         )
         .route("/collections/:collection", delete(delete_collection))
+        // Batched statistics for all collections (replaces N+1 per-collection fanout)
+        .route("/collections/stats", get(all_collection_stats))
         // Collection metadata and schema
         .route("/collections/:collection/stats", get(collection_stats))
         .route(

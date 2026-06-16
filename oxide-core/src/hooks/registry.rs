@@ -178,7 +178,7 @@ impl HookRegistry {
                 BeforeEventType::RecordCreate.name(),
                 Arc::new(move |context| {
                     let hook = Arc::clone(&hook_create);
-                    Box::pin(async move { hook.handle_before_record_create(context) })
+                    Box::pin(async move { hook.handle_before_record_create(context).await })
                 }),
                 metadata,
             )
@@ -198,7 +198,7 @@ impl HookRegistry {
                 BeforeEventType::RecordUpdate.name(),
                 Arc::new(move |context| {
                     let hook = Arc::clone(&hook_update);
-                    Box::pin(async move { hook.handle_before_record_update(context) })
+                    Box::pin(async move { hook.handle_before_record_update(context).await })
                 }),
                 metadata,
             )

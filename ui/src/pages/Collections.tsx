@@ -11,12 +11,20 @@ import { StatusIndicator } from '@/components/admin/StatusIndicator';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { cn } from '@/lib/utils';
 import { apiService } from '../services/api';
-import type { CollectionStats, CollectionSchema } from '../types/api';
+import type { CollectionStatsEntry, CollectionSchema } from '../types/api';
+
+/** Format a byte count into a human-readable KB/MB/GB string. */
+function formatSize(bytes: number): string {
+  const kb = bytes / 1024;
+  if (kb < 1024) return `${kb.toFixed(1)} KB`;
+  if (kb < 1024 * 1024) return `${(kb / 1024).toFixed(1)} MB`;
+  return `${(kb / (1024 * 1024)).toFixed(1)} GB`;
+}
 
 const Collections: React.FC = () => {
   const navigate = useNavigate();
   const [collections, setCollections] = useState<CollectionSchema[]>([]);
-  const [collectionStats, setCollectionStats] = useState<Record<string, CollectionStats>>({});
+  const [collectionStats, setCollectionStats] = useState<Record<string, CollectionStatsEntry>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState("");
@@ -30,20 +38,16 @@ const Collections: React.FC = () => {
       setLoading(true);
       const collectionsData = await apiService.getCollections();
       setCollections(collectionsData);
-      
-      // Fetch stats for each collection
-      const stats: Record<string, CollectionStats> = {};
-      await Promise.all(
-        collectionsData.map(async (collection) => {
-          try {
-            const collectionStat = await apiService.getCollectionStats(collection.name);
-            stats[collection.name] = collectionStat;
-          } catch (err) {
-            console.warn(`Failed to fetch stats for collection ${collection.name}:`, err);
-          }
-        })
-      );
-      setCollectionStats(stats);
+
+      // Fetch all collection stats in a single batched request instead of
+      // one request per collection (avoids N+1 fan-out on every page load).
+      try {
+        const statsMap = await apiService.getAllCollectionStats();
+        setCollectionStats(statsMap);
+      } catch (err) {
+        console.warn('Failed to fetch batch collection stats:', err);
+        setCollectionStats({});
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to fetch collections');
     } finally {
@@ -243,7 +247,7 @@ const Collections: React.FC = () => {
                     <div className="rounded-md border bg-muted/30 p-2">
                       <div className="text-xs text-muted-foreground">Records</div>
                       <div className="mt-1 font-medium tabular-nums">
-                        {stats ? stats.record_count.toLocaleString() : '-'}
+                        {stats ? Number(stats.record_count).toLocaleString() : '-'}
                       </div>
                     </div>
                     <div className="rounded-md border bg-muted/30 p-2">
@@ -254,11 +258,7 @@ const Collections: React.FC = () => {
                       <div className="text-xs text-muted-foreground">Size</div>
                       <div className="mt-1 truncate font-medium tabular-nums">
                         {stats
-                          ? stats.size_kb < 1024 
-                            ? `${stats.size_kb.toFixed(1)} KB` 
-                            : stats.size_kb < 1024 * 1024 
-                              ? `${(stats.size_kb / 1024).toFixed(1)} MB` 
-                              : `${(stats.size_kb / (1024 * 1024)).toFixed(1)} GB`
+                          ? formatSize(Number(stats.size_bytes))
                           : '-'}
                       </div>
                     </div>

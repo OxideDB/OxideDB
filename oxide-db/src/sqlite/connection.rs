@@ -1,6 +1,6 @@
 //! SQLite database connection and core structure
 
-use super::schema_adapter::{quote_identifier, SqliteSchemaAdapter};
+use super::schema_adapter::{quote_identifier, quote_string_literal, SqliteSchemaAdapter};
 use crate::db::SchemaAdapter;
 use chrono::{Datelike, TimeZone, Utc};
 use oxide_core::{
@@ -256,6 +256,21 @@ impl SqliteDb {
             )
             .map_err(|e| {
                 AppError::database(format!("Failed to create refresh token active index: {}", e))
+            })?;
+
+            // Create dashboard activities table once at init so record/read
+            // hot paths don't re-parse this DDL under the connection lock on
+            // every activity write or dashboard query.
+            ensure_dashboard_activities_table(&conn)?;
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_dashboard_activities_timestamp ON dashboard_activities(timestamp)",
+                [],
+            )
+            .map_err(|e| {
+                AppError::database(format!(
+                    "Failed to create dashboard activities timestamp index: {}",
+                    e
+                ))
             })?;
 
             info!("SQLite database initialized successfully");
@@ -642,6 +657,86 @@ impl SqliteDb {
         Ok(count)
     }
 
+    /// Count records across many collections in a single lock round-trip.
+    ///
+    /// Rather than calling [`count_records`] once per collection (each its own
+    /// `spawn_blocking` + lock acquire + `SELECT COUNT(*)`), this builds one
+    /// `SELECT 'name', COUNT(*) FROM <table> UNION ALL ...` statement and
+    /// returns a map of collection name → record count. Used by dashboard and
+    /// collection statistics to avoid `~N` serialized lock round-trips.
+    ///
+    /// Collections whose table is missing or errors are omitted from the map
+    /// (callers treat a missing entry as zero), matching the resilient
+    /// behavior of the per-collection path.
+    pub async fn count_records_for_collections(
+        &self,
+        collection_names: &[String],
+    ) -> Result<HashMap<String, u64>, AppError> {
+        if collection_names.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        // Pre-resolve table names outside the lock (cheap, uses schema adapter).
+        let targets: Vec<(String, String)> = collection_names
+            .iter()
+            .map(|name| {
+                let table = self.schema_adapter.get_table_name(name);
+                (name.clone(), table)
+            })
+            .collect();
+
+        let connection = self.connection.clone();
+
+        let counts = spawn_blocking(move || {
+            let conn = connection
+                .lock()
+                .map_err(|_| AppError::database("Failed to acquire database lock"))?;
+
+            // Build `SELECT 'name' AS c, COUNT(*) AS n FROM <table> UNION ALL ...`
+            // using a single statement. Table names are static identifiers we
+            // generated, but still pass them through quote_identifier for safety.
+            let mut parts: Vec<String> = Vec::with_capacity(targets.len());
+            for (name, table) in &targets {
+                parts.push(format!(
+                    "SELECT {} AS c, COUNT(*) AS n FROM {}",
+                    quote_string_literal(name),
+                    quote_identifier(table)
+                ));
+            }
+            let sql = parts.join(" UNION ALL ");
+
+            let mut stmt = conn
+                .prepare_cached(&sql)
+                .map_err(|e| AppError::database(format!("Failed to prepare batch count: {}", e)))?;
+
+            let rows = stmt
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? as u64))
+                })
+                .map_err(|e| AppError::database(format!("Failed to execute batch count: {}", e)))?;
+
+            let mut map: HashMap<String, u64> = HashMap::new();
+            for row in rows {
+                match row {
+                    Ok((name, count)) => {
+                        map.insert(name, count);
+                    }
+                    // A missing table surfaces as an error here; skip it and
+                    // let the caller treat it as zero (consistent with the
+                    // per-collection resilient path).
+                    Err(e) => {
+                        debug!("Skipping collection during batch count: {}", e);
+                    }
+                }
+            }
+            Ok::<HashMap<String, u64>, AppError>(map)
+        })
+        .await
+        .map_err(|e| AppError::internal(format!("Task join error: {}", e)))??;
+
+        Ok(counts)
+    }
+
     /// Get the size of a collection in kilobytes
     pub async fn get_collection_size_kb(&self, collection: &str) -> Result<f64, AppError> {
         // Get collection schema to determine table name
@@ -766,20 +861,17 @@ impl SqliteDb {
         let collections = self.list_collections().await?;
         let total_collections = collections.len() as u32;
 
-        // Calculate total records across all collections
-        let mut total_records = 0u64;
-        for collection in &collections {
-            match self.count_records(&collection.name).await {
-                Ok(count) => total_records += count as u64,
-                Err(e) => {
-                    debug!(
-                        "Failed to count records for collection {}: {}",
-                        collection.name, e
-                    );
-                    // Continue processing other collections
-                }
-            }
-        }
+        // Sum records across all collections in a single batched query rather
+        // than one `count_records` (lock + SELECT COUNT(*)) per collection.
+        let collection_names: Vec<String> = collections.iter().map(|c| c.name.clone()).collect();
+        let record_counts = self
+            .count_records_for_collections(&collection_names)
+            .await
+            .unwrap_or_else(|e| {
+                debug!("Batch record count failed, defaulting total to zero: {}", e);
+                HashMap::new()
+            });
+        let total_records: u64 = record_counts.values().sum();
 
         let month_start = current_month_start_timestamp();
         let previous_month_start = previous_month_start_timestamp();
@@ -812,11 +904,17 @@ impl SqliteDb {
 
     async fn get_user_statistics(&self) -> Result<UserStats, AppError> {
         let auth_collections = self.list_auth_collections().await?;
-        let mut total_users = 0u64;
 
-        for collection in &auth_collections {
-            total_users += self.count_records(&collection.name).await.unwrap_or(0) as u64;
-        }
+        // Sum auth-collection record counts in a single batched query.
+        let auth_names: Vec<String> = auth_collections.iter().map(|c| c.name.clone()).collect();
+        let record_counts = self
+            .count_records_for_collections(&auth_names)
+            .await
+            .unwrap_or_else(|e| {
+                debug!("Batch auth record count failed, defaulting to zero: {}", e);
+                HashMap::new()
+            });
+        let total_users: u64 = record_counts.values().sum();
 
         let active_24h = self
             .count_active_dashboard_users(hours_ago_rfc3339(24))
@@ -940,7 +1038,6 @@ impl SqliteDb {
             let conn = connection
                 .lock()
                 .map_err(|e| AppError::internal(format!("Failed to lock connection: {}", e)))?;
-            ensure_dashboard_activities_table(&conn)?;
             let count = conn
                 .query_row(
                     "SELECT COUNT(DISTINCT user_name)
@@ -970,7 +1067,6 @@ impl SqliteDb {
             let conn = connection
                 .lock()
                 .map_err(|e| AppError::internal(format!("Failed to lock connection: {}", e)))?;
-            ensure_dashboard_activities_table(&conn)?;
 
             let mut stmt = conn
                 .prepare(
@@ -1041,14 +1137,23 @@ impl SqliteDb {
 
         let mut stats = Vec::new();
 
+        // Batch all per-collection record counts into a single query + lock
+        // round-trip instead of one `count_records` call (each its own
+        // spawn_blocking + lock acquire + SELECT COUNT(*)) per collection.
+        let collection_names: Vec<String> = collections_with_timestamps
+            .iter()
+            .map(|(n, _, _, _)| n.clone())
+            .collect();
+        let record_counts = self
+            .count_records_for_collections(&collection_names)
+            .await
+            .unwrap_or_else(|e| {
+                debug!("Batch record count failed, defaulting all to zero: {}", e);
+                HashMap::new()
+            });
+
         for (name, _schema_json, created_at, updated_at) in collections_with_timestamps {
-            let record_count = match self.count_records(&name).await {
-                Ok(count) => count as u64,
-                Err(e) => {
-                    debug!("Failed to count records for collection {}: {}", name, e);
-                    0
-                }
-            };
+            let record_count = record_counts.get(&name).copied().unwrap_or(0);
 
             let size_kb = match self.get_collection_size_kb(&name).await {
                 Ok(size) => size,
@@ -1145,20 +1250,6 @@ impl SqliteDb {
         spawn_blocking(move || {
             let conn = connection.lock().map_err(|e| AppError::internal(format!("Failed to lock connection: {}", e)))?;
 
-            // Create activities table if it doesn't exist
-            conn.execute(
-                "CREATE TABLE IF NOT EXISTS dashboard_activities (
-                    id TEXT PRIMARY KEY,
-                    timestamp TEXT NOT NULL,
-                    activity_type TEXT NOT NULL,
-                    user_name TEXT NOT NULL,
-                    description TEXT NOT NULL,
-                    collection TEXT,
-                    metadata TEXT
-                )",
-                [],
-            ).map_err(|e| AppError::database(format!("Failed to create activities table: {}", e)))?;
-
             // Insert the activity
             let activity_id = Uuid::new_v4().to_string();
             let metadata_json = match activity_clone.metadata {
@@ -1220,21 +1311,6 @@ impl SqliteDb {
             let conn = connection
                 .lock()
                 .map_err(|e| AppError::internal(format!("Failed to lock connection: {}", e)))?;
-
-            // Create table if it doesn't exist (for graceful handling)
-            conn.execute(
-                "CREATE TABLE IF NOT EXISTS dashboard_activities (
-                    id TEXT PRIMARY KEY,
-                    timestamp TEXT NOT NULL,
-                    activity_type TEXT NOT NULL,
-                    user_name TEXT NOT NULL,
-                    description TEXT NOT NULL,
-                    collection TEXT,
-                    metadata TEXT
-                )",
-                [],
-            )
-            .map_err(|e| AppError::database(format!("Failed to create activities table: {}", e)))?;
 
             let mut stmt = conn
                 .prepare(
@@ -1453,3 +1529,127 @@ fn growth_percent(current: u64, previous: u64) -> f64 {
 }
 
 // Make sure auth and collections modules are included for their impl blocks
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::Db;
+    use oxide_core::{
+        field_types::FieldType, ActivityEntry, ActivityType, CollectionSchema, CollectionType,
+        FieldDefinition, InMemoryEventBus,
+    };
+
+    fn test_db() -> SqliteDb {
+        let event_bus = Arc::new(InMemoryEventBus::new());
+        let auth_service = Arc::new(AuthService::new(oxide_core::auth::AuthServiceConfig::new(
+            "dashboard-test-secret".to_string(),
+        )));
+        SqliteDb::new(":memory:", event_bus, auth_service)
+            .expect("failed to construct in-memory SqliteDb")
+    }
+
+    fn schema_with_text_field(name: &str) -> CollectionSchema {
+        let mut schema = CollectionSchema::new(name.to_string(), CollectionType::Base);
+        schema.add_field("title".to_string(), FieldDefinition::new(FieldType::Text));
+        schema
+    }
+
+    /// The dashboard_activities table must be created at init (in `create_tables`)
+    /// so that the record/read hot paths no longer need to run DDL on every call.
+    /// This test records and reads back an activity on a freshly-initialized DB
+    /// without any explicit table creation, exercising exactly that guarantee.
+    #[tokio::test]
+    async fn dashboard_activity_table_created_at_init() {
+        let db = test_db();
+        db.initialize().await.expect("initialize should succeed");
+
+        let activity = ActivityEntry {
+            timestamp: Utc::now().to_rfc3339(),
+            activity_type: ActivityType::RecordCreated,
+            user: "test-user".to_string(),
+            description: "created a record".to_string(),
+            collection: Some("widgets".to_string()),
+            metadata: None,
+        };
+
+        db.record_dashboard_activity(activity)
+            .await
+            .expect("recording activity should succeed without hot-path DDL");
+
+        let recent = db
+            .get_recent_dashboard_activities(10)
+            .await
+            .expect("reading activities should succeed without hot-path DDL");
+        assert_eq!(recent.len(), 1);
+        assert_eq!(recent[0].user, "test-user");
+        assert!(matches!(
+            recent[0].activity_type,
+            ActivityType::RecordCreated
+        ));
+    }
+
+    /// Verifies the batched `count_records_for_collections` returns the same
+    /// counts as calling `count_records` per collection, and that
+    /// `get_collection_statistics` reflects those counts. Seeds two collections
+    /// with differing record counts.
+    #[tokio::test]
+    async fn batched_record_counts_match_per_collection() {
+        let db = test_db();
+        db.initialize().await.expect("initialize should succeed");
+
+        db.create_collection_with_schema(schema_with_text_field("alpha"))
+            .await
+            .expect("create alpha");
+        db.create_collection_with_schema(schema_with_text_field("beta"))
+            .await
+            .expect("create beta");
+
+        // 3 records in alpha, 1 in beta.
+        for i in 0..3 {
+            <SqliteDb as Db>::create_record(
+                &db,
+                "alpha",
+                serde_json::json!({ "title": format!("a{i}") }),
+            )
+            .await
+            .expect("insert alpha record");
+        }
+        <SqliteDb as Db>::create_record(&db, "beta", serde_json::json!({ "title": "b0" }))
+            .await
+            .expect("insert beta record");
+
+        let names = vec!["alpha".to_string(), "beta".to_string()];
+        let batched = db
+            .count_records_for_collections(&names)
+            .await
+            .expect("batched count should succeed");
+        assert_eq!(batched.get("alpha").copied(), Some(3));
+        assert_eq!(batched.get("beta").copied(), Some(1));
+
+        // get_collection_statistics must reflect the same counts via the batch path.
+        let stats = db
+            .get_collection_statistics()
+            .await
+            .expect("collection statistics should succeed");
+        let alpha = stats
+            .iter()
+            .find(|s| s.name == "alpha")
+            .expect("alpha stats present");
+        let beta = stats
+            .iter()
+            .find(|s| s.name == "beta")
+            .expect("beta stats present");
+        assert_eq!(alpha.record_count, 3);
+        assert_eq!(beta.record_count, 1);
+
+        // And the system stats total should be the sum across collections.
+        let system = db
+            .get_system_statistics()
+            .await
+            .expect("system statistics should succeed");
+        assert!(
+            system.total_records >= 4,
+            "total_records should include all seeded records"
+        );
+    }
+}

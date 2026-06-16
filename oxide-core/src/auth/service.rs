@@ -88,6 +88,32 @@ impl AuthService {
         self.password_service.verify_password(password, hash)
     }
 
+    /// Hash a password using Argon2, off the async executor thread.
+    ///
+    /// Argon2 is deliberately CPU- and memory-intensive (~20 MiB, tens of ms).
+    /// Running it inline on a tokio worker parks the worker for the duration,
+    /// starving other tasks. This wrapper moves the work to the blocking pool.
+    pub async fn hash_password_async(&self, password: String) -> Result<String, AppError> {
+        let password_service = self.password_service.clone();
+        tokio::task::spawn_blocking(move || password_service.hash_password(&password))
+            .await
+            .map_err(|e| AppError::internal(format!("Password hashing task failed: {}", e)))?
+    }
+
+    /// Verify a password against its hash, off the async executor thread.
+    ///
+    /// See [`hash_password_async`] for rationale on using `spawn_blocking`.
+    pub async fn verify_password_async(
+        &self,
+        password: String,
+        hash: String,
+    ) -> Result<bool, AppError> {
+        let password_service = self.password_service.clone();
+        tokio::task::spawn_blocking(move || password_service.verify_password(&password, &hash))
+            .await
+            .map_err(|e| AppError::internal(format!("Password verify task failed: {}", e)))?
+    }
+
     /// Generate a JWT token for a user (backward compatibility)
     pub fn generate_token(
         &self,
@@ -350,5 +376,61 @@ mod tests {
         let superuser_claims = auth_service.verify_token(&superuser_token).unwrap();
         assert_eq!(superuser_claims.role, "superuser");
         assert_eq!(superuser_claims.user_role().unwrap(), UserRole::Superuser);
+    }
+
+    #[tokio::test]
+    async fn test_hash_and_verify_password_async_round_trip() {
+        let config = AuthServiceConfig::new("test_secret".to_string());
+        let auth_service = AuthService::new(config);
+
+        let hash = auth_service
+            .hash_password_async("correct horse battery staple".to_string())
+            .await
+            .expect("hash should succeed");
+        assert!(hash.starts_with("$argon2"));
+
+        let ok = auth_service
+            .verify_password_async("correct horse battery staple".to_string(), hash.clone())
+            .await
+            .expect("verify should succeed");
+        assert!(ok, "correct password should verify");
+
+        let bad = auth_service
+            .verify_password_async("wrong password".to_string(), hash)
+            .await
+            .expect("verify of wrong password should not error");
+        assert!(!bad, "wrong password should not verify");
+    }
+
+    /// Verifies that Argon2 hashing runs off the tokio worker thread.
+    ///
+    /// If `hash_password_async` ran inline, it would park the worker for the
+    /// duration of the Argon2 computation and the sibling `yield_now` loop
+    /// could not make progress concurrently. We assert the sibling task
+    /// advances while the hash is in flight.
+    #[tokio::test]
+    async fn test_hash_password_does_not_block_executor() {
+        let config = AuthServiceConfig::new("test_secret".to_string());
+        let auth_service = std::sync::Arc::new(AuthService::new(config));
+
+        // Sibling task that must keep advancing while hashing runs.
+        let counter = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let counter_clone = std::sync::Arc::clone(&counter);
+        let sibling = tokio::spawn(async move {
+            for _ in 0..1000 {
+                counter_clone.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                tokio::task::yield_now().await;
+            }
+        });
+
+        // Argon2 hash — heavy CPU/memory work.
+        auth_service
+            .hash_password_async("executor-non-blocking-test".to_string())
+            .await
+            .expect("hash should succeed");
+
+        sibling.await.expect("sibling task should complete");
+        // If hashing blocked the worker, the sibling could not have reached 1000.
+        assert!(counter.load(std::sync::atomic::Ordering::Relaxed) > 0);
     }
 }

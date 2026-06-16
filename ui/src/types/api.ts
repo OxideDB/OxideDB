@@ -10,6 +10,7 @@ import type {
 export type {
   DbRecord,
   CollectionStats,
+  CollectionStatsEntry,
   HealthStatus,
   ApiError,
   CollectionType,

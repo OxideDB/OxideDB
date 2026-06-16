@@ -10,6 +10,7 @@ use argon2::{
 };
 
 /// Password service for hashing and verification
+#[derive(Clone)]
 pub struct PasswordService;
 
 impl PasswordService {

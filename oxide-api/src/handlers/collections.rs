@@ -349,6 +349,27 @@ pub async fn collection_stats(
     Ok(Json(ApiResponse::success(stats)))
 }
 
+/// Get statistics for all collections in a single response.
+///
+/// GET /collections/stats
+///
+/// Replaces the N+1 frontend fan-out where the sidebar and collections page
+/// each issued one `GET /collections/:name/stats` per collection. This handler
+/// returns a map of collection name → stats entry computed in a single batched
+/// pass over the database (see `SqliteDb::get_collection_statistics`).
+pub async fn all_collection_stats(
+    State(state): State<AppState>,
+) -> Result<Json<ApiResponse<HashMap<String, oxide_core::CollectionStatsEntry>>>, ApiError> {
+    let entries = state.db.get_collection_statistics().await?;
+
+    let mut map: HashMap<String, oxide_core::CollectionStatsEntry> = HashMap::new();
+    for entry in entries {
+        map.insert(entry.name.clone(), entry);
+    }
+
+    Ok(Json(ApiResponse::success(map)))
+}
+
 /// Get collection schema
 ///
 /// GET /collections/{collection}/schema

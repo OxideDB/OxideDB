@@ -166,6 +166,56 @@ impl SqliteDb {
             updated_at: row.get("updated_at")?,
         })
     }
+
+    /// Read a single record directly from the database without dispatching
+    /// `BeforeRecordRead` / `AfterRecordRead` events.
+    ///
+    /// This is the internal prefetch used by [`Db::update_record`] and
+    /// [`Db::delete_record`] to obtain the old row before modifying it. Using
+    /// the public `read_record` path there would fire an extra read-event pair
+    /// on every update/delete (extra plugin, audit, and hook work plus a
+    /// redundant round-trip through the event bus). Callers that serve a real
+    /// client read must use [`Db::read_record`] instead so read hooks fire.
+    pub(super) async fn read_record_raw(
+        &self,
+        collection: &str,
+        record_id: &RecordId,
+    ) -> Result<Record, AppError> {
+        let schema = self.get_collection_schema(collection).await?;
+        let schema_adapter = super::schema_adapter::SqliteSchemaAdapter::new();
+        let table_name = schema_adapter.get_table_name(&schema.name);
+
+        let collection = collection.to_string();
+        let record_id = record_id.clone();
+        let connection = self.connection.clone();
+
+        let record = spawn_blocking(move || {
+            let conn = connection
+                .lock()
+                .map_err(|_| AppError::database("Failed to acquire database lock"))?;
+
+            let select_sql = format!(
+                "SELECT * FROM {} WHERE {} = ?1",
+                quote_identifier(&table_name),
+                quote_identifier("id")
+            );
+            let mut stmt = conn
+                .prepare_cached(&select_sql)
+                .map_err(|e| AppError::database(format!("Failed to prepare statement: {}", e)))?;
+
+            stmt.query_row([&record_id], |row| {
+                Self::sql_row_to_record(row, &collection, &schema)
+            })
+            .map_err(|e| match e {
+                rusqlite::Error::QueryReturnedNoRows => AppError::not_found("record", &record_id),
+                _ => AppError::database(format!("Failed to query record: {}", e)),
+            })
+        })
+        .await
+        .map_err(|e| AppError::internal(format!("Task join error: {}", e)))??;
+
+        Ok(record)
+    }
 }
 
 /// Enum for SQL value types
@@ -773,8 +823,9 @@ impl Db for SqliteDb {
         record_id: &RecordId,
         new_data: RecordData,
     ) -> Result<Record, AppError> {
-        // First, get the existing record to include in events
-        let old_record = <Self as Db>::read_record(self, collection, record_id).await?;
+        // Prefetch the old record without firing read events — this is an
+        // internal read to support BeforeRecordUpdate, not a client read.
+        let old_record = self.read_record_raw(collection, record_id).await?;
 
         // Create a mutable context for BeforeRecordUpdate event
         let mut context = BeforeEventContext::new_update(
@@ -900,8 +951,9 @@ impl Db for SqliteDb {
         collection: &str,
         record_id: &RecordId,
     ) -> Result<Record, AppError> {
-        // First, get the existing record to include in events
-        let record = <Self as Db>::read_record(self, collection, record_id).await?;
+        // Prefetch the existing record without firing read events — this is an
+        // internal read to support BeforeRecordDelete, not a client read.
+        let record = self.read_record_raw(collection, record_id).await?;
 
         // Create a mutable context for BeforeRecordDelete event
         let mut context = BeforeEventContext::new_delete(
@@ -1492,5 +1544,84 @@ mod tests {
         assert_eq!(total_count, 2);
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].data["title"], "Third");
+    }
+
+    /// Verifies that `update_record` and `delete_record` prefetch the existing
+    /// record via the raw internal read and therefore do NOT fire
+    /// `AfterRecordRead` events, while a direct client `read_record` does.
+    ///
+    /// Before this refactor, update/delete called the public `read_record`,
+    /// doubling event dispatches on every mutation (extra plugin/audit work).
+    #[tokio::test]
+    async fn update_and_delete_do_not_fire_read_events() {
+        use oxide_core::event::{AfterEventHandler, AfterEventType, HandlerMetadata};
+
+        let db = test_db();
+        db.initialize().await.unwrap();
+        db.create_collection_with_schema(test_schema())
+            .await
+            .unwrap();
+
+        let created = <SqliteDb as Db>::create_record(
+            &db,
+            "articles",
+            serde_json::json!({ "title": "Original", "views": 1.0, "published": true }),
+        )
+        .await
+        .unwrap();
+
+        // Subscribe a counter to AfterRecordRead.
+        let read_count = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let read_count_handler = Arc::clone(&read_count);
+        let handler: AfterEventHandler = Arc::new(move |_ctx| {
+            let c = Arc::clone(&read_count_handler);
+            Box::pin(async move {
+                c.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                Ok(())
+            })
+        });
+        db.event_bus
+            .subscribe_after(
+                AfterEventType::RecordRead.name(),
+                handler,
+                HandlerMetadata::new("read-counter".to_string(), "Read Counter".to_string()),
+            )
+            .await
+            .unwrap();
+
+        // A direct client read must fire AfterRecordRead.
+        <SqliteDb as Db>::read_record(&db, "articles", &created.id)
+            .await
+            .unwrap();
+        assert_eq!(
+            read_count.load(std::sync::atomic::Ordering::Relaxed),
+            1,
+            "direct read_record should fire AfterRecordRead"
+        );
+
+        // Update must NOT fire AfterRecordRead (uses the raw prefetch).
+        <SqliteDb as Db>::update_record(
+            &db,
+            "articles",
+            &created.id,
+            serde_json::json!({ "title": "Updated", "views": 2.0, "published": true }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            read_count.load(std::sync::atomic::Ordering::Relaxed),
+            1,
+            "update_record must not fire AfterRecordRead"
+        );
+
+        // Delete must NOT fire AfterRecordRead (uses the raw prefetch).
+        <SqliteDb as Db>::delete_record(&db, "articles", &created.id)
+            .await
+            .unwrap();
+        assert_eq!(
+            read_count.load(std::sync::atomic::Ordering::Relaxed),
+            1,
+            "delete_record must not fire AfterRecordRead"
+        );
     }
 }

@@ -61,7 +61,8 @@ impl SqliteDb {
 
         if !self
             .auth_service
-            .verify_password(&auth_request.credential, credential_hash)?
+            .verify_password_async(auth_request.credential.clone(), credential_hash.to_string())
+            .await?
         {
             warn!(
                 "Authentication failed for user: {} - invalid credential",
