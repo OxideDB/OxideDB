@@ -41,6 +41,19 @@ pub struct ListParams {
     pub filter_value: Option<String>,
     /// Search text across id and text-like fields.
     pub search: Option<String>,
+    /// Whether to compute the exact filtered total count (default: true).
+    ///
+    /// When false, the listing skips the `COUNT(*) OVER()` window function
+    /// (a full filtered scan) and instead derives `has_more` by fetching one
+    /// extra row. This trades exact page-count totals for faster paging on
+    /// large collections. The returned total is a lower bound in that case.
+    #[serde(default = "default_include_total")]
+    pub include_total: Option<bool>,
+}
+
+/// Default for `ListParams::include_total` (kept `true` for backward compat).
+fn default_include_total() -> Option<bool> {
+    Some(true)
 }
 
 impl ListParams {
@@ -59,6 +72,12 @@ impl ListParams {
     /// Return the effective list offset.
     pub fn effective_offset(&self) -> usize {
         self.offset.unwrap_or(0)
+    }
+
+    /// Whether the caller wants the exact filtered total count computed.
+    /// Defaults to `true` for backward compatibility.
+    pub fn wants_total(&self) -> bool {
+        self.include_total.unwrap_or(true)
     }
 }
 

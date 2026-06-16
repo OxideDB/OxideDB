@@ -269,66 +269,60 @@ impl BackupService {
         Ok(())
     }
 
-    /// Create compressed tar archive
+    /// Create compressed tar archive.
+    ///
+    /// Streams tar entries directly through a gzip encoder into the final
+    /// archive file, avoiding the previous double buffering (whole tar read
+    /// into a Vec, then whole gzip into another Vec). The gzip writer wraps a
+    /// `std::fs::File`; sync file creation runs on the blocking pool so the
+    /// tokio worker is not parked.
     async fn create_compressed_archive(
         &self,
         source_path: &Path,
         archive_path: &Path,
     ) -> VfsResult<(u64, usize, String)> {
         let mut file_count = 0usize;
-        let temp_tar_path = archive_path.with_extension("tar.tmp");
 
-        // Create uncompressed tar first
-        {
-            let tar_file =
-                std::fs::File::create(&temp_tar_path).map_err(|e| VfsError::IoError {
-                    message: format!("Failed to create tar file: {}", e),
-                })?;
-
-            let mut tar_builder = Builder::new(tar_file);
-            self.add_directory_to_archive(&mut tar_builder, source_path, "", &mut file_count)
-                .await?;
-            tar_builder.finish().map_err(|e| VfsError::IoError {
-                message: format!("Failed to finalize tar: {}", e),
-            })?;
-        }
-
-        // Compress the tar file
-        let tar_data = fs::read(&temp_tar_path)
+        // Create the destination file on the blocking pool.
+        let archive_path_owned = archive_path.to_path_buf();
+        let file = tokio::task::spawn_blocking(move || std::fs::File::create(&archive_path_owned))
             .await
             .map_err(|e| VfsError::IoError {
-                message: format!("Failed to read tar file: {}", e),
-            })?;
-
-        let compressed_data = {
-            let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
-            encoder
-                .write_all(&tar_data)
-                .map_err(|e| VfsError::CompressionError {
-                    message: format!("Failed to compress: {}", e),
-                })?;
-            encoder.finish().map_err(|e| VfsError::CompressionError {
-                message: format!("Failed to finish compression: {}", e),
+                message: format!("Blocking task join error: {}", e),
             })?
-        };
-
-        // Write compressed data
-        fs::write(archive_path, &compressed_data)
-            .await
             .map_err(|e| VfsError::IoError {
-                message: format!("Failed to write compressed archive: {}", e),
+                message: format!("Failed to create archive file: {}", e),
             })?;
 
-        // Clean up temporary file
-        let _ = fs::remove_file(&temp_tar_path).await;
+        // Stream tar through gzip straight into the file.
+        let encoder = GzEncoder::new(file, Compression::default());
+        let mut tar_builder = Builder::new(encoder);
+        self.add_directory_to_archive(&mut tar_builder, source_path, "", &mut file_count)
+            .await?;
+        let encoder = tar_builder.into_inner().map_err(|e| VfsError::IoError {
+            message: format!("Failed to finalize tar: {}", e),
+        })?;
+        let finalized_file = encoder.finish().map_err(|e| VfsError::CompressionError {
+            message: format!("Failed to finish compression: {}", e),
+        })?;
 
-        // Calculate checksum
+        // Sync to disk so the size/checksum reflect flushed data.
+        let _ = tokio::task::spawn_blocking(move || finalized_file.sync_all()).await;
+
+        let compressed_size = tokio::fs::metadata(archive_path)
+            .await
+            .map(|m| m.len())
+            .unwrap_or(0);
         let checksum = self.calculate_file_checksum(archive_path).await?;
 
-        Ok((compressed_data.len() as u64, file_count, checksum))
+        Ok((compressed_size, file_count, checksum))
     }
 
-    /// Create incremental archive with files modified since timestamp
+    /// Create incremental archive with files modified since timestamp.
+    ///
+    /// Streams tar entries directly through gzip into the final archive
+    /// (no temp file, no double buffering). Sync file creation runs on the
+    /// blocking pool.
     async fn create_incremental_archive(
         &self,
         source_path: &Path,
@@ -336,58 +330,43 @@ impl BackupService {
         since: DateTime<Utc>,
     ) -> VfsResult<(u64, usize, String)> {
         let mut file_count = 0usize;
-        let temp_tar_path = archive_path.with_extension("tar.tmp");
 
-        // Create uncompressed tar with modified files only
-        {
-            let tar_file =
-                std::fs::File::create(&temp_tar_path).map_err(|e| VfsError::IoError {
-                    message: format!("Failed to create tar file: {}", e),
-                })?;
-
-            let mut tar_builder = Builder::new(tar_file);
-            self.add_modified_files_to_archive(
-                &mut tar_builder,
-                source_path,
-                "",
-                since,
-                &mut file_count,
-            )
-            .await?;
-            tar_builder.finish().map_err(|e| VfsError::IoError {
-                message: format!("Failed to finalize tar: {}", e),
-            })?;
-        }
-
-        // Compress and finalize same as full backup
-        let tar_data = fs::read(&temp_tar_path)
+        let archive_path_owned = archive_path.to_path_buf();
+        let file = tokio::task::spawn_blocking(move || std::fs::File::create(&archive_path_owned))
             .await
             .map_err(|e| VfsError::IoError {
-                message: format!("Failed to read tar file: {}", e),
-            })?;
-
-        let compressed_data = {
-            let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
-            encoder
-                .write_all(&tar_data)
-                .map_err(|e| VfsError::CompressionError {
-                    message: format!("Failed to compress: {}", e),
-                })?;
-            encoder.finish().map_err(|e| VfsError::CompressionError {
-                message: format!("Failed to finish compression: {}", e),
+                message: format!("Blocking task join error: {}", e),
             })?
-        };
-
-        fs::write(archive_path, &compressed_data)
-            .await
             .map_err(|e| VfsError::IoError {
-                message: format!("Failed to write compressed archive: {}", e),
+                message: format!("Failed to create archive file: {}", e),
             })?;
 
-        let _ = fs::remove_file(&temp_tar_path).await;
+        let encoder = GzEncoder::new(file, Compression::default());
+        let mut tar_builder = Builder::new(encoder);
+        self.add_modified_files_to_archive(
+            &mut tar_builder,
+            source_path,
+            "",
+            since,
+            &mut file_count,
+        )
+        .await?;
+        let encoder = tar_builder.into_inner().map_err(|e| VfsError::IoError {
+            message: format!("Failed to finalize tar: {}", e),
+        })?;
+        let finalized_file = encoder.finish().map_err(|e| VfsError::CompressionError {
+            message: format!("Failed to finish compression: {}", e),
+        })?;
+
+        let _ = tokio::task::spawn_blocking(move || finalized_file.sync_all()).await;
+
+        let compressed_size = tokio::fs::metadata(archive_path)
+            .await
+            .map(|m| m.len())
+            .unwrap_or(0);
         let checksum = self.calculate_file_checksum(archive_path).await?;
 
-        Ok((compressed_data.len() as u64, file_count, checksum))
+        Ok((compressed_size, file_count, checksum))
     }
 
     /// Add directory contents to tar archive recursively

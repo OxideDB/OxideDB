@@ -414,7 +414,43 @@ impl FileSystemStorage {
         offset: Option<usize>,
         limit: Option<usize>,
     ) -> VfsResult<(Vec<FileMetadata>, usize)> {
-        // Get all files from high-performance metadata store
+        // Fast path: no post-hoc filters. Push offset/limit straight into the
+        // metadata store so we don't materialize/deserialize the whole
+        // namespace just to paginate it. We fetch limit+1 to compute has_more
+        // cheaply and derive the (exact) total via a separate count only when
+        // the page is full.
+        let has_filters = !directory.is_empty() || mime_filter.is_some() || tag_filter.is_some();
+        if !has_filters {
+            let fetch_limit = limit.map(|l| l + 1);
+            let mut files = self
+                .metadata_store
+                .list_metadata(namespace, offset, fetch_limit)
+                .await?;
+
+            let has_more = limit.is_some() && files.len() > limit.unwrap();
+            if has_more {
+                files.truncate(limit.unwrap());
+            }
+
+            // Total: if the page isn't full, it's offset + visible count.
+            // Otherwise we need an exact count — do a single namespace count.
+            let total = if has_more || (limit.is_some() && files.len() == limit.unwrap()) {
+                self.metadata_store.count_namespace(namespace).await?
+            } else {
+                offset.unwrap_or(0) + files.len()
+            };
+
+            debug!(
+                "Listed {} files (total {}) in namespace {} via fast path",
+                files.len(),
+                total,
+                namespace
+            );
+            return Ok((files, total));
+        }
+
+        // Filtered path: directory/mime/tag require deserialized metadata, so
+        // load the namespace and filter in memory (rare, bounded by namespace).
         let all_files = self
             .metadata_store
             .list_metadata(namespace, None, None)

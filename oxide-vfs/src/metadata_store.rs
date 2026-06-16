@@ -37,6 +37,11 @@ pub struct MetadataStore {
     /// Index databases for fast lookups
     path_index_db: Database,
     namespace_index_db: Database,
+    /// Secondary index keyed by `{content_hash}\0{metadata_key}` so many files
+    /// can reference the same content (dedup). Enables prefix-range lookups for
+    /// dedup instead of a full metadata scan. Regular (non-dup-sort) dbi with
+    /// exact-key deletes.
+    content_hash_index_db: Database,
     /// In-memory LRU cache for hot data
     cache: Arc<Mutex<LruCache<String, CacheEntry>>>,
     /// Cache TTL in seconds (default: 5 minutes)
@@ -65,7 +70,7 @@ impl MetadataStore {
 
         let env = env_builder
             .set_max_readers(1024)
-            .set_max_dbs(4)
+            .set_max_dbs(5)
             .set_map_size(1024 * 1024 * 1024) // 1GB max
             .open(&lmdb_path)
             .map_err(|e| VfsError::IoError {
@@ -91,6 +96,13 @@ impl MetadataStore {
                 message: format!("Failed to create namespace index database: {}", e),
             })?;
 
+        // Dup-sort index so many files can reference one content hash (dedup).
+        let content_hash_index_db = env
+            .create_db(Some("content_hash_index"), DatabaseFlags::empty())
+            .map_err(|e| VfsError::IoError {
+                message: format!("Failed to create content hash index database: {}", e),
+            })?;
+
         // Create LRU cache (default 10,000 entries)
         let cache_capacity =
             NonZeroUsize::new(cache_size.unwrap_or(10_000).max(1)).ok_or_else(|| {
@@ -105,6 +117,7 @@ impl MetadataStore {
             metadata_db,
             path_index_db,
             namespace_index_db,
+            content_hash_index_db,
             cache,
             cache_ttl_secs: 300, // 5 minutes
         })
@@ -209,6 +222,27 @@ impl MetadataStore {
                 message: format!("Failed to store namespace index: {}", e),
             })?;
 
+            // Maintain the content_hash index keyed by `{hash}\0{metadata_key}`.
+            // If this file previously referenced a different content hash, drop
+            // its stale composite entry so unreferenced-content cleanup is accurate.
+            if let Some(existing) = &existing_by_id {
+                if existing.content_hash != metadata.content_hash {
+                    let old_mkey = format!("{}:{}", namespace, existing.id);
+                    let old_index_key = content_hash_index_key(&existing.content_hash, &old_mkey);
+                    let _ = txn.del(self.content_hash_index_db, &old_index_key, None);
+                }
+            }
+            let ch_index_key = content_hash_index_key(&metadata.content_hash, &metadata_key);
+            txn.put(
+                self.content_hash_index_db,
+                &ch_index_key,
+                b"",
+                WriteFlags::empty(),
+            )
+            .map_err(|e| VfsError::IoError {
+                message: format!("Failed to store content hash index: {}", e),
+            })?;
+
             txn.commit().map_err(|e| VfsError::IoError {
                 message: format!("Failed to commit LMDB transaction: {}", e),
             })?;
@@ -287,6 +321,10 @@ impl MetadataStore {
             let _ = txn.del(self.metadata_db, &metadata_key, None);
             let _ = txn.del(self.path_index_db, &path_key, None);
             let _ = txn.del(self.namespace_index_db, &namespace_key, None);
+            // Remove only this file's composite entry from the content-hash index;
+            // other files referencing the same hash keep their entries.
+            let ch_index_key = content_hash_index_key(&metadata.content_hash, &metadata_key);
+            let _ = txn.del(self.content_hash_index_db, &ch_index_key, None);
 
             txn.commit().map_err(|e| VfsError::IoError {
                 message: format!("Failed to commit LMDB transaction: {}", e),
@@ -372,12 +410,14 @@ impl MetadataStore {
         Ok(results)
     }
 
-    /// Find one metadata record that references the given content hash.
+    /// Count metadata entries in a namespace without materializing them.
+    ///
+    /// Walks the namespace prefix range counting keys (no deserialization),
+    /// which is cheaper than `list_metadata(...).len()` for large namespaces.
     #[instrument(skip(self))]
-    pub async fn find_by_content_hash(
-        &self,
-        content_hash: &str,
-    ) -> VfsResult<Option<FileMetadata>> {
+    pub async fn count_namespace(&self, namespace: &VfsNamespace) -> VfsResult<usize> {
+        let namespace_prefix = format!("{}:", namespace);
+
         let txn = self.env.begin_ro_txn().map_err(|e| VfsError::IoError {
             message: format!("Failed to begin LMDB read transaction: {}", e),
         })?;
@@ -388,20 +428,65 @@ impl MetadataStore {
                 message: format!("Failed to open LMDB cursor: {}", e),
             })?;
 
-        for (key, value) in cursor.iter() {
-            match bincode::deserialize::<FileMetadata>(value) {
-                Ok(metadata) if metadata.content_hash == content_hash => {
-                    return Ok(Some(metadata));
+        let mut count = 0usize;
+        for (key, _value) in cursor.iter() {
+            let key_str = std::str::from_utf8(key).unwrap_or("");
+            if !key_str.starts_with(&namespace_prefix) {
+                // Keys are sorted; stop once we've passed the namespace range.
+                if key_str > namespace_prefix.as_str() {
+                    break;
                 }
-                Ok(_) => {}
-                Err(e) => {
-                    let key_str = std::str::from_utf8(key).unwrap_or("<invalid key>");
-                    warn!("Failed to deserialize metadata for key {}: {}", key_str, e);
-                }
+                continue;
             }
+            count += 1;
         }
 
-        Ok(None)
+        Ok(count)
+    }
+
+    /// Find one metadata record that references the given content hash.
+    ///
+    /// Uses the `content_hash_index` for a prefix-range lookup instead of
+    /// scanning and deserializing every metadata record. Returns the first
+    /// matching reference (sufficient for dedup).
+    #[instrument(skip(self))]
+    pub async fn find_by_content_hash(
+        &self,
+        content_hash: &str,
+    ) -> VfsResult<Option<FileMetadata>> {
+        let txn = self.env.begin_ro_txn().map_err(|e| VfsError::IoError {
+            message: format!("Failed to begin LMDB read transaction: {}", e),
+        })?;
+
+        let metadata_key =
+            match first_content_hash_ref(&txn, self.content_hash_index_db, content_hash)? {
+                Some(k) => k,
+                None => return Ok(None),
+            };
+
+        let metadata_data = match txn.get(self.metadata_db, &metadata_key) {
+            Ok(data) => data,
+            Err(lmdb::Error::NotFound) => {
+                warn!(
+                    "content_hash_index pointed at missing metadata key '{}';                      index may be stale",
+                    metadata_key
+                );
+                return Ok(None);
+            }
+            Err(e) => {
+                return Err(VfsError::IoError {
+                    message: format!("Failed to load metadata for content hash: {}", e),
+                })
+            }
+        };
+
+        let metadata = bincode::deserialize::<FileMetadata>(metadata_data).map_err(|e| {
+            VfsError::EncodingError {
+                message: format!("Failed to deserialize metadata: {}", e),
+            }
+        })?;
+
+        Ok(Some(metadata))
     }
 
     /// Return true when any metadata record still references a content hash.
@@ -546,6 +631,45 @@ impl Drop for MetadataStore {
         // Ensure data is synced before dropping
         let _ = self.sync();
     }
+}
+
+/// Build a composite content-hash index key: `{content_hash}\0{metadata_key}`.
+///
+/// The NUL separator guarantees the hash prefix is unambiguous, so a prefix
+/// range scan over `{hash}\0` finds every metadata reference for that hash.
+fn content_hash_index_key(content_hash: &str, metadata_key: &str) -> String {
+    format!("{}\0{}", content_hash, metadata_key)
+}
+
+/// Return the first metadata_key referencing `content_hash` via a prefix-range
+/// scan over the content-hash index, or `None` if no references exist.
+fn first_content_hash_ref<T: Transaction>(
+    txn: &T,
+    db: Database,
+    content_hash: &str,
+) -> VfsResult<Option<String>> {
+    let prefix = format!("{}\0", content_hash);
+    let mut cursor = txn.open_ro_cursor(db).map_err(|e| VfsError::IoError {
+        message: format!("Failed to open content hash index cursor: {}", e),
+    })?;
+
+    for (key, _value) in cursor.iter() {
+        if key.starts_with(prefix.as_bytes()) {
+            // Strip the `{hash}\0` prefix to recover the metadata_key.
+            let mkey_bytes = &key[prefix.len()..];
+            let mkey = std::str::from_utf8(mkey_bytes)
+                .map_err(|e| VfsError::EncodingError {
+                    message: format!("Invalid content hash index key encoding: {}", e),
+                })?
+                .to_string();
+            return Ok(Some(mkey));
+        }
+        // Keys are sorted; once we've passed the prefix range we can stop.
+        if key > prefix.as_bytes() {
+            break;
+        }
+    }
+    Ok(None)
 }
 
 #[cfg(test)]
@@ -702,5 +826,64 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(offset.len(), 2);
+    }
+
+    /// The content-hash index must (a) make `find_by_content_hash` return one
+    /// of the referencing files, and (b) keep `has_content_references` accurate
+    /// when one of two files sharing a hash is deleted (the other still
+    /// references it, so the content must not be considered unreferenced).
+    #[tokio::test]
+    async fn test_content_hash_index_finds_and_tracks_references() {
+        let (store, _temp_dir) = create_test_store().await;
+        let namespace = "dedupns".to_string();
+
+        // Two files referencing the same content hash.
+        let mut meta_a = create_test_metadata("fileA", "/a.txt");
+        meta_a.content_hash = "sharedhash".to_string();
+        let mut meta_b = create_test_metadata("fileB", "/b.txt");
+        meta_b.content_hash = "sharedhash".to_string();
+
+        store.store_metadata(&namespace, &meta_a).await.unwrap();
+        store.store_metadata(&namespace, &meta_b).await.unwrap();
+
+        // find_by_content_hash returns a file with that hash.
+        let found = store.find_by_content_hash("sharedhash").await.unwrap();
+        assert!(found.is_some(), "should find a file for the shared hash");
+        let found = found.unwrap();
+        assert_eq!(found.content_hash, "sharedhash");
+
+        // Both files reference it.
+        assert!(
+            store.has_content_references("sharedhash").await.unwrap(),
+            "shared hash should be referenced while both files exist"
+        );
+
+        // Delete one file: the other still references the hash.
+        store
+            .delete_metadata(&namespace, &FileIdentifier::Id("fileA".to_string()))
+            .await
+            .unwrap();
+        assert!(
+            store.has_content_references("sharedhash").await.unwrap(),
+            "shared hash must still be referenced after deleting one of two files"
+        );
+
+        // Delete the remaining file: now unreferenced.
+        store
+            .delete_metadata(&namespace, &FileIdentifier::Id("fileB".to_string()))
+            .await
+            .unwrap();
+        assert!(
+            !store.has_content_references("sharedhash").await.unwrap(),
+            "shared hash should be unreferenced after deleting all files"
+        );
+        assert!(
+            store
+                .find_by_content_hash("sharedhash")
+                .await
+                .unwrap()
+                .is_none(),
+            "find should return None when no references remain"
+        );
     }
 }

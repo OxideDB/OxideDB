@@ -327,11 +327,30 @@ fn is_searchable_field(field_type: &FieldType) -> bool {
     )
 }
 
+/// Return the FTS table name for `table_name` if an FTS index exists for it,
+/// else `None`. Checked once per query against `sqlite_master`.
+fn fts_table_if_exists(conn: &rusqlite::Connection, table_name: &str) -> Option<String> {
+    let fts_name = super::schema_adapter::fts_table_name(table_name);
+    let exists: bool = conn
+        .query_row(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1",
+            [&fts_name],
+            |_| Ok(true),
+        )
+        .unwrap_or(false);
+    if exists {
+        Some(fts_name)
+    } else {
+        None
+    }
+}
+
 fn append_filter_clauses(
     query: &mut String,
     schema: &CollectionSchema,
     params: &ListParams,
     bind_params: &mut Vec<SqlValue>,
+    fts_table: Option<&str>,
 ) -> Result<(), AppError> {
     let mut clauses = Vec::new();
 
@@ -341,21 +360,35 @@ fn append_filter_clauses(
         .map(str::trim)
         .filter(|value| !value.is_empty())
     {
-        let search_pattern = format!("%{}%", escape_like(search));
-        let mut search_clauses = vec![format!("{} LIKE ? ESCAPE '\\'", quote_identifier("id"))];
-        bind_params.push(SqlValue::Text(search_pattern.clone()));
+        if let Some(fts_name) = fts_table.filter(|name| !name.is_empty()) {
+            // FTS5 fast path: match against the pre-indexed content column.
+            // Wrap the term in double quotes so it is treated as a phrase and
+            // FTS query syntax (e.g. '*') can't be injected or misparsed.
+            let fts_query = format!("\"{}\"", search.replace('"', "\"\""));
+            clauses.push(format!(
+                "\"id\" IN (SELECT record_id FROM {} WHERE {} MATCH ?)",
+                quote_identifier(fts_name),
+                quote_identifier(fts_name)
+            ));
+            bind_params.push(SqlValue::Text(fts_query));
+        } else {
+            // LIKE fallback for collections without an FTS index.
+            let search_pattern = format!("%{}%", escape_like(search));
+            let mut search_clauses = vec![format!("{} LIKE ? ESCAPE '\\'", quote_identifier("id"))];
+            bind_params.push(SqlValue::Text(search_pattern.clone()));
 
-        for (field_name, field_def) in &schema.fields {
-            if is_searchable_field(&field_def.field_type) {
-                search_clauses.push(format!(
-                    "CAST({} AS TEXT) LIKE ? ESCAPE '\\'",
-                    quote_identifier(field_name)
-                ));
-                bind_params.push(SqlValue::Text(search_pattern.clone()));
+            for (field_name, field_def) in &schema.fields {
+                if is_searchable_field(&field_def.field_type) {
+                    search_clauses.push(format!(
+                        "CAST({} AS TEXT) LIKE ? ESCAPE '\\'",
+                        quote_identifier(field_name)
+                    ));
+                    bind_params.push(SqlValue::Text(search_pattern.clone()));
+                }
             }
-        }
 
-        clauses.push(format!("({})", search_clauses.join(" OR ")));
+            clauses.push(format!("({})", search_clauses.join(" OR ")));
+        }
     }
 
     match params
@@ -1045,7 +1078,16 @@ impl Db for SqliteDb {
             let mut query = format!("SELECT * FROM {}", quote_identifier(&table_name));
             let mut bind_params: Vec<SqlValue> = vec![];
 
-            append_filter_clauses(&mut query, &schema, &params, &mut bind_params)?;
+            {
+                let fts_table = fts_table_if_exists(&conn, &table_name);
+                append_filter_clauses(
+                    &mut query,
+                    &schema,
+                    &params,
+                    &mut bind_params,
+                    fts_table.as_deref(),
+                )?;
+            }
 
             append_sort_clause(&mut query, &schema, &params)?;
             append_limit_offset(&mut query, &mut bind_params, limit, offset);
@@ -1088,6 +1130,7 @@ impl Db for SqliteDb {
         let pool = self.pool.clone();
         let limit = params.effective_limit();
         let offset = params.effective_offset();
+        let include_total = params.wants_total();
         let fallback_params = params.clone();
 
         let (records, total_count) = spawn_blocking(move || {
@@ -1095,44 +1138,107 @@ impl Db for SqliteDb {
                 AppError::database(format!("Failed to get pooled connection: {}", e))
             })?;
 
-            let mut query = format!(
-                "SELECT COUNT(*) OVER() AS {}, * FROM {}",
-                quote_identifier(LIST_TOTAL_COUNT_COLUMN),
-                quote_identifier(&table_name)
-            );
-            let mut bind_params: Vec<SqlValue> = Vec::new();
+            if include_total {
+                // Exact total via the COUNT(*) OVER() window function.
+                let mut query = format!(
+                    "SELECT COUNT(*) OVER() AS {}, * FROM {}",
+                    quote_identifier(LIST_TOTAL_COUNT_COLUMN),
+                    quote_identifier(&table_name)
+                );
+                let mut bind_params: Vec<SqlValue> = Vec::new();
 
-            append_filter_clauses(&mut query, &schema, &params, &mut bind_params)?;
-            append_sort_clause(&mut query, &schema, &params)?;
-            append_limit_offset(&mut query, &mut bind_params, limit, offset);
+                {
+                    let fts_table = fts_table_if_exists(&conn, &table_name);
+                    append_filter_clauses(
+                        &mut query,
+                        &schema,
+                        &params,
+                        &mut bind_params,
+                        fts_table.as_deref(),
+                    )?;
+                }
+                append_sort_clause(&mut query, &schema, &params)?;
+                append_limit_offset(&mut query, &mut bind_params, limit, offset);
 
-            let mut stmt = conn
-                .prepare_cached(&query)
-                .map_err(|e| AppError::database(format!("Failed to prepare statement: {}", e)))?;
-            let mut rows = stmt
-                .query(params_from_iter(bind_params.iter()))
-                .map_err(|e| AppError::database(format!("Failed to execute query: {}", e)))?;
+                let mut stmt = conn.prepare_cached(&query).map_err(|e| {
+                    AppError::database(format!("Failed to prepare statement: {}", e))
+                })?;
+                let mut rows = stmt
+                    .query(params_from_iter(bind_params.iter()))
+                    .map_err(|e| AppError::database(format!("Failed to execute query: {}", e)))?;
 
-            let mut records = Vec::with_capacity(limit);
-            let mut total_count = None;
+                let mut records = Vec::with_capacity(limit);
+                let mut total_count = None;
 
-            while let Some(row) = rows
-                .next()
-                .map_err(|e| AppError::database(format!("Failed to query records: {}", e)))?
-            {
-                if total_count.is_none() {
-                    let count: i64 = row.get(LIST_TOTAL_COUNT_COLUMN).map_err(|e| {
-                        AppError::database(format!("Failed to read total count: {}", e))
-                    })?;
-                    total_count = Some(count as usize);
+                while let Some(row) = rows
+                    .next()
+                    .map_err(|e| AppError::database(format!("Failed to query records: {}", e)))?
+                {
+                    if total_count.is_none() {
+                        let count: i64 = row.get(LIST_TOTAL_COUNT_COLUMN).map_err(|e| {
+                            AppError::database(format!("Failed to read total count: {}", e))
+                        })?;
+                        total_count = Some(count as usize);
+                    }
+
+                    let record =
+                        Self::sql_row_to_record(row, &collection_name, &schema).map_err(|e| {
+                            AppError::database(format!("Failed to query records: {}", e))
+                        })?;
+                    records.push(record);
                 }
 
-                let record = Self::sql_row_to_record(row, &collection_name, &schema)
-                    .map_err(|e| AppError::database(format!("Failed to query records: {}", e)))?;
-                records.push(record);
-            }
+                Ok::<(Vec<Record>, Option<usize>), AppError>((records, total_count))
+            } else {
+                // No exact total: skip COUNT(*) OVER() (a full filtered scan)
+                // and fetch limit+1 rows to derive has_more cheaply.
+                let mut query = format!("SELECT * FROM {}", quote_identifier(&table_name));
+                let mut bind_params: Vec<SqlValue> = Vec::new();
 
-            Ok::<(Vec<Record>, Option<usize>), AppError>((records, total_count))
+                {
+                    let fts_table = fts_table_if_exists(&conn, &table_name);
+                    append_filter_clauses(
+                        &mut query,
+                        &schema,
+                        &params,
+                        &mut bind_params,
+                        fts_table.as_deref(),
+                    )?;
+                }
+                append_sort_clause(&mut query, &schema, &params)?;
+                append_limit_offset(&mut query, &mut bind_params, limit + 1, offset);
+
+                let mut stmt = conn.prepare_cached(&query).map_err(|e| {
+                    AppError::database(format!("Failed to prepare statement: {}", e))
+                })?;
+                let mut rows = stmt
+                    .query(params_from_iter(bind_params.iter()))
+                    .map_err(|e| AppError::database(format!("Failed to execute query: {}", e)))?;
+
+                let mut records = Vec::with_capacity(limit);
+                while let Some(row) = rows
+                    .next()
+                    .map_err(|e| AppError::database(format!("Failed to query records: {}", e)))?
+                {
+                    let record =
+                        Self::sql_row_to_record(row, &collection_name, &schema).map_err(|e| {
+                            AppError::database(format!("Failed to query records: {}", e))
+                        })?;
+                    records.push(record);
+                }
+
+                // If we fetched the limit+1 sentinel row, there are more pages.
+                let has_more = records.len() > limit;
+                if has_more {
+                    records.truncate(limit);
+                }
+
+                // Lower-bound total: the rows visible up to this offset. The
+                // API handler treats this as an estimate when include_total
+                // was false (has_more is authoritative for paging).
+                let lower_bound = offset + records.len();
+                Ok::<(Vec<Record>, Option<usize>), AppError>((records, Some(lower_bound)))
+            }
         })
         .await
         .map_err(|e| AppError::internal(format!("Task join error: {}", e)))??;
@@ -1210,7 +1316,16 @@ impl Db for SqliteDb {
 
             let mut query = format!("SELECT COUNT(*) FROM {}", quote_identifier(&table_name));
             let mut bind_params = Vec::new();
-            append_filter_clauses(&mut query, &schema, &params, &mut bind_params)?;
+            {
+                let fts_table = fts_table_if_exists(&conn, &table_name);
+                append_filter_clauses(
+                    &mut query,
+                    &schema,
+                    &params,
+                    &mut bind_params,
+                    fts_table.as_deref(),
+                )?;
+            }
 
             let mut stmt = conn.prepare_cached(&query).map_err(|e| {
                 AppError::database(format!("Failed to prepare filtered count statement: {}", e))
@@ -1433,7 +1548,7 @@ mod tests {
             ..Default::default()
         };
 
-        append_filter_clauses(&mut query, &test_schema(), &params, &mut bind_params).unwrap();
+        append_filter_clauses(&mut query, &test_schema(), &params, &mut bind_params, None).unwrap();
 
         assert!(query.contains("\"id\" LIKE ? ESCAPE '\\'"));
         assert!(query.contains("\"views\" >= ?"));
@@ -1452,7 +1567,8 @@ mod tests {
         };
 
         assert!(
-            append_filter_clauses(&mut query, &test_schema(), &params, &mut bind_params).is_err()
+            append_filter_clauses(&mut query, &test_schema(), &params, &mut bind_params, None)
+                .is_err()
         );
     }
 
@@ -1466,7 +1582,7 @@ mod tests {
             ..Default::default()
         };
 
-        append_filter_clauses(&mut query, &test_schema(), &params, &mut bind_params).unwrap();
+        append_filter_clauses(&mut query, &test_schema(), &params, &mut bind_params, None).unwrap();
 
         assert!(query.contains("\"published\" IS NULL"));
         assert!(bind_params.is_empty());
@@ -1623,5 +1739,60 @@ mod tests {
             1,
             "delete_record must not fire AfterRecordRead"
         );
+    }
+
+    /// With `include_total: false`, listing must still return the correct page
+    /// of records and a sensible lower-bound total, while skipping the
+    /// `COUNT(*) OVER()` window scan. We verify paging still reflects reality:
+    /// a full page implies more rows may exist, the final page returns exactly
+    /// the remaining records.
+    #[tokio::test]
+    async fn list_records_without_total_paginates_correctly() {
+        let db = test_db();
+        db.initialize().await.unwrap();
+        db.create_collection_with_schema(test_schema())
+            .await
+            .unwrap();
+
+        for i in 0..7 {
+            <SqliteDb as Db>::create_record(
+                &db,
+                "articles",
+                serde_json::json!({ "title": format!("t{i}"), "views": (i as f64), "published": true }),
+            )
+            .await
+            .unwrap();
+        }
+
+        // Page 1: limit 3, no exact total -> should return 3 records and a
+        // lower-bound total of offset+3 (more likely exist).
+        let p1 = ListParams {
+            limit: Some(3),
+            offset: Some(0),
+            include_total: Some(false),
+            ..Default::default()
+        };
+        let (recs1, total1) = <SqliteDb as Db>::list_records_with_total(&db, "articles", p1)
+            .await
+            .unwrap();
+        assert_eq!(recs1.len(), 3);
+        assert_eq!(total1, 3, "lower-bound total should be offset + page size");
+
+        // Last page: offset 6, limit 3 -> exactly 1 record remains, no more.
+        let p3 = ListParams {
+            limit: Some(3),
+            offset: Some(6),
+            include_total: Some(false),
+            ..Default::default()
+        };
+        let (recs3, total3) = <SqliteDb as Db>::list_records_with_total(&db, "articles", p3)
+            .await
+            .unwrap();
+        assert_eq!(
+            recs3.len(),
+            1,
+            "final page should return exactly the remaining record"
+        );
+        assert_eq!(total3, 7, "total on the final page equals the true count");
     }
 }

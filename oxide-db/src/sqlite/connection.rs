@@ -1724,4 +1724,101 @@ mod tests {
             assert_eq!(count, 20, "each concurrent read should see all 20 records");
         }
     }
+
+    /// FTS5 search: a collection created with searchable text fields gets an
+    /// FTS index kept in sync by triggers. Listing with a `search` term must
+    /// find matching records via the FTS path (the LIKE fallback is only for
+    /// pre-existing collections without an index).
+    #[tokio::test]
+    async fn fts_search_finds_matching_records() {
+        use crate::db::{Db, ListParams};
+        use oxide_core::field_types::FieldType;
+
+        let db = test_db();
+        db.initialize().await.expect("initialize should succeed");
+
+        let mut schema = CollectionSchema::new("posts".to_string(), CollectionType::Base);
+        schema.add_field("title".to_string(), FieldDefinition::new(FieldType::Text));
+        schema.add_field("body".to_string(), FieldDefinition::new(FieldType::Text));
+        db.create_collection_with_schema(schema)
+            .await
+            .expect("create collection");
+
+        <SqliteDb as Db>::create_record(
+            &db,
+            "posts",
+            serde_json::json!({ "title": "Rust ownership and borrowing", "body": "Lifetimes explained" }),
+        )
+        .await
+        .unwrap();
+        <SqliteDb as Db>::create_record(
+            &db,
+            "posts",
+            serde_json::json!({ "title": "Go concurrency patterns", "body": "Goroutines and channels" }),
+        )
+        .await
+        .unwrap();
+        <SqliteDb as Db>::create_record(
+            &db,
+            "posts",
+            serde_json::json!({ "title": "Database internals", "body": "B-trees and write-ahead logs" }),
+        )
+        .await
+        .unwrap();
+
+        // Search for "rust" -> should match the first post only.
+        let (recs, _) = <SqliteDb as Db>::list_records_with_total(
+            &db,
+            "posts",
+            ListParams {
+                search: Some("rust".to_string()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(recs.len(), 1, "FTS search for 'rust' should match one post");
+        assert_eq!(recs[0].data["title"], "Rust ownership and borrowing");
+
+        // Search for "concurrency" -> matches the Go post (body has 'concurrency').
+        let (recs, _) = <SqliteDb as Db>::list_records_with_total(
+            &db,
+            "posts",
+            ListParams {
+                search: Some("concurrency".to_string()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            recs.len(),
+            1,
+            "FTS search for 'concurrency' should match the Go post"
+        );
+        assert_eq!(recs[0].data["title"], "Go concurrency patterns");
+
+        // Update a record: the FTS index must reflect the new content.
+        let go_id = recs[0].id.clone();
+        <SqliteDb as Db>::update_record(
+            &db,
+            "posts",
+            &go_id,
+            serde_json::json!({ "title": "Go concurrency patterns", "body": "Rust is better" }),
+        )
+        .await
+        .unwrap();
+        let (recs, _) = <SqliteDb as Db>::list_records_with_total(
+            &db,
+            "posts",
+            ListParams {
+                search: Some("rust".to_string()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        // Now both the original Rust post and the updated Go post match "rust".
+        assert_eq!(recs.len(), 2, "FTS index should reflect the updated body");
+    }
 }

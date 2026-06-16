@@ -1565,4 +1565,81 @@ mod tests {
         assert_eq!(stats.file_count, 1);
         assert_eq!(stats.storage_used, source.size);
     }
+
+    /// The no-filter fast path must push offset/limit into the metadata store
+    /// (server-side pagination) instead of materializing the whole namespace.
+    /// Seed 12 files, then page through them and verify counts + totals.
+    #[tokio::test]
+    async fn test_list_files_fast_path_pagination() {
+        let (service, _temp_dir) = create_test_service().await;
+        let namespace = "paged".to_string();
+
+        service
+            .create_namespace(VfsNamespaceConfig {
+                namespace: namespace.clone(),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        for i in 0..12 {
+            let path = format!("f{i}.txt");
+            service
+                .write_file(
+                    &namespace,
+                    FileWriteRequest {
+                        file_id: None,
+                        path: path.clone(),
+                        content: path.into_bytes(),
+                        mime_type: Some("text/plain".to_string()),
+                        custom_metadata: None,
+                        tags: None,
+                        overwrite: false,
+                        created_at: None,
+                        modified_at: None,
+                    },
+                )
+                .await
+                .unwrap();
+        }
+
+        // Page 1: limit 5, offset 0 -> 5 files, total 12.
+        let p1 = service
+            .list_files(
+                &namespace,
+                FileListRequest {
+                    directory: String::new(),
+                    recursive: true,
+                    mime_filter: None,
+                    tag_filter: None,
+                    offset: Some(0),
+                    limit: Some(5),
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(p1.files.len(), 5, "page 1 should return exactly the limit");
+        assert_eq!(
+            p1.total_count, 12,
+            "total should be the full namespace count"
+        );
+
+        // Page 3: offset 10, limit 5 -> exactly the 2 remaining files.
+        let p3 = service
+            .list_files(
+                &namespace,
+                FileListRequest {
+                    directory: String::new(),
+                    recursive: true,
+                    mime_filter: None,
+                    tag_filter: None,
+                    offset: Some(10),
+                    limit: Some(5),
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(p3.files.len(), 2, "final page returns the remaining files");
+        assert_eq!(p3.total_count, 12);
+    }
 }

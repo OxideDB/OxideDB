@@ -367,6 +367,111 @@ impl SchemaAdapter for SqliteSchemaAdapter {
     }
 }
 
+/// Return the FTS5 virtual table name for a collection table.
+pub fn fts_table_name(collection_table: &str) -> String {
+    format!("{}_fts", collection_table)
+}
+
+/// Return true when a field type should be included in the FTS content index.
+fn is_fts_indexable(field_type: &FieldType) -> bool {
+    matches!(
+        field_type,
+        FieldType::Text
+            | FieldType::Email
+            | FieldType::Url
+            | FieldType::Phone
+            | FieldType::Select(_)
+    )
+}
+
+/// Whether a collection has any FTS-indexable text fields.
+pub fn collection_has_searchable_fields(schema: &CollectionSchema) -> bool {
+    schema
+        .fields
+        .iter()
+        .any(|(_, def)| is_fts_indexable(&def.field_type))
+}
+
+impl SqliteSchemaAdapter {
+    /// Generate SQL to create an FTS5 virtual table + sync triggers for a
+    /// collection, indexing its searchable text fields for fast `MATCH` search.
+    ///
+    /// Returns an empty vec when the collection has no searchable text fields,
+    /// so callers can execute the statements unconditionally. The virtual table
+    /// stores the record's TEXT `id` (unindexed) plus a concatenated `content`
+    /// column built from the searchable fields; triggers keep it in sync on
+    /// INSERT/UPDATE/DELETE against the base table.
+    pub fn generate_fts_sql(&self, schema: &CollectionSchema) -> Vec<String> {
+        if !collection_has_searchable_fields(schema) {
+            return Vec::new();
+        }
+
+        let table_name = self.get_table_name(&schema.name);
+        let fts_name = fts_table_name(&table_name);
+        let fts_ident = quote_identifier(&fts_name);
+        let base_ident = quote_identifier(&table_name);
+
+        // Content expression: concatenate the id and searchable text fields
+        // into a single string the FTS index tokenizes.
+        let mut content_parts: Vec<String> = vec![format!("NEW.{}", quote_identifier("id"))];
+        for (field_name, field_def) in &schema.fields {
+            if is_fts_indexable(&field_def.field_type) {
+                content_parts.push(format!(
+                    "CAST(NEW.{} AS TEXT)",
+                    quote_identifier(field_name)
+                ));
+            }
+        }
+        let content_expr = content_parts
+            .iter()
+            .map(|p| format!("coalesce({}, '')", p))
+            .collect::<Vec<_>>()
+            .join(" || ' ' || ");
+
+        let mut stmts = Vec::new();
+
+        // FTS5 virtual table. record_id is UNINDEXED (stored for lookup,
+        // not tokenized).
+        stmts.push(format!(
+            "CREATE VIRTUAL TABLE IF NOT EXISTS {} USING fts5(record_id UNINDEXED, content, tokenize='unicode61')",
+            fts_ident
+        ));
+
+        // Triggers keep the FTS table in sync with the base table.
+        let ai = format!("{}_fts_ai", table_name);
+        let ad = format!("{}_fts_ad", table_name);
+        let au = format!("{}_fts_au", table_name);
+
+        stmts.push(format!(
+            "CREATE TRIGGER IF NOT EXISTS {} AFTER INSERT ON {} BEGIN \
+             INSERT INTO {}(record_id, content) VALUES (NEW.id, {}); END",
+            quote_identifier(&ai),
+            base_ident,
+            fts_ident,
+            content_expr
+        ));
+        stmts.push(format!(
+            "CREATE TRIGGER IF NOT EXISTS {} AFTER DELETE ON {} BEGIN \
+             DELETE FROM {} WHERE record_id = OLD.id; END",
+            quote_identifier(&ad),
+            base_ident,
+            fts_ident
+        ));
+        stmts.push(format!(
+            "CREATE TRIGGER IF NOT EXISTS {} AFTER UPDATE ON {} BEGIN \
+             DELETE FROM {} WHERE record_id = OLD.id; \
+             INSERT INTO {}(record_id, content) VALUES (NEW.id, {}); END",
+            quote_identifier(&au),
+            base_ident,
+            fts_ident,
+            fts_ident,
+            content_expr
+        ));
+
+        stmts
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

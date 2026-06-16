@@ -91,6 +91,7 @@ impl SqliteDb {
         let schema_adapter = super::schema_adapter::SqliteSchemaAdapter::new();
         let create_table_sql = schema_adapter.generate_create_table_sql(&schema);
         let index_sql_statements = schema_adapter.generate_index_sql(&schema);
+        let fts_sql_statements = schema_adapter.generate_fts_sql(&schema);
 
         spawn_blocking(move || {
             let conn = pool.get().map_err(|e| AppError::database(format!("Failed to get pooled connection: {}", e)))?;
@@ -130,6 +131,13 @@ impl SqliteDb {
             for index_sql in index_sql_statements {
                 tx.execute(&index_sql, [])
                     .map_err(|e| AppError::database(format!("Failed to create index: {}", e)))?;
+            }
+
+            // Create the FTS5 virtual table + sync triggers for fast search.
+            // Empty when the collection has no searchable text fields.
+            for fts_sql in &fts_sql_statements {
+                tx.execute(fts_sql, [])
+                    .map_err(|e| AppError::database(format!("Failed to create FTS index: {}", e)))?;
             }
 
             // Commit the transaction
