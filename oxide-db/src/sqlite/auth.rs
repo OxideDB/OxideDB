@@ -259,12 +259,12 @@ impl SqliteDb {
         let collection_name = collection.to_string();
         let identifier_field = identifier_field.to_string();
         let identifier_value = identifier_value.to_string();
-        let connection = self.connection.clone();
+        let pool = self.pool.clone();
 
         spawn_blocking(move || {
-            let conn = connection
-                .lock()
-                .map_err(|_| AppError::database("Failed to acquire database lock"))?;
+            let conn = pool.get().map_err(|e| {
+                AppError::database(format!("Failed to get pooled connection: {}", e))
+            })?;
 
             let query = format!(
                 "SELECT * FROM {} WHERE {} = ?1 LIMIT 1",
@@ -303,12 +303,12 @@ impl SqliteDb {
 
     /// Store metadata for a newly issued refresh token.
     pub async fn store_refresh_token(&self, token: RefreshTokenRecord) -> Result<(), AppError> {
-        let connection = self.connection.clone();
+        let pool = self.pool.clone();
 
         spawn_blocking(move || {
-            let conn = connection
-                .lock()
-                .map_err(|_| AppError::database("Failed to acquire database lock"))?;
+            let conn = pool.get().map_err(|e| {
+                AppError::database(format!("Failed to get pooled connection: {}", e))
+            })?;
             let now = current_timestamp();
 
             conn.execute(
@@ -352,12 +352,12 @@ impl SqliteDb {
         new_token: RefreshTokenRecord,
     ) -> Result<(), AppError> {
         let old_token_hash = old_token_hash.to_string();
-        let connection = self.connection.clone();
+        let pool = self.pool.clone();
 
         spawn_blocking(move || {
-            let mut conn = connection
-                .lock()
-                .map_err(|_| AppError::database("Failed to acquire database lock"))?;
+            let mut conn = pool.get().map_err(|e| {
+                AppError::database(format!("Failed to get pooled connection: {}", e))
+            })?;
             let now = current_timestamp();
 
             let tx = conn
@@ -425,12 +425,12 @@ impl SqliteDb {
     /// Revoke a refresh token if it is present.
     pub async fn revoke_refresh_token(&self, token_hash: &str) -> Result<(), AppError> {
         let token_hash = token_hash.to_string();
-        let connection = self.connection.clone();
+        let pool = self.pool.clone();
 
         spawn_blocking(move || {
-            let conn = connection
-                .lock()
-                .map_err(|_| AppError::database("Failed to acquire database lock"))?;
+            let conn = pool.get().map_err(|e| {
+                AppError::database(format!("Failed to get pooled connection: {}", e))
+            })?;
             let now = current_timestamp();
 
             conn.execute(

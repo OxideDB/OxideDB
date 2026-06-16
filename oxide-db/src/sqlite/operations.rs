@@ -187,12 +187,12 @@ impl SqliteDb {
 
         let collection = collection.to_string();
         let record_id = record_id.clone();
-        let connection = self.connection.clone();
+        let pool = self.pool.clone();
 
         let record = spawn_blocking(move || {
-            let conn = connection
-                .lock()
-                .map_err(|_| AppError::database("Failed to acquire database lock"))?;
+            let conn = pool.get().map_err(|e| {
+                AppError::database(format!("Failed to get pooled connection: {}", e))
+            })?;
 
             let select_sql = format!(
                 "SELECT * FROM {} WHERE {} = ?1",
@@ -500,15 +500,15 @@ impl Db for SqliteDb {
         let table_name = schema_adapter.get_table_name(&schema.name);
         let table_name_for_debug = table_name.clone(); // Clone for debug use
         let collection = collection.to_string();
-        let connection = self.connection.clone();
+        let pool = self.pool.clone();
 
         // Convert data to SQL values
         let sql_values = self.record_data_to_sql_values(&data, &schema)?;
 
         let record = spawn_blocking(move || {
-            let conn = connection
-                .lock()
-                .map_err(|_| AppError::database("Failed to acquire database lock"))?;
+            let conn = pool.get().map_err(|e| {
+                AppError::database(format!("Failed to get pooled connection: {}", e))
+            })?;
 
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -629,15 +629,15 @@ impl Db for SqliteDb {
         let schema_adapter = super::schema_adapter::SqliteSchemaAdapter::new();
         let table_name = schema_adapter.get_table_name(&schema.name);
         let table_name_for_debug = table_name.clone();
-        let connection = self.connection.clone();
+        let pool = self.pool.clone();
 
         let sql_values = self.record_data_to_sql_values(&record.data, &schema)?;
         let restored_record = record.clone();
 
         spawn_blocking(move || {
-            let conn = connection
-                .lock()
-                .map_err(|_| AppError::database("Failed to acquire database lock"))?;
+            let conn = pool.get().map_err(|e| {
+                AppError::database(format!("Failed to get pooled connection: {}", e))
+            })?;
 
             if schema.collection_type == CollectionType::Single {
                 let exists_sql = format!(
@@ -759,12 +759,12 @@ impl Db for SqliteDb {
 
         let collection = collection.to_string(); // Clone collection for the closure
         let record_id = record_id.clone();
-        let connection = self.connection.clone();
+        let pool = self.pool.clone();
 
         let record = spawn_blocking(move || {
-            let conn = connection
-                .lock()
-                .map_err(|_| AppError::database("Failed to acquire database lock"))?;
+            let conn = pool.get().map_err(|e| {
+                AppError::database(format!("Failed to get pooled connection: {}", e))
+            })?;
 
             let select_sql = format!(
                 "SELECT * FROM {} WHERE {} = ?1",
@@ -856,15 +856,15 @@ impl Db for SqliteDb {
         let table_name_for_debug = table_name.clone(); // Clone for debug use
         let collection = collection.to_string();
         let record_id = record_id.clone();
-        let connection = self.connection.clone();
+        let pool = self.pool.clone();
 
         // Convert data to SQL values
         let sql_values = self.record_data_to_sql_values(&new_data, &schema)?;
 
         let updated_record = spawn_blocking(move || {
-            let conn = connection
-                .lock()
-                .map_err(|_| AppError::database("Failed to acquire database lock"))?;
+            let conn = pool.get().map_err(|e| {
+                AppError::database(format!("Failed to get pooled connection: {}", e))
+            })?;
 
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -976,12 +976,12 @@ impl Db for SqliteDb {
         let table_name_for_debug = table_name.clone(); // Clone for debug use
 
         let record_id = record_id.clone();
-        let connection = self.connection.clone();
+        let pool = self.pool.clone();
 
         spawn_blocking(move || {
-            let conn = connection
-                .lock()
-                .map_err(|_| AppError::database("Failed to acquire database lock"))?;
+            let conn = pool.get().map_err(|e| {
+                AppError::database(format!("Failed to get pooled connection: {}", e))
+            })?;
 
             let delete_sql = format!(
                 "DELETE FROM {} WHERE {} = ?1",
@@ -1033,14 +1033,14 @@ impl Db for SqliteDb {
         let table_name_for_debug = table_name.clone(); // Clone for debug use
 
         let collection_name = collection.to_string();
-        let connection = self.connection.clone();
+        let pool = self.pool.clone();
         let limit = params.effective_limit();
         let offset = params.effective_offset();
 
         let records = spawn_blocking(move || {
-            let conn = connection
-                .lock()
-                .map_err(|_| AppError::database("Failed to acquire database lock"))?;
+            let conn = pool.get().map_err(|e| {
+                AppError::database(format!("Failed to get pooled connection: {}", e))
+            })?;
 
             let mut query = format!("SELECT * FROM {}", quote_identifier(&table_name));
             let mut bind_params: Vec<SqlValue> = vec![];
@@ -1085,15 +1085,15 @@ impl Db for SqliteDb {
         let table_name_for_debug = table_name.clone();
 
         let collection_name = collection.to_string();
-        let connection = self.connection.clone();
+        let pool = self.pool.clone();
         let limit = params.effective_limit();
         let offset = params.effective_offset();
         let fallback_params = params.clone();
 
         let (records, total_count) = spawn_blocking(move || {
-            let conn = connection
-                .lock()
-                .map_err(|_| AppError::database("Failed to acquire database lock"))?;
+            let conn = pool.get().map_err(|e| {
+                AppError::database(format!("Failed to get pooled connection: {}", e))
+            })?;
 
             let mut query = format!(
                 "SELECT COUNT(*) OVER() AS {}, * FROM {}",
@@ -1201,12 +1201,12 @@ impl Db for SqliteDb {
         let schema_adapter = super::schema_adapter::SqliteSchemaAdapter::new();
         let table_name = schema_adapter.get_table_name(&schema.name);
         let table_name_for_debug = table_name.clone();
-        let connection = self.connection.clone();
+        let pool = self.pool.clone();
 
         let count = spawn_blocking(move || {
-            let conn = connection
-                .lock()
-                .map_err(|_| AppError::database("Failed to acquire database lock"))?;
+            let conn = pool.get().map_err(|e| {
+                AppError::database(format!("Failed to get pooled connection: {}", e))
+            })?;
 
             let mut query = format!("SELECT COUNT(*) FROM {}", quote_identifier(&table_name));
             let mut bind_params = Vec::new();

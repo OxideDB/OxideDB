@@ -319,14 +319,14 @@ impl SqliteDb {
         let table_name = schema_adapter.get_table_name(&target_schema.name);
 
         let record_ids = record_ids.to_vec();
-        let connection = self.connection.clone();
+        let pool = self.pool.clone();
         let target_schema_clone = target_schema.clone();
         let display_field = display_field.map(|s| s.to_string());
 
         let related_records = spawn_blocking(move || {
-            let conn = connection
-                .lock()
-                .map_err(|_| AppError::database("Failed to acquire database lock"))?;
+            let conn = pool.get().map_err(|e| {
+                AppError::database(format!("Failed to get pooled connection: {}", e))
+            })?;
 
             // Build the SQL query with IN clause
             let placeholders = record_ids

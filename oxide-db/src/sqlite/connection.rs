@@ -7,10 +7,12 @@ use oxide_core::{
     event::types::RecordId, AppError, AuthService, CollectionSchema, EventBus, FieldType,
     UserActivity, UserStats,
 };
+use r2d2::Pool;
+use r2d2_sqlite::SqliteConnectionManager;
 use rusqlite::Connection;
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;
 use tokio::task::spawn_blocking;
@@ -26,10 +28,11 @@ const SQLITE_JOURNAL_SIZE_LIMIT_BYTES: i64 = 64 * 1024 * 1024;
 /// SQLite implementation of the Db trait
 ///
 /// This implementation uses SQLite as the underlying database and integrates
-/// with the EventBus to dispatch events for all operations. The connection
-/// is wrapped in Arc<Mutex<>> to allow safe concurrent access.
+/// with the EventBus to dispatch events for all operations. Connections are
+/// served from an r2d2 pool so that WAL-enabled reads can run concurrently
+/// instead of serializing on a single global mutex.
 pub struct SqliteDb {
-    pub(super) connection: Arc<Mutex<Connection>>,
+    pub(super) pool: Pool<SqliteConnectionManager>,
     pub(super) event_bus: Arc<dyn EventBus>,
     pub(super) auth_service: Arc<AuthService>,
     pub(super) schema_adapter: SqliteSchemaAdapter,
@@ -49,12 +52,34 @@ impl SqliteDb {
         event_bus: Arc<dyn EventBus>,
         auth_service: Arc<AuthService>,
     ) -> Result<Self, AppError> {
-        let connection = Connection::open(database_path)
-            .map_err(|e| AppError::database(format!("Failed to open SQLite database: {}", e)))?;
-        configure_connection(&connection, database_path)?;
+        // Pick the right connection manager for in-memory vs file-backed DBs.
+        // For ":memory:" we use the memory() manager, which backs all pooled
+        // connections with a single shared in-memory database (via the
+        // `file:<id>?mode=memory&cache=shared` URI) so they see the same data.
+        let manager = if database_path == ":memory:" {
+            SqliteConnectionManager::memory()
+        } else {
+            SqliteConnectionManager::file(database_path)
+        };
+
+        // Configure every pooled connection on creation (PRAGMAs, statement
+        // cache, busy timeout). with_init runs once per new connection.
+        let database_path_for_init = database_path.to_string();
+        let manager = manager.with_init(move |conn| {
+            configure_connection(conn, &database_path_for_init).map_err(|e| {
+                // CustomizeConnection requires a rusqlite::Error; map our
+                // AppError so pool creation surfaces init failures.
+                rusqlite::Error::ToSqlConversionFailure(Box::new(e))
+            })
+        });
+
+        let pool = Pool::builder()
+            .max_size(8)
+            .build(manager)
+            .map_err(|e| AppError::database(format!("Failed to create connection pool: {}", e)))?;
 
         Ok(Self {
-            connection: Arc::new(Mutex::new(connection)),
+            pool,
             event_bus,
             auth_service,
             schema_adapter: SqliteSchemaAdapter::new(),
@@ -72,11 +97,9 @@ impl SqliteDb {
     async fn create_tables(&self) -> Result<(), AppError> {
         info!("Initializing SQLite database");
 
-        let connection = self.connection.clone();
+        let pool = self.pool.clone();
         spawn_blocking(move || {
-            let conn = connection
-                .lock()
-                .map_err(|_| AppError::database("Failed to acquire database lock"))?;
+            let conn = pool.get().map_err(|e| AppError::database(format!("Failed to get pooled connection: {}", e)))?;
 
             // Create the records table
             conn.execute(
@@ -317,15 +340,15 @@ impl SqliteDb {
 
     /// Migrate existing data from centralized records table to collection-specific tables
     async fn migrate_to_collection_tables(&self) -> Result<(), AppError> {
-        let connection = self.connection.clone();
+        let pool = self.pool.clone();
 
         // First, check if we have any data in the old records table
         let has_old_data = spawn_blocking({
-            let connection = connection.clone();
+            let pool = pool.clone();
             move || {
-                let conn = connection
-                    .lock()
-                    .map_err(|_| AppError::database("Failed to acquire database lock"))?;
+                let conn = pool.get().map_err(|e| {
+                    AppError::database(format!("Failed to get pooled connection: {}", e))
+                })?;
 
                 // Check if records table exists and has data
                 let table_exists: bool = conn
@@ -376,12 +399,12 @@ impl SqliteDb {
             let index_sql_statements = schema_adapter.generate_index_sql(&schema);
 
             let collection_name_for_migration = schema.name.clone();
-            let connection_for_migration = connection.clone();
+            let pool_for_migration = pool.clone();
 
             spawn_blocking(move || {
-                let conn = connection_for_migration
-                    .lock()
-                    .map_err(|_| AppError::database("Failed to acquire database lock"))?;
+                let conn = pool_for_migration
+                    .get()
+                    .map_err(|e| AppError::database(format!("Failed to get pooled connection: {}", e)))?;
 
                 // Start transaction
                 let tx = conn.unchecked_transaction()
@@ -505,12 +528,12 @@ impl SqliteDb {
 
     /// Health check for the database connection
     pub async fn health_check(&self) -> Result<(), AppError> {
-        let connection = self.connection.clone();
+        let pool = self.pool.clone();
 
         spawn_blocking(move || {
-            let conn = connection
-                .lock()
-                .map_err(|_| AppError::database("Failed to acquire database lock"))?;
+            let conn = pool.get().map_err(|e| {
+                AppError::database(format!("Failed to get pooled connection: {}", e))
+            })?;
 
             // Use prepare and query_row for SELECT statements instead of execute
             let mut stmt = conn.prepare_cached("SELECT 1").map_err(|e| {
@@ -540,12 +563,12 @@ impl SqliteDb {
                 )
             })
             .collect::<Vec<_>>();
-        let connection = self.connection.clone();
+        let pool = self.pool.clone();
 
         spawn_blocking(move || {
-            let conn = connection
-                .lock()
-                .map_err(|_| AppError::database("Failed to acquire database lock"))?;
+            let conn = pool.get().map_err(|e| {
+                AppError::database(format!("Failed to get pooled connection: {}", e))
+            })?;
 
             for (collection_name, statements) in index_statements {
                 for statement in statements {
@@ -597,12 +620,12 @@ impl SqliteDb {
         }
 
         let collection_name = collection.to_string();
-        let connection = self.connection.clone();
+        let pool = self.pool.clone();
 
         let exists = spawn_blocking(move || {
-            let conn = connection
-                .lock()
-                .map_err(|_| AppError::database("Failed to acquire database lock"))?;
+            let conn = pool.get().map_err(|e| {
+                AppError::database(format!("Failed to get pooled connection: {}", e))
+            })?;
 
             let mut stmt = conn
                 .prepare_cached("SELECT EXISTS(SELECT 1 FROM collections WHERE name = ?1)")
@@ -629,12 +652,12 @@ impl SqliteDb {
         let table_name = self.schema_adapter.get_table_name(&schema.name);
         let table_name_for_logging = table_name.clone();
 
-        let connection = self.connection.clone();
+        let pool = self.pool.clone();
 
         let count = spawn_blocking(move || {
-            let conn = connection
-                .lock()
-                .map_err(|_| AppError::database("Failed to acquire database lock"))?;
+            let conn = pool.get().map_err(|e| {
+                AppError::database(format!("Failed to get pooled connection: {}", e))
+            })?;
 
             let count_sql = format!("SELECT COUNT(*) FROM {}", quote_identifier(&table_name));
             let mut stmt = conn
@@ -685,12 +708,12 @@ impl SqliteDb {
             })
             .collect();
 
-        let connection = self.connection.clone();
+        let pool = self.pool.clone();
 
         let counts = spawn_blocking(move || {
-            let conn = connection
-                .lock()
-                .map_err(|_| AppError::database("Failed to acquire database lock"))?;
+            let conn = pool.get().map_err(|e| {
+                AppError::database(format!("Failed to get pooled connection: {}", e))
+            })?;
 
             // Build `SELECT 'name' AS c, COUNT(*) AS n FROM <table> UNION ALL ...`
             // using a single statement. Table names are static identifiers we
@@ -743,12 +766,12 @@ impl SqliteDb {
         let schema = self.get_collection_schema(collection).await?;
         let table_name = self.schema_adapter.get_table_name(&schema.name);
 
-        let connection = self.connection.clone();
+        let pool = self.pool.clone();
 
         let size_kb = spawn_blocking(move || {
-            let conn = connection
-                .lock()
-                .map_err(|_| AppError::database("Failed to acquire database lock"))?;
+            let conn = pool.get().map_err(|e| {
+                AppError::database(format!("Failed to get pooled connection: {}", e))
+            })?;
 
             // Primary approach: Use dbstat virtual table for accurate, fast sizing
             let dbstat_sql = "SELECT SUM(pgsize) FROM dbstat WHERE name = ?1";
@@ -935,11 +958,11 @@ impl SqliteDb {
     }
 
     async fn count_collections_created_since(&self, since: i64) -> Result<u64, AppError> {
-        let connection = Arc::clone(&self.connection);
+        let pool = self.pool.clone();
         spawn_blocking(move || {
-            let conn = connection
-                .lock()
-                .map_err(|e| AppError::internal(format!("Failed to lock connection: {}", e)))?;
+            let conn = pool.get().map_err(|e| {
+                AppError::internal(format!("Failed to get pooled connection: {}", e))
+            })?;
             let count = conn
                 .query_row(
                     "SELECT COUNT(*) FROM collections WHERE created_at >= ?1",
@@ -999,13 +1022,13 @@ impl SqliteDb {
         start: i64,
         end: Option<i64>,
     ) -> Result<u64, AppError> {
-        let connection = Arc::clone(&self.connection);
+        let pool = self.pool.clone();
         let table_name = self.schema_adapter.get_table_name(collection);
 
         spawn_blocking(move || {
-            let conn = connection
-                .lock()
-                .map_err(|e| AppError::internal(format!("Failed to lock connection: {}", e)))?;
+            let conn = pool.get().map_err(|e| {
+                AppError::internal(format!("Failed to get pooled connection: {}", e))
+            })?;
             let sql = if end.is_some() {
                 format!(
                     "SELECT COUNT(*) FROM {} WHERE created_at >= ?1 AND created_at < ?2",
@@ -1032,12 +1055,12 @@ impl SqliteDb {
     }
 
     async fn count_active_dashboard_users(&self, since: String) -> Result<u64, AppError> {
-        let connection = Arc::clone(&self.connection);
+        let pool = self.pool.clone();
 
         spawn_blocking(move || {
-            let conn = connection
-                .lock()
-                .map_err(|e| AppError::internal(format!("Failed to lock connection: {}", e)))?;
+            let conn = pool.get().map_err(|e| {
+                AppError::internal(format!("Failed to get pooled connection: {}", e))
+            })?;
             let count = conn
                 .query_row(
                     "SELECT COUNT(DISTINCT user_name)
@@ -1061,12 +1084,12 @@ impl SqliteDb {
         since: String,
         limit: usize,
     ) -> Result<Vec<UserActivity>, AppError> {
-        let connection = Arc::clone(&self.connection);
+        let pool = self.pool.clone();
 
         spawn_blocking(move || {
-            let conn = connection
-                .lock()
-                .map_err(|e| AppError::internal(format!("Failed to lock connection: {}", e)))?;
+            let conn = pool.get().map_err(|e| {
+                AppError::internal(format!("Failed to get pooled connection: {}", e))
+            })?;
 
             let mut stmt = conn
                 .prepare(
@@ -1104,12 +1127,12 @@ impl SqliteDb {
     ) -> Result<Vec<oxide_core::CollectionStatsEntry>, AppError> {
         debug!("Collecting collection statistics");
 
-        let connection = Arc::clone(&self.connection);
+        let pool = self.pool.clone();
 
         let collections_with_timestamps = spawn_blocking(move || {
-            let conn = connection
-                .lock()
-                .map_err(|e| AppError::internal(format!("Failed to lock connection: {}", e)))?;
+            let conn = pool.get().map_err(|e| {
+                AppError::internal(format!("Failed to get pooled connection: {}", e))
+            })?;
 
             let mut stmt = conn
                 .prepare(
@@ -1189,13 +1212,13 @@ impl SqliteDb {
     pub async fn get_storage_usage(&self) -> Result<oxide_core::StorageUsage, AppError> {
         debug!("Collecting storage usage information");
 
-        let connection = Arc::clone(&self.connection);
+        let pool = self.pool.clone();
         let database_path = self.database_path.clone();
 
         let database_size_bytes = spawn_blocking(move || {
-            let conn = connection
-                .lock()
-                .map_err(|e| AppError::internal(format!("Failed to lock connection: {}", e)))?;
+            let conn = pool.get().map_err(|e| {
+                AppError::internal(format!("Failed to get pooled connection: {}", e))
+            })?;
 
             // Get database file size using PRAGMA page_count and page_size
             let page_count: i64 = conn
@@ -1244,11 +1267,11 @@ impl SqliteDb {
     ) -> Result<(), AppError> {
         debug!("Recording dashboard activity: {:?}", activity.activity_type);
 
-        let connection = Arc::clone(&self.connection);
+        let pool = self.pool.clone();
         let activity_clone = activity.clone();
 
         spawn_blocking(move || {
-            let conn = connection.lock().map_err(|e| AppError::internal(format!("Failed to lock connection: {}", e)))?;
+            let conn = pool.get().map_err(|e| AppError::internal(format!("Failed to get pooled connection: {}", e)))?;
 
             // Insert the activity
             let activity_id = Uuid::new_v4().to_string();
@@ -1305,12 +1328,12 @@ impl SqliteDb {
     ) -> Result<Vec<oxide_core::ActivityEntry>, AppError> {
         debug!("Getting recent dashboard activities with limit: {}", limit);
 
-        let connection = Arc::clone(&self.connection);
+        let pool = self.pool.clone();
 
         let activities = spawn_blocking(move || {
-            let conn = connection
-                .lock()
-                .map_err(|e| AppError::internal(format!("Failed to lock connection: {}", e)))?;
+            let conn = pool.get().map_err(|e| {
+                AppError::internal(format!("Failed to get pooled connection: {}", e))
+            })?;
 
             let mut stmt = conn
                 .prepare(
@@ -1651,5 +1674,54 @@ mod tests {
             system.total_records >= 4,
             "total_records should include all seeded records"
         );
+    }
+
+    /// Verifies the connection pool allows concurrent reads to progress in
+    /// parallel. With the old single `Arc<Mutex<Connection>>`, N concurrent
+    /// reads serialized on one lock; with the r2d2 pool (max_size 8) they can
+    /// run concurrently. We assert many concurrent count reads all complete
+    /// successfully and return the seeded count.
+    #[tokio::test]
+    async fn pool_allows_concurrent_reads() {
+        use crate::db::Db;
+        use oxide_core::field_types::FieldType;
+
+        let db = test_db();
+        db.initialize().await.expect("initialize should succeed");
+
+        let mut schema = CollectionSchema::new("concurrent".to_string(), CollectionType::Base);
+        schema.add_field("title".to_string(), FieldDefinition::new(FieldType::Text));
+        db.create_collection_with_schema(schema)
+            .await
+            .expect("create collection");
+
+        for i in 0..20 {
+            <SqliteDb as Db>::create_record(
+                &db,
+                "concurrent",
+                serde_json::json!({ "title": format!("rec{i}") }),
+            )
+            .await
+            .expect("insert record");
+        }
+
+        // Spawn many concurrent read tasks. Under the old global mutex these
+        // would queue; with the pool they should all succeed and observe the
+        // same committed count.
+        let db = Arc::new(db);
+        let mut handles = Vec::new();
+        for _ in 0..16 {
+            let db = Arc::clone(&db);
+            handles.push(tokio::spawn(
+                async move { db.count_records("concurrent").await },
+            ));
+        }
+        for handle in handles {
+            let count = handle
+                .await
+                .expect("task should not panic")
+                .expect("count should succeed");
+            assert_eq!(count, 20, "each concurrent read should see all 20 records");
+        }
     }
 }

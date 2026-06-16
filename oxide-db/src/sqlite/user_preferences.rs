@@ -31,12 +31,12 @@ pub struct UserPreferences {
 impl SqliteDb {
     /// Create the user preferences table if it doesn't exist
     pub(super) async fn create_user_preferences_table(&self) -> Result<(), AppError> {
-        let connection = self.connection.clone();
+        let pool = self.pool.clone();
 
         spawn_blocking(move || {
-            let conn = connection
-                .lock()
-                .map_err(|_| AppError::database("Failed to acquire database lock"))?;
+            let conn = pool.get().map_err(|e| {
+                AppError::database(format!("Failed to get pooled connection: {}", e))
+            })?;
 
             conn.execute(
                 r#"
@@ -84,16 +84,14 @@ impl SqliteDb {
 
         let user_id = user_id.to_string();
         let preference_key = preference_key.to_string();
-        let connection = self.connection.clone();
+        let pool = self.pool.clone();
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs() as i64;
 
         spawn_blocking(move || {
-            let conn = connection
-                .lock()
-                .map_err(|_| AppError::database("Failed to acquire database lock"))?;
+            let conn = pool.get().map_err(|e| AppError::database(format!("Failed to get pooled connection: {}", e)))?;
 
             // Use INSERT OR REPLACE to handle both new and existing preferences
             conn.execute(
@@ -137,12 +135,10 @@ impl SqliteDb {
 
         let user_id = user_id.to_string();
         let preference_key = preference_key.to_string();
-        let connection = self.connection.clone();
+        let pool = self.pool.clone();
 
         let preference_json = spawn_blocking(move || {
-            let conn = connection
-                .lock()
-                .map_err(|_| AppError::database("Failed to acquire database lock"))?;
+            let conn = pool.get().map_err(|e| AppError::database(format!("Failed to get pooled connection: {}", e)))?;
 
             let mut stmt = conn
                 .prepare("SELECT preference_value FROM user_preferences WHERE user_id = ?1 AND preference_key = ?2")
@@ -195,12 +191,10 @@ impl SqliteDb {
         self.create_user_preferences_table().await?;
 
         let user_id = user_id.to_string();
-        let connection = self.connection.clone();
+        let pool = self.pool.clone();
 
         spawn_blocking(move || {
-            let conn = connection
-                .lock()
-                .map_err(|_| AppError::database("Failed to acquire database lock"))?;
+            let conn = pool.get().map_err(|e| AppError::database(format!("Failed to get pooled connection: {}", e)))?;
 
             let mut stmt = conn
                 .prepare("SELECT user_id, preference_key, preference_value, created_at, updated_at FROM user_preferences WHERE user_id = ?1")
@@ -250,12 +244,12 @@ impl SqliteDb {
 
         let user_id = user_id.to_string();
         let preference_key = preference_key.to_string();
-        let connection = self.connection.clone();
+        let pool = self.pool.clone();
 
         spawn_blocking(move || {
-            let conn = connection
-                .lock()
-                .map_err(|_| AppError::database("Failed to acquire database lock"))?;
+            let conn = pool.get().map_err(|e| {
+                AppError::database(format!("Failed to get pooled connection: {}", e))
+            })?;
 
             // Clone for logging before moving into SQL query
             let preference_key_for_log = preference_key.clone();
@@ -295,12 +289,12 @@ impl SqliteDb {
         self.create_user_preferences_table().await?;
 
         let user_id = user_id.to_string();
-        let connection = self.connection.clone();
+        let pool = self.pool.clone();
 
         spawn_blocking(move || {
-            let conn = connection
-                .lock()
-                .map_err(|_| AppError::database("Failed to acquire database lock"))?;
+            let conn = pool.get().map_err(|e| {
+                AppError::database(format!("Failed to get pooled connection: {}", e))
+            })?;
 
             let rows_affected = conn
                 .execute(

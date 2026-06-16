@@ -79,7 +79,7 @@ impl SqliteDb {
             .await?;
         ensure_before_handlers_succeeded(&before_results)?;
 
-        let connection = self.connection.clone();
+        let pool = self.pool.clone();
         let schema_name = schema.name.clone();
         let schema_name_for_events = schema.name.clone();
         let schema_for_events = schema.clone(); // Clone schema for after event dispatch
@@ -93,9 +93,7 @@ impl SqliteDb {
         let index_sql_statements = schema_adapter.generate_index_sql(&schema);
 
         spawn_blocking(move || {
-            let conn = connection
-                .lock()
-                .map_err(|_| AppError::database("Failed to acquire database lock"))?;
+            let conn = pool.get().map_err(|e| AppError::database(format!("Failed to get pooled connection: {}", e)))?;
 
             // Start a transaction for atomicity
             let tx = conn.unchecked_transaction()
@@ -183,12 +181,12 @@ impl SqliteDb {
         }
 
         let collection_name = collection.to_string();
-        let connection = self.connection.clone();
+        let pool = self.pool.clone();
 
         let schema = spawn_blocking(move || {
-            let conn = connection
-                .lock()
-                .map_err(|_| AppError::database("Failed to acquire database lock"))?;
+            let conn = pool.get().map_err(|e| {
+                AppError::database(format!("Failed to get pooled connection: {}", e))
+            })?;
 
             let mut stmt = conn
                 .prepare_cached("SELECT schema FROM collections WHERE name = ?1")
@@ -257,7 +255,7 @@ impl SqliteDb {
             .await?;
         ensure_before_handlers_succeeded(&before_results)?;
 
-        let connection = self.connection.clone();
+        let pool = self.pool.clone();
         let collection_name = collection.to_string();
 
         // Update the updated_at timestamp
@@ -275,9 +273,7 @@ impl SqliteDb {
         let migration_statements = schema_adapter.generate_migration_sql(&old_schema, &schema);
 
         spawn_blocking(move || {
-            let conn = connection
-                .lock()
-                .map_err(|_| AppError::database("Failed to acquire database lock"))?;
+            let conn = pool.get().map_err(|e| AppError::database(format!("Failed to get pooled connection: {}", e)))?;
 
             // Start a transaction for atomicity
             let tx = conn
@@ -370,12 +366,12 @@ impl SqliteDb {
 
         let collection_name = collection.to_string();
         let collection_clone = collection_name.clone();
-        let connection = self.connection.clone();
+        let pool = self.pool.clone();
 
         spawn_blocking(move || {
-            let conn = connection
-                .lock()
-                .map_err(|_| AppError::database("Failed to acquire database lock"))?;
+            let conn = pool.get().map_err(|e| {
+                AppError::database(format!("Failed to get pooled connection: {}", e))
+            })?;
 
             // Start a transaction for atomicity
             let tx = conn
@@ -435,12 +431,12 @@ impl SqliteDb {
 
     /// List all collections
     pub async fn list_collections(&self) -> Result<Vec<CollectionSchema>, AppError> {
-        let connection = self.connection.clone();
+        let pool = self.pool.clone();
 
         let collections = spawn_blocking(move || {
-            let conn = connection
-                .lock()
-                .map_err(|_| AppError::database("Failed to acquire database lock"))?;
+            let conn = pool.get().map_err(|e| {
+                AppError::database(format!("Failed to get pooled connection: {}", e))
+            })?;
 
             let mut stmt = conn
                 .prepare_cached("SELECT schema FROM collections ORDER BY name")

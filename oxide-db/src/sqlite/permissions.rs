@@ -12,12 +12,12 @@ use tracing::{debug, info};
 impl SqliteDb {
     /// Create the permissions table if it doesn't exist
     pub(super) async fn create_permissions_table(&self) -> Result<(), AppError> {
-        let connection = self.connection.clone();
+        let pool = self.pool.clone();
 
         spawn_blocking(move || {
-            let conn = connection
-                .lock()
-                .map_err(|_| AppError::database("Failed to acquire database lock"))?;
+            let conn = pool.get().map_err(|e| {
+                AppError::database(format!("Failed to get pooled connection: {}", e))
+            })?;
 
             conn.execute(
                 r#"
@@ -185,13 +185,11 @@ impl PermissionService for SqliteDb {
             .map_err(|e| AppError::internal(format!("Failed to serialize permissions: {}", e)))?;
 
         let collection_name = permissions.collection.clone();
-        let connection = self.connection.clone();
+        let pool = self.pool.clone();
         let updated_at = permissions.updated_at;
 
         spawn_blocking(move || {
-            let conn = connection
-                .lock()
-                .map_err(|_| AppError::database("Failed to acquire database lock"))?;
+            let conn = pool.get().map_err(|e| AppError::database(format!("Failed to get pooled connection: {}", e)))?;
 
             // Use INSERT OR REPLACE to handle both new and existing permissions
             conn.execute(
@@ -224,12 +222,12 @@ impl PermissionService for SqliteDb {
         self.create_permissions_table().await?;
 
         let collection_name = collection.to_string();
-        let connection = self.connection.clone();
+        let pool = self.pool.clone();
 
         let permissions_json = spawn_blocking(move || {
-            let conn = connection
-                .lock()
-                .map_err(|_| AppError::database("Failed to acquire database lock"))?;
+            let conn = pool.get().map_err(|e| {
+                AppError::database(format!("Failed to get pooled connection: {}", e))
+            })?;
 
             let mut stmt = conn
                 .prepare(
@@ -279,12 +277,12 @@ impl PermissionService for SqliteDb {
         self.create_permissions_table().await?;
 
         let collection_name = collection.to_string();
-        let connection = self.connection.clone();
+        let pool = self.pool.clone();
 
         spawn_blocking(move || {
-            let conn = connection
-                .lock()
-                .map_err(|_| AppError::database("Failed to acquire database lock"))?;
+            let conn = pool.get().map_err(|e| {
+                AppError::database(format!("Failed to get pooled connection: {}", e))
+            })?;
 
             let rows_affected = conn
                 .execute(
@@ -317,12 +315,12 @@ impl PermissionService for SqliteDb {
         // Ensure permissions table exists
         self.create_permissions_table().await?;
 
-        let connection = self.connection.clone();
+        let pool = self.pool.clone();
 
         let collections = spawn_blocking(move || {
-            let conn = connection
-                .lock()
-                .map_err(|_| AppError::database("Failed to acquire database lock"))?;
+            let conn = pool.get().map_err(|e| {
+                AppError::database(format!("Failed to get pooled connection: {}", e))
+            })?;
 
             let mut stmt = conn
                 .prepare("SELECT collection FROM collection_permissions ORDER BY collection")
