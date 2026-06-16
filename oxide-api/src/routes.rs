@@ -540,21 +540,21 @@ fn get_static_endpoints(config: &RouteConfig) -> Vec<RegisteredEndpoint> {
     let api_key_endpoints = vec![
         (
             "GET",
-            "/admin/api-keys",
+            "/api/admin/api-keys",
             "api_keys::list_api_key_rules",
             true,
             "List API key access rules",
         ),
         (
             "POST",
-            "/admin/api-keys",
+            "/api/admin/api-keys",
             "api_keys::upsert_api_key_rule",
             true,
             "Create or replace an API key access rule",
         ),
         (
             "POST",
-            "/admin/api-keys/revoke",
+            "/api/admin/api-keys/revoke",
             "api_keys::revoke_api_key_rule",
             true,
             "Revoke an API key access rule",
@@ -576,28 +576,28 @@ fn get_static_endpoints(config: &RouteConfig) -> Vec<RegisteredEndpoint> {
     let backup_endpoints = vec![
         (
             "GET",
-            "/admin/backups/manifest",
+            "/api/admin/backups/manifest",
             "backups::get_backup_manifest",
             true,
             "Preview backup/export contents",
         ),
         (
             "GET",
-            "/admin/backups/export",
+            "/api/admin/backups/export",
             "backups::export_backup",
             true,
             "Export a JSON database snapshot",
         ),
         (
             "GET",
-            "/admin/backups/export/stream",
+            "/api/admin/backups/export/stream",
             "backups::export_backup_stream",
             true,
             "Stream a JSON database snapshot",
         ),
         (
             "POST",
-            "/admin/backups/restore",
+            "/api/admin/backups/restore",
             "backups::restore_backup",
             true,
             "Restore a JSON database snapshot",
@@ -619,49 +619,49 @@ fn get_static_endpoints(config: &RouteConfig) -> Vec<RegisteredEndpoint> {
     let site_settings_endpoints = vec![
         (
             "GET",
-            "/admin/settings",
+            "/api/admin/settings",
             "site_settings::get_site_settings",
             true,
             "Get site settings",
         ),
         (
             "PUT",
-            "/admin/settings",
+            "/api/admin/settings",
             "site_settings::update_site_settings",
             true,
             "Update site settings",
         ),
         (
             "POST",
-            "/admin/settings/reset",
+            "/api/admin/settings/reset",
             "site_settings::reset_site_settings",
             true,
             "Reset site settings to defaults",
         ),
         (
             "GET",
-            "/admin/settings/health",
+            "/api/admin/settings/health",
             "site_settings::get_settings_health",
             true,
             "Get settings health status",
         ),
         (
             "POST",
-            "/admin/settings/email/test",
+            "/api/admin/settings/email/test",
             "site_settings::test_email_configuration",
             true,
             "Test email configuration",
         ),
         (
             "GET",
-            "/admin/settings/:section",
+            "/api/admin/settings/:section",
             "site_settings::get_settings_section",
             true,
             "Get specific settings section",
         ),
         (
             "PUT",
-            "/admin/settings/:section",
+            "/api/admin/settings/:section",
             "site_settings::update_settings_section",
             true,
             "Update specific settings section",
@@ -810,7 +810,7 @@ fn get_static_endpoints(config: &RouteConfig) -> Vec<RegisteredEndpoint> {
         ),
         (
             "GET",
-            "/admin/plugin-pages",
+            "/api/admin/plugin-pages",
             "plugins::list_admin_pages",
             true,
             "List plugin admin pages",
@@ -1081,7 +1081,8 @@ fn get_static_endpoints(config: &RouteConfig) -> Vec<RegisteredEndpoint> {
 
 static PROTECTED_ADMIN_API_PATTERNS: OnceLock<Vec<String>> = OnceLock::new();
 
-/// Check whether a path belongs to a registered authenticated admin API route.
+/// Check whether a path belongs to a registered authenticated route that still
+/// lives inside the admin UI namespace.
 pub(crate) fn is_registered_protected_admin_api_path(path: &str) -> bool {
     if !is_admin_path(path) {
         return false;
@@ -1261,19 +1262,22 @@ fn permission_routes() -> Router<AppState> {
 fn api_key_routes() -> Router<AppState> {
     Router::new()
         .route(
-            "/admin/api-keys",
+            "/api/admin/api-keys",
             get(list_api_key_rules).post(upsert_api_key_rule),
         )
-        .route("/admin/api-keys/revoke", post(revoke_api_key_rule))
+        .route("/api/admin/api-keys/revoke", post(revoke_api_key_rule))
 }
 
 /// Backup and export routes
 fn backup_routes() -> Router<AppState> {
     Router::new()
-        .route("/admin/backups/manifest", get(get_backup_manifest))
-        .route("/admin/backups/export", get(export_backup))
-        .route("/admin/backups/export/stream", get(export_backup_stream))
-        .route("/admin/backups/restore", post(restore_backup))
+        .route("/api/admin/backups/manifest", get(get_backup_manifest))
+        .route("/api/admin/backups/export", get(export_backup))
+        .route(
+            "/api/admin/backups/export/stream",
+            get(export_backup_stream),
+        )
+        .route("/api/admin/backups/restore", post(restore_backup))
 }
 
 /// Site settings routes
@@ -1281,20 +1285,20 @@ fn site_settings_routes() -> Router<AppState> {
     Router::new()
         // Site settings management (admin only)
         .route(
-            "/admin/settings",
+            "/api/admin/settings",
             get(get_site_settings).put(update_site_settings),
         )
         .route(
-            "/admin/settings/reset",
+            "/api/admin/settings/reset",
             axum::routing::post(reset_site_settings),
         )
-        .route("/admin/settings/health", get(get_settings_health))
+        .route("/api/admin/settings/health", get(get_settings_health))
         .route(
-            "/admin/settings/email/test",
+            "/api/admin/settings/email/test",
             axum::routing::post(test_email_configuration),
         )
         .route(
-            "/admin/settings/:section",
+            "/api/admin/settings/:section",
             get(get_settings_section).put(update_settings_section),
         )
 }
@@ -1353,7 +1357,7 @@ fn plugin_routes(max_request_size: usize) -> Router<AppState> {
         // Plugin route management
         .route("/plugins/routes", get(list_plugin_routes))
         // Plugin admin page discovery and packaged admin assets
-        .route("/admin/plugin-pages", get(list_admin_pages))
+        .route("/api/admin/plugin-pages", get(list_admin_pages))
         .route(
             "/admin/plugin-pages/assets/:plugin_name/*path",
             get(serve_admin_page_asset),
@@ -1641,24 +1645,24 @@ mod tests {
 
     #[test]
     fn protected_admin_api_paths_are_matched_from_route_inventory() {
-        assert!(is_registered_protected_admin_api_path("/admin/api-keys"));
-        assert!(is_registered_protected_admin_api_path(
-            "/admin/backups/restore"
-        ));
-        assert!(is_registered_protected_admin_api_path(
-            "/admin/settings/security"
-        ));
-        assert!(is_registered_protected_admin_api_path(
-            "/admin/settings/email/test"
-        ));
-        assert!(is_registered_protected_admin_api_path(
-            "/admin/plugin-pages"
-        ));
         assert!(is_registered_protected_admin_api_path(
             "/admin/plugin-pages/assets/hello-plugin/index.html"
         ));
 
         assert!(!is_registered_protected_admin_api_path("/admin"));
+        assert!(!is_registered_protected_admin_api_path("/admin/api-keys"));
+        assert!(!is_registered_protected_admin_api_path(
+            "/admin/backups/restore"
+        ));
+        assert!(!is_registered_protected_admin_api_path(
+            "/admin/settings/security"
+        ));
+        assert!(!is_registered_protected_admin_api_path(
+            "/admin/settings/email/test"
+        ));
+        assert!(!is_registered_protected_admin_api_path(
+            "/admin/plugin-pages"
+        ));
         assert!(!is_registered_protected_admin_api_path(
             "/admin/plugin-pages/style.css"
         ));
@@ -1671,18 +1675,32 @@ mod tests {
     }
 
     #[test]
+    fn admin_page_paths_do_not_collide_with_json_api_routes() {
+        let endpoints = get_static_endpoints(&RouteConfig::default());
+        let endpoint_paths: Vec<&str> = endpoints
+            .iter()
+            .map(|endpoint| endpoint.path.as_str())
+            .collect();
+
+        assert!(!endpoint_paths.contains(&"/admin/api-keys"));
+        assert!(!endpoint_paths.contains(&"/admin/settings"));
+        assert!(endpoint_paths.contains(&"/api/admin/api-keys"));
+        assert!(endpoint_paths.contains(&"/api/admin/settings"));
+    }
+
+    #[test]
     fn route_pattern_matching_respects_path_segments() {
         assert!(route_pattern_matches(
-            "/admin/settings/:section",
-            "/admin/settings/auth"
+            "/api/admin/settings/:section",
+            "/api/admin/settings/auth"
         ));
         assert!(!route_pattern_matches(
-            "/admin/settings",
-            "/admin/settings/auth"
+            "/api/admin/settings",
+            "/api/admin/settings/auth"
         ));
         assert!(!route_pattern_matches(
-            "/admin/settings/:section",
-            "/admin/settings/auth/extra"
+            "/api/admin/settings/:section",
+            "/api/admin/settings/auth/extra"
         ));
     }
 

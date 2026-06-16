@@ -1,8 +1,8 @@
 //! Collection schema definitions
 //!
 //! This module defines the data structures for managing collection schemas
-//! in OxideDB. Collections can be either 'base' (user-defined) or 'auth'
-//! (system authentication collections).
+//! in OxideDB. Collections can be 'base' (user-defined lists), 'single'
+//! (one-record content entries), or 'auth' (system authentication collections).
 
 use crate::field_types::{FieldType, ValidationRules};
 use serde::{Deserialize, Serialize};
@@ -17,6 +17,8 @@ use ts_rs::TS;
 pub enum CollectionType {
     /// Base collections are user-defined collections for storing application data
     Base,
+    /// Single collections store exactly one record for static pages or site-wide content
+    Single,
     /// Auth collections are system collections for authentication and user management  
     Auth,
 }
@@ -25,6 +27,7 @@ impl std::fmt::Display for CollectionType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             CollectionType::Base => write!(f, "base"),
+            CollectionType::Single => write!(f, "single"),
             CollectionType::Auth => write!(f, "auth"),
         }
     }
@@ -396,6 +399,11 @@ mod tests {
         assert_eq!(schema.version, 1);
         assert!(schema.fields.is_empty());
         assert!(schema.indexes.is_empty());
+    }
+
+    #[test]
+    fn test_single_collection_type_display() {
+        assert_eq!(CollectionType::Single.to_string(), "single");
     }
 
     #[test]

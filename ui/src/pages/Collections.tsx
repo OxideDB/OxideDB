@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { Plus, Trash2, Database, Shield, AlertTriangle, Search, MoreHorizontal, Edit } from 'lucide-react';
+import { Plus, Trash2, Database, Shield, AlertTriangle, Search, MoreHorizontal, Edit, FileText } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -156,6 +156,7 @@ const Collections: React.FC = () => {
             const stats = collectionStats[collection.name];
             const isSystemCollection = apiService.isSystemCollection(collection);
             const isAuthCollection = collection.collection_type === 'auth';
+            const isSingleCollection = collection.collection_type === 'single';
             const fieldCount = Object.keys(collection.fields ?? {}).length;
             return (
               <Card 
@@ -171,6 +172,8 @@ const Collections: React.FC = () => {
                     <div className="flex items-center gap-2 min-w-0 flex-1">
                       {isSystemCollection ? (
                         <Shield className="h-5 w-5 text-warning flex-shrink-0" />
+                      ) : isSingleCollection ? (
+                        <FileText className="h-5 w-5 text-primary flex-shrink-0" />
                       ) : (
                         <Database className="h-5 w-5 text-primary flex-shrink-0" />
                       )}
@@ -181,6 +184,9 @@ const Collections: React.FC = () => {
                         )}
                         {isAuthCollection && (
                           <StatusIndicator label="Auth" tone="info" showDot={false} />
+                        )}
+                        {isSingleCollection && (
+                          <StatusIndicator label="Single" tone="success" showDot={false} />
                         )}
                       </div>
                     </div>
@@ -206,7 +212,7 @@ const Collections: React.FC = () => {
                         <DropdownMenuItem asChild>
                           <Link to={`/collections/${encodeURIComponent(collection.name)}`}>
                             <Database className="h-4 w-4 mr-2" />
-                            View Records
+                            {isSingleCollection ? 'View Entry' : 'View Records'}
                           </Link>
                         </DropdownMenuItem>
                         {!isSystemCollection && (
@@ -224,6 +230,8 @@ const Collections: React.FC = () => {
                   <CardDescription className="line-clamp-2">
                     {isAuthCollection 
                       ? "Authentication collection for user management and security" 
+                      : isSingleCollection
+                        ? "Single-entry collection for pages and static content"
                       : isSystemCollection 
                         ? "System collection for internal operations" 
                         : "User-defined collection for storing custom data"

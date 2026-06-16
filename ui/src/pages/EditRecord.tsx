@@ -41,6 +41,20 @@ const EditRecord: React.FC = () => {
       if (isCreateMode) {
         // For create mode, only fetch schema
         const schemaData = await apiService.getCollectionSchema(collection).catch(() => null);
+
+        if (schemaData?.collection_type === 'single') {
+          const existingRecords = await apiService.getRecords(collection, { limit: 1 });
+          const existingRecord = existingRecords[0];
+
+          if (existingRecord) {
+            navigate(
+              `/collections/${encodeURIComponent(collection)}/edit/${existingRecord.id}`,
+              { replace: true }
+            );
+            return;
+          }
+        }
+
         setSchema(schemaData);
         setJsonData('{}');
         setUseSchemaForm(!!schemaData && Object.keys(schemaData.fields).length > 0);
@@ -61,7 +75,7 @@ const EditRecord: React.FC = () => {
     } finally {
       setLoading(false);
     }
-  }, [collection, isCreateMode, recordId]);
+  }, [collection, isCreateMode, navigate, recordId]);
 
   useEffect(() => {
     if (collection) {
@@ -189,10 +203,16 @@ const EditRecord: React.FC = () => {
     />
   ) : undefined;
 
+  const isSingleCollection = schema?.collection_type === 'single';
+
   return (
     <PageLayout 
-      title={isCreateMode ? `Create Record in "${collection}"` : `Edit Record in "${collection}"`}
-      description={isCreateMode ? 'Add a new record to this collection' : `Record ID: ${record?.id}`}
+      title={
+        isCreateMode
+          ? `${isSingleCollection ? 'Create Entry' : 'Create Record'} in "${collection}"`
+          : `${isSingleCollection ? 'Edit Entry' : 'Edit Record'} in "${collection}"`
+      }
+      description={isCreateMode ? `Add ${isSingleCollection ? 'the content entry' : 'a new record'} to this collection` : `Record ID: ${record?.id}`}
       leftActions={leftActions}
       headerActions={headerActions}
     >
@@ -266,7 +286,7 @@ const EditRecord: React.FC = () => {
       <Card>
         <CardHeader className="pb-3 sm:pb-6">
           <CardTitle className="text-base sm:text-lg">
-            {isCreateMode ? 'Record Data' : 'Edit Record Data'}
+            {isSingleCollection ? 'Entry Data' : isCreateMode ? 'Record Data' : 'Edit Record Data'}
           </CardTitle>
         </CardHeader>
         <CardContent className="pt-0">
@@ -276,7 +296,7 @@ const EditRecord: React.FC = () => {
               initialData={isCreateMode ? {} : record?.data}
               onSubmit={handleSchemaFormSave}
               onCancel={handleCancel}
-              submitLabel={isCreateMode ? "Create Record" : "Save Changes"}
+              submitLabel={isCreateMode ? (isSingleCollection ? "Create Entry" : "Create Record") : "Save Changes"}
               isSubmitting={saving}
               customizationMode={fieldCustomization.customizationMode}
               fieldCustomizations={fieldCustomization.settings.fieldCustomizations}
@@ -294,7 +314,7 @@ const EditRecord: React.FC = () => {
             <form onSubmit={handleJsonSave} className="space-y-4 sm:space-y-6">
               <div className="space-y-2 sm:space-y-3">
                 <Label htmlFor="recordData" className="text-sm sm:text-base font-medium">
-                  Record Data (JSON)
+                  {isSingleCollection ? 'Entry Data (JSON)' : 'Record Data (JSON)'}
                 </Label>
                 <Textarea
                   id="recordData"
@@ -320,7 +340,9 @@ const EditRecord: React.FC = () => {
                   className="h-10 px-4 sm:h-9 sm:px-3 order-1 sm:order-2"
                 >
                   {isCreateMode ? <Plus className="h-4 w-4 mr-2" /> : <Save className="h-4 w-4 mr-2" />}
-                  {saving ? (isCreateMode ? 'Creating...' : 'Saving...') : (isCreateMode ? 'Create Record' : 'Save Changes')}
+                  {saving
+                    ? (isCreateMode ? 'Creating...' : 'Saving...')
+                    : (isCreateMode ? (isSingleCollection ? 'Create Entry' : 'Create Record') : 'Save Changes')}
                 </Button>
               </div>
             </form>

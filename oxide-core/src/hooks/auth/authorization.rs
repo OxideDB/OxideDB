@@ -265,9 +265,14 @@ impl AuthorizationHook {
             ));
         }
 
-        // Admin UI assets bypass this hook in the API middleware. Any admin
-        // path that reaches policy is treated as protected control-plane API.
-        if path == "/admin" || path.starts_with("/admin/") {
+        // Admin JSON APIs live under /api/admin. Packaged plugin admin assets
+        // under /admin still reach policy and are protected as control-plane
+        // requests.
+        if path == "/api/admin"
+            || path.starts_with("/api/admin/")
+            || path == "/admin"
+            || path.starts_with("/admin/")
+        {
             let operation = match method {
                 "GET" => Operation::Crud(CrudOperation::Read),
                 "POST" => Operation::Crud(CrudOperation::Create),
@@ -839,8 +844,9 @@ mod tests {
         assert_eq!(record_id, None);
 
         // Test admin APIs are parsed as protected control-plane requests
-        let (collection, operation, record_id) =
-            hook.parse_request_info("PUT", "/admin/settings").unwrap();
+        let (collection, operation, record_id) = hook
+            .parse_request_info("PUT", "/api/admin/settings")
+            .unwrap();
         assert_eq!(collection, "admin");
         assert_eq!(operation, Operation::Crud(CrudOperation::Update));
         assert_eq!(record_id, None);
@@ -870,7 +876,7 @@ mod tests {
             "api".to_string(),
             serde_json::json!({
                 "method": "GET",
-                "path": "/admin/settings",
+                "path": "/api/admin/settings",
                 "headers": {},
                 "claims": serde_json::Value::Null
             }),
@@ -891,7 +897,7 @@ mod tests {
             "api".to_string(),
             serde_json::json!({
                 "method": "GET",
-                "path": "/admin/settings",
+                "path": "/api/admin/settings",
                 "headers": {},
                 "claims": serde_json::to_value(user_claims).unwrap()
             }),
@@ -912,7 +918,7 @@ mod tests {
             "api".to_string(),
             serde_json::json!({
                 "method": "GET",
-                "path": "/admin/settings",
+                "path": "/api/admin/settings",
                 "headers": {},
                 "claims": serde_json::to_value(superuser_claims).unwrap()
             }),

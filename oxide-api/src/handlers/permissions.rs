@@ -53,8 +53,8 @@ impl PermissionHandlers {
                         debug!("Using auth collection defaults for: {}", collection);
                         CollectionPermissions::new_for_auth_collection(collection)
                     }
-                    oxide_core::CollectionType::Base => {
-                        debug!("Using base collection defaults for: {}", collection);
+                    oxide_core::CollectionType::Base | oxide_core::CollectionType::Single => {
+                        debug!("Using data collection defaults for: {}", collection);
                         CollectionPermissions::new(collection)
                     }
                 };
@@ -136,9 +136,9 @@ impl PermissionHandlers {
                                 collection_schema.name.clone(),
                             )
                         }
-                        oxide_core::CollectionType::Base => {
+                        oxide_core::CollectionType::Base | oxide_core::CollectionType::Single => {
                             debug!(
-                                "Using base collection defaults for: {}",
+                                "Using data collection defaults for: {}",
                                 collection_schema.name
                             );
                             CollectionPermissions::new(collection_schema.name.clone())
@@ -201,8 +201,8 @@ impl PermissionHandlers {
                 debug!("Resetting to auth collection defaults for: {}", collection);
                 CollectionPermissions::new_for_auth_collection(collection)
             }
-            oxide_core::CollectionType::Base => {
-                debug!("Resetting to base collection defaults for: {}", collection);
+            oxide_core::CollectionType::Base | oxide_core::CollectionType::Single => {
+                debug!("Resetting to data collection defaults for: {}", collection);
                 CollectionPermissions::new(collection)
             }
         };

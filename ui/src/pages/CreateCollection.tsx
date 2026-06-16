@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ArrowLeft, ChevronDown, ChevronRight, Database, Shield, Settings } from 'lucide-react';
+import { ArrowLeft, ChevronDown, ChevronRight, Database, FileText, Shield, Settings } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -134,8 +134,8 @@ const CreateCollection: React.FC = () => {
       ];
 
       fieldManagement.setFieldsFromSchema(defaultAuthFields);
-    } else if (collectionType === 'base' && prevCollectionTypeRef.current === 'auth') {
-      // Switching from auth back to base: clear fields
+    } else if (collectionType !== 'auth' && prevCollectionTypeRef.current === 'auth') {
+      // Switching from auth back to a data type: clear auth fields
       fieldManagement.setFieldsFromSchema([]);
     }
 
@@ -210,13 +210,27 @@ const CreateCollection: React.FC = () => {
   };
 
   const getCollectionTypeIcon = (type: CollectionType) => {
-    return type === 'auth' ? <Shield className="h-4 w-4" /> : <Database className="h-4 w-4" />;
+    if (type === 'auth') {
+      return <Shield className="h-4 w-4" />;
+    }
+
+    if (type === 'single') {
+      return <FileText className="h-4 w-4" />;
+    }
+
+    return <Database className="h-4 w-4" />;
   };
 
   const getCollectionTypeDescription = (type: CollectionType) => {
-    return type === 'auth' 
-      ? 'Stores user authentication data with built-in security features'
-      : 'Stores general application data like posts, products, or any custom entities';
+    if (type === 'auth') {
+      return 'Stores user authentication data with built-in security features';
+    }
+
+    if (type === 'single') {
+      return 'Stores one content entry for pages, settings, and other static content';
+    }
+
+    return 'Stores general application data like posts, products, or any custom entities';
   };
 
   const canProceedToFields = () => {
@@ -386,7 +400,46 @@ const CreateCollection: React.FC = () => {
                           </div>
                         </div>
 
-                        <div 
+                        <div
+                          className={`p-4 border-2 rounded-lg cursor-pointer transition-colors ${
+                            collectionType === 'single'
+                              ? 'border-primary bg-primary/5'
+                              : 'border-border hover:border-primary/50'
+                          }`}
+                          onClick={() => setCollectionType('single')}
+                          role="button"
+                          tabIndex={0}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter' || e.key === ' ') {
+                              e.preventDefault();
+                              setCollectionType('single');
+                            }
+                          }}
+                          aria-label="Select single collection type"
+                        >
+                          <div className="flex items-start space-x-3">
+                            <input
+                              type="radio"
+                              checked={collectionType === 'single'}
+                              onChange={() => setCollectionType('single')}
+                              className="mt-0.5"
+                              aria-hidden="true"
+                              tabIndex={-1}
+                            />
+                            <div className="flex-1">
+                              <div className="flex items-center space-x-2 mb-1">
+                                <FileText className="h-4 w-4" />
+                                <span className="font-medium">Single Collection</span>
+                                <Badge variant="outline" className="text-xs">Content</Badge>
+                              </div>
+                              <p className="text-sm text-muted-foreground">
+                                {getCollectionTypeDescription('single')}
+                              </p>
+                            </div>
+                          </div>
+                        </div>
+
+                        <div
                           className={`p-4 border-2 rounded-lg cursor-pointer transition-colors ${
                             collectionType === 'auth' 
                               ? 'border-primary bg-primary/5' 
@@ -697,6 +750,9 @@ const CreateCollection: React.FC = () => {
                         <div className="flex items-center space-x-2">
                           {getCollectionTypeIcon(collectionType)}
                           <span className="font-medium capitalize">{collectionType}</span>
+                          {collectionType === 'single' && (
+                            <Badge variant="outline" className="text-xs">Content</Badge>
+                          )}
                           {collectionType === 'auth' && (
                             <Badge variant="secondary" className="text-xs">Security</Badge>
                           )}
@@ -785,4 +841,4 @@ const CreateCollection: React.FC = () => {
   );
 };
 
-export default CreateCollection; 
+export default CreateCollection;

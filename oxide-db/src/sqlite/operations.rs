@@ -9,7 +9,8 @@ use crate::{
 };
 use oxide_core::{
     event::types::{RecordData, RecordId},
-    AfterEventType, AppError, BeforeEventContext, BeforeEventType, CollectionSchema, FieldType,
+    AfterEventType, AppError, BeforeEventContext, BeforeEventType, CollectionSchema,
+    CollectionType, FieldType,
 };
 use rusqlite::{
     params_from_iter,
@@ -424,6 +425,25 @@ impl Db for SqliteDb {
                 .unwrap_or_default()
                 .as_secs() as i64;
 
+            if schema.collection_type == CollectionType::Single {
+                let exists_sql = format!("SELECT 1 FROM {} LIMIT 1", quote_identifier(&table_name));
+                match conn.query_row(&exists_sql, [], |row| row.get::<_, i64>(0)) {
+                    Ok(_) => {
+                        return Err(AppError::conflict(format!(
+                            "Single collection '{}' already has a record",
+                            collection
+                        )));
+                    }
+                    Err(rusqlite::Error::QueryReturnedNoRows) => {}
+                    Err(error) => {
+                        return Err(AppError::database(format!(
+                            "Failed to check existing single collection record: {}",
+                            error
+                        )));
+                    }
+                }
+            }
+
             // Build dynamic INSERT statement
             let mut field_names = vec![
                 "id".to_string(),
@@ -449,7 +469,7 @@ impl Db for SqliteDb {
                 placeholders.join(", ")
             );
 
-            let mut stmt = conn.prepare(&insert_sql).map_err(|e| {
+            let mut stmt = conn.prepare_cached(&insert_sql).map_err(|e| {
                 AppError::database(format!("Failed to prepare insert statement: {}", e))
             })?;
 
@@ -529,6 +549,31 @@ impl Db for SqliteDb {
                 .lock()
                 .map_err(|_| AppError::database("Failed to acquire database lock"))?;
 
+            if schema.collection_type == CollectionType::Single {
+                let exists_sql = format!(
+                    "SELECT 1 FROM {} WHERE {} <> ?1 LIMIT 1",
+                    quote_identifier(&table_name),
+                    quote_identifier("id")
+                );
+                match conn.query_row(&exists_sql, [&restored_record.id], |row| {
+                    row.get::<_, i64>(0)
+                }) {
+                    Ok(_) => {
+                        return Err(AppError::conflict(format!(
+                            "Single collection '{}' already has a different record",
+                            restored_record.collection
+                        )));
+                    }
+                    Err(rusqlite::Error::QueryReturnedNoRows) => {}
+                    Err(error) => {
+                        return Err(AppError::database(format!(
+                            "Failed to check existing single collection records: {}",
+                            error
+                        )));
+                    }
+                }
+            }
+
             let mut field_names = vec![
                 "id".to_string(),
                 "created_at".to_string(),
@@ -563,7 +608,7 @@ impl Db for SqliteDb {
                 update_clauses.join(", ")
             );
 
-            let mut stmt = conn.prepare(&insert_sql).map_err(|e| {
+            let mut stmt = conn.prepare_cached(&insert_sql).map_err(|e| {
                 AppError::database(format!("Failed to prepare restore statement: {}", e))
             })?;
 
@@ -637,7 +682,7 @@ impl Db for SqliteDb {
                 quote_identifier("id")
             );
             let mut stmt = conn
-                .prepare(&select_sql)
+                .prepare_cached(&select_sql)
                 .map_err(|e| AppError::database(format!("Failed to prepare statement: {}", e)))?;
 
             let record = stmt
@@ -749,7 +794,7 @@ impl Db for SqliteDb {
                 sql_values.len() + 2
             );
 
-            let mut stmt = conn.prepare(&update_sql).map_err(|e| {
+            let mut stmt = conn.prepare_cached(&update_sql).map_err(|e| {
                 AppError::database(format!("Failed to prepare update statement: {}", e))
             })?;
 
@@ -934,7 +979,7 @@ impl Db for SqliteDb {
             }
 
             let mut stmt = conn
-                .prepare(&query)
+                .prepare_cached(&query)
                 .map_err(|e| AppError::database(format!("Failed to prepare statement: {}", e)))?;
 
             let records: Result<Vec<Record>, rusqlite::Error> = stmt
@@ -1016,7 +1061,7 @@ impl Db for SqliteDb {
             let mut bind_params = Vec::new();
             append_filter_clauses(&mut query, &schema, &params, &mut bind_params)?;
 
-            let mut stmt = conn.prepare(&query).map_err(|e| {
+            let mut stmt = conn.prepare_cached(&query).map_err(|e| {
                 AppError::database(format!("Failed to prepare filtered count statement: {}", e))
             })?;
 
@@ -1199,7 +1244,11 @@ impl Db for SqliteDb {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use oxide_core::{CollectionType, FieldDefinition};
+    use oxide_core::{
+        auth::{AuthService, AuthServiceConfig},
+        CollectionType, FieldDefinition, InMemoryEventBus,
+    };
+    use std::sync::Arc;
 
     fn test_schema() -> CollectionSchema {
         let mut schema = CollectionSchema::new("articles".to_string(), CollectionType::Base);
@@ -1210,6 +1259,15 @@ mod tests {
             FieldDefinition::new(FieldType::Boolean),
         );
         schema
+    }
+
+    fn test_db() -> SqliteDb {
+        let event_bus = Arc::new(InMemoryEventBus::new());
+        let auth_service = Arc::new(AuthService::new(AuthServiceConfig::new(
+            "single-collection-test-secret".to_string(),
+        )));
+
+        SqliteDb::new(":memory:", event_bus, auth_service).unwrap()
     }
 
     #[test]
@@ -1261,5 +1319,28 @@ mod tests {
 
         assert!(query.contains("\"published\" IS NULL"));
         assert!(bind_params.is_empty());
+    }
+
+    #[tokio::test]
+    async fn single_collections_reject_second_record() {
+        let db = test_db();
+        db.initialize().await.unwrap();
+
+        let mut schema = CollectionSchema::new("homepage".to_string(), CollectionType::Single);
+        schema.add_field("title".to_string(), FieldDefinition::new(FieldType::Text));
+        db.create_collection_with_schema(schema).await.unwrap();
+
+        <SqliteDb as Db>::create_record(&db, "homepage", serde_json::json!({ "title": "Home" }))
+            .await
+            .unwrap();
+
+        let result = <SqliteDb as Db>::create_record(
+            &db,
+            "homepage",
+            serde_json::json!({ "title": "Landing" }),
+        )
+        .await;
+
+        assert!(matches!(result, Err(AppError::Conflict { .. })));
     }
 }

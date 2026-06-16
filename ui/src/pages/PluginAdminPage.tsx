@@ -5,11 +5,13 @@ import { useParams } from "react-router-dom";
 import PageLayout from "@/components/PageLayout";
 import { Button } from "@/components/ui/button";
 import { ErrorState, LoadingState } from "@/components/admin/AdminState";
+import { useTheme } from "@/components/use-theme";
 import { apiService } from "@/services/api";
 import type { PluginAdminPage as PluginAdminPageInfo } from "@/types/api";
 
 const PluginAdminPage = () => {
   const { pluginName, pageSlug } = useParams();
+  const { theme } = useTheme();
   const [pages, setPages] = useState<PluginAdminPageInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -38,6 +40,16 @@ const PluginAdminPage = () => {
       ),
     [pageSlug, pages, pluginName]
   );
+
+  const pluginPageSource = useMemo(() => {
+    if (!page) {
+      return "";
+    }
+
+    const sourceUrl = new URL(apiService.resolveUrl(page.source_url));
+    sourceUrl.searchParams.set("oxide_theme", theme);
+    return sourceUrl.toString();
+  }, [page, theme]);
 
   if (loading) {
     return (
@@ -81,7 +93,7 @@ const PluginAdminPage = () => {
     >
       <iframe
         title={`${page.plugin_name}: ${page.title}`}
-        src={apiService.resolveUrl(page.source_url)}
+        src={pluginPageSource}
         className="h-[calc(100svh-10rem)] min-h-[520px] w-full rounded-md border bg-background"
         sandbox="allow-downloads allow-forms allow-popups allow-same-origin allow-scripts"
       />

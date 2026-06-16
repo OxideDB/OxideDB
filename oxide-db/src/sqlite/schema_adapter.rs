@@ -23,6 +23,51 @@ pub(crate) fn quote_identifier(identifier: &str) -> String {
     format!("\"{}\"", identifier.replace('"', "\"\""))
 }
 
+fn create_field_index_sql(table_name: &str, field_name: &str) -> String {
+    let index_name = format!("idx_{}_{}", table_name, field_name);
+    format!(
+        "CREATE INDEX IF NOT EXISTS {} ON {}({})",
+        quote_identifier(&index_name),
+        quote_identifier(table_name),
+        quote_identifier(field_name)
+    )
+}
+
+fn create_unique_field_index_sql(table_name: &str, field_name: &str) -> String {
+    let index_name = format!("idx_{}_unique_{}", table_name, field_name);
+    format!(
+        "CREATE UNIQUE INDEX IF NOT EXISTS {} ON {}({})",
+        quote_identifier(&index_name),
+        quote_identifier(table_name),
+        quote_identifier(field_name)
+    )
+}
+
+fn create_schema_index_sql(
+    table_name: &str,
+    index_def: &oxide_core::collection::IndexDefinition,
+) -> String {
+    let index_type = if index_def.unique {
+        "UNIQUE INDEX"
+    } else {
+        "INDEX"
+    };
+    let fields_str = index_def
+        .fields
+        .iter()
+        .map(|field| quote_identifier(field))
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    format!(
+        "CREATE {} IF NOT EXISTS {} ON {}({})",
+        index_type,
+        quote_identifier(&index_def.name),
+        quote_identifier(table_name),
+        fields_str
+    )
+}
+
 impl Default for SqliteSchemaAdapter {
     fn default() -> Self {
         Self::new()
@@ -123,36 +168,15 @@ impl SchemaAdapter for SqliteSchemaAdapter {
 
         // Create indexes defined in schema
         for index_def in &schema.indexes {
-            let index_type = if index_def.unique {
-                "UNIQUE INDEX"
-            } else {
-                "INDEX"
-            };
-            let fields_str = index_def
-                .fields
-                .iter()
-                .map(|field| quote_identifier(field))
-                .collect::<Vec<_>>()
-                .join(", ");
-            index_statements.push(format!(
-                "CREATE {} IF NOT EXISTS {} ON {}({})",
-                index_type,
-                quote_identifier(&index_def.name),
-                quote_identifier(&table_name),
-                fields_str
-            ));
+            index_statements.push(create_schema_index_sql(&table_name, index_def));
         }
 
-        // Create unique indexes for fields marked as unique
+        // Create indexes for fields marked as unique or explicitly indexed.
         for (field_name, field_def) in &schema.fields {
             if field_def.unique {
-                let index_name = format!("idx_{}_unique_{}", table_name, field_name);
-                index_statements.push(format!(
-                    "CREATE UNIQUE INDEX IF NOT EXISTS {} ON {}({})",
-                    quote_identifier(&index_name),
-                    quote_identifier(&table_name),
-                    quote_identifier(field_name)
-                ));
+                index_statements.push(create_unique_field_index_sql(&table_name, field_name));
+            } else if field_def.index {
+                index_statements.push(create_field_index_sql(&table_name, field_name));
             }
         }
 
@@ -257,17 +281,6 @@ impl SchemaAdapter for SqliteSchemaAdapter {
                     self.field_type_to_sql(&field_def.field_type)
                 );
 
-                // Handle unique constraints via separate indexes (SQLite limitation)
-                if field_def.unique {
-                    let index_name = format!("idx_{}_unique_{}", table_name, field_name);
-                    migration_statements.push(format!(
-                        "CREATE UNIQUE INDEX IF NOT EXISTS {} ON {}({})",
-                        quote_identifier(&index_name),
-                        quote_identifier(&table_name),
-                        quote_identifier(field_name)
-                    ));
-                }
-
                 // Add default value if specified
                 if let Some(default) = &field_def.default {
                     match field_def.field_type.sql_type() {
@@ -311,34 +324,38 @@ impl SchemaAdapter for SqliteSchemaAdapter {
                     quote_identifier(&table_name),
                     column_def
                 ));
+
+                if field_def.unique {
+                    migration_statements
+                        .push(create_unique_field_index_sql(&table_name, field_name));
+                } else if field_def.index {
+                    migration_statements.push(create_field_index_sql(&table_name, field_name));
+                }
             }
         }
 
-        // Add indexes for new fields or explicitly defined indexes
+        // Add indexes when existing fields become indexed.
+        for (field_name, field_def) in &new_schema.fields {
+            if let Some(old_field_def) = old_schema.fields.get(field_name) {
+                if field_def.unique && !old_field_def.unique {
+                    migration_statements
+                        .push(create_unique_field_index_sql(&table_name, field_name));
+                } else if field_def.index && !old_field_def.index && !field_def.unique {
+                    migration_statements.push(create_field_index_sql(&table_name, field_name));
+                }
+            }
+        }
+
+        // Add newly declared schema indexes, including indexes on existing fields.
         for index_def in &new_schema.indexes {
-            let has_new_fields = index_def
-                .fields
-                .iter()
-                .any(|field| !old_schema.fields.contains_key(field));
-            if has_new_fields {
-                let index_type = if index_def.unique {
-                    "UNIQUE INDEX"
-                } else {
-                    "INDEX"
-                };
-                let fields_str = index_def
-                    .fields
-                    .iter()
-                    .map(|field| quote_identifier(field))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                migration_statements.push(format!(
-                    "CREATE {} IF NOT EXISTS {} ON {}({})",
-                    index_type,
-                    quote_identifier(&index_def.name),
-                    quote_identifier(&table_name),
-                    fields_str
-                ));
+            let existing_index = old_schema.indexes.iter().any(|old_index| {
+                old_index.name == index_def.name
+                    && old_index.fields == index_def.fields
+                    && old_index.unique == index_def.unique
+            });
+
+            if !existing_index {
+                migration_statements.push(create_schema_index_sql(&table_name, index_def));
             }
         }
 
@@ -528,6 +545,10 @@ mod tests {
                 index: false,
             },
         );
+        schema.add_field(
+            "category".to_string(),
+            FieldDefinition::new(FieldType::Text).indexed(),
+        );
 
         // Add a custom index
         schema.add_index(IndexDefinition {
@@ -551,9 +572,43 @@ mod tests {
             .iter()
             .any(|sql| sql.contains("idx_collection_posts_unique_slug")));
 
+        // Check for indexed field index
+        assert!(indexes
+            .iter()
+            .any(|sql| sql.contains("idx_collection_posts_category")));
+
         // Check for custom index
         assert!(indexes
             .iter()
             .any(|sql| sql.contains("idx_posts_title_author")));
+    }
+
+    #[test]
+    fn test_migration_adds_indexes_for_existing_fields() {
+        let adapter = SqliteSchemaAdapter::new();
+
+        let mut old_schema = CollectionSchema::new("posts".to_string(), CollectionType::Base);
+        old_schema.add_field("title".to_string(), FieldDefinition::new(FieldType::Text));
+        old_schema.add_field("author".to_string(), FieldDefinition::new(FieldType::Text));
+
+        let mut new_schema = old_schema.clone();
+        new_schema.fields.insert(
+            "title".to_string(),
+            FieldDefinition::new(FieldType::Text).indexed(),
+        );
+        new_schema.add_index(IndexDefinition {
+            name: "idx_posts_author_title".to_string(),
+            fields: vec!["author".to_string(), "title".to_string()],
+            unique: false,
+        });
+
+        let migration_sql = adapter.generate_migration_sql(&old_schema, &new_schema);
+
+        assert!(migration_sql
+            .iter()
+            .any(|sql| sql.contains("idx_collection_posts_title")));
+        assert!(migration_sql
+            .iter()
+            .any(|sql| sql.contains("idx_posts_author_title")));
     }
 }

@@ -233,8 +233,8 @@ export const PermissionRuleEditor: React.FC<PermissionRuleEditorProps> = ({
         <div className="space-y-6">
           <div className="space-y-3">
             <div className="flex items-center gap-3">
-              <div className="p-2 bg-purple-100 rounded-lg">
-                <Shield className="h-5 w-5 text-purple-600" />
+              <div className="p-2 bg-purple-100 rounded-lg dark:bg-purple-950/60">
+                <Shield className="h-5 w-5 text-purple-600 dark:text-purple-300" />
               </div>
               <div>
                 <h3 className="text-xl font-bold">Authentication Operations</h3>
@@ -248,13 +248,13 @@ export const PermissionRuleEditor: React.FC<PermissionRuleEditorProps> = ({
           <div className="space-y-4">
             {permissions.auth_rules && sortAuthOperations(permissions.auth_rules).map(([operation, rule]) => {
               return (
-                <Card key={operation} className="border-2 border-purple-200 bg-gradient-to-r from-purple-50/50 to-blue-50/50 hover:border-purple-300 transition-all duration-200">
+                <Card key={operation} className="border-2 border-purple-200 bg-gradient-to-r from-purple-50/50 to-blue-50/50 hover:border-purple-300 transition-all duration-200 dark:border-purple-900/60 dark:from-purple-950/35 dark:to-sky-950/25 dark:hover:border-purple-700/70">
                   <CardContent className="p-6">
                     <div className="space-y-6">
                       {/* Operation Header */}
                       <div className="flex items-center justify-between">
                         <div className="flex items-center space-x-3">
-                          <div className="flex-shrink-0 p-2.5 rounded-lg bg-gradient-to-br from-purple-50 to-purple-100 border border-purple-200">
+                          <div className="flex-shrink-0 p-2.5 rounded-lg bg-gradient-to-br from-purple-50 to-purple-100 border border-purple-200 text-purple-700 dark:from-purple-900/60 dark:to-purple-950/60 dark:border-purple-800/70 dark:text-purple-200">
                             {getAuthOperationIcon(operation as AuthOperation)}
                           </div>
                           <div>
@@ -270,7 +270,7 @@ export const PermissionRuleEditor: React.FC<PermissionRuleEditorProps> = ({
                             </div>
                           </div>
                         </div>
-                        <div className="text-xs text-purple-700 bg-purple-100 px-2 py-1 rounded-md font-medium">
+                        <div className="text-xs text-purple-700 bg-purple-100 px-2 py-1 rounded-md font-medium dark:border dark:border-purple-800/60 dark:bg-purple-900/50 dark:text-purple-200">
                           AUTH
                         </div>
                       </div>
@@ -368,7 +368,7 @@ export const PermissionRuleEditor: React.FC<PermissionRuleEditorProps> = ({
 
                       {/* Filter Expression */}
                       {rule?.filter !== undefined && (
-                        <div className="space-y-3 pt-4 border-t border-purple-200/50">
+                        <div className="space-y-3 pt-4 border-t border-purple-200/50 dark:border-purple-800/50">
                           <label className="text-sm font-semibold text-foreground flex items-center gap-2">
                             <div className="w-2 h-2 bg-green-500 rounded-full"></div>
                             Additional Filter (Optional)

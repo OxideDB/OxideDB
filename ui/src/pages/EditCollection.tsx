@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { ArrowLeft, Save, Database, Settings, Shield, ChevronDown, ChevronRight } from 'lucide-react';
+import { ArrowLeft, Save, Database, Settings, Shield, ChevronDown, ChevronRight, FileText } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -297,6 +297,12 @@ const EditCollection: React.FC = () => {
                         <Shield className="h-4 w-4" />
                         <span className="font-medium">Auth Collection</span>
                         <Badge variant="secondary" className="text-xs">Security</Badge>
+                      </>
+                    ) : schema.collection_type === 'single' ? (
+                      <>
+                        <FileText className="h-4 w-4" />
+                        <span className="font-medium">Single Collection</span>
+                        <Badge variant="outline" className="text-xs">Content</Badge>
                       </>
                     ) : (
                       <>

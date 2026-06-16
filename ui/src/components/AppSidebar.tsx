@@ -100,6 +100,7 @@ const staticNavigationItems = [
         title: "Plugins",
         url: "/plugins",
         icon: Puzzle,
+        exact: true,
       },
       {
         title: "Settings",
@@ -218,9 +219,13 @@ export function AppSidebar() {
     }
   };
 
-  const isRouteActive = (url: string) => {
+  const isRouteActive = (url: string, exact = false) => {
     if (url === "/") {
       return location.pathname === "/" || location.pathname === "/dashboard";
+    }
+
+    if (exact) {
+      return location.pathname === url;
     }
 
     return location.pathname === url || location.pathname.startsWith(`${url}/`);
@@ -261,7 +266,7 @@ export function AppSidebar() {
             <SidebarGroupContent>
               <SidebarMenu>
                 {section.items.map((item) => {
-                  const isActive = isRouteActive(item.url);
+                  const isActive = isRouteActive(item.url, item.exact);
                   return (
                     <SidebarMenuItem key={item.title}>
                       <SidebarMenuButton asChild isActive={isActive} tooltip={item.title}>
@@ -361,6 +366,7 @@ export function AppSidebar() {
                 ) : (
                   collectionsToShow.map((collection) => {
                     const isSystemCollection = apiService.isSystemCollection(collection.schema)
+                    const isSingleCollection = collection.schema.collection_type === 'single'
                     const collectionUrl = `/collections/${encodeURIComponent(collection.schema.name)}`;
                     const isActive = location.pathname === collectionUrl || location.pathname.startsWith(`${collectionUrl}/`);
                     return (
@@ -369,8 +375,10 @@ export function AppSidebar() {
                           <Link to={collectionUrl}>
                             {isSystemCollection ? (
                               <Shield className="h-4 w-4 text-warning" />
-                            ) : (
+                            ) : isSingleCollection ? (
                               <FileText className="h-4 w-4" />
+                            ) : (
+                              <Database className="h-4 w-4" />
                             )}
                             <span className={cn(isSystemCollection && "text-sidebar-foreground/70")}>
                               {collection.schema.name}

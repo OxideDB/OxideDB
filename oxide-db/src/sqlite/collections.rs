@@ -83,6 +83,7 @@ impl SqliteDb {
         let schema_name = schema.name.clone();
         let schema_name_for_events = schema.name.clone();
         let schema_for_events = schema.clone(); // Clone schema for after event dispatch
+        let schema_for_cache = schema.clone();
         let schema_json = serde_json::to_string(&schema)
             .map_err(|e| AppError::database(format!("Failed to serialize schema: {}", e)))?;
 
@@ -142,6 +143,11 @@ impl SqliteDb {
         .await
         .map_err(|e| AppError::internal(format!("Task join error: {}", e)))??;
 
+        self.schema_cache
+            .write()
+            .await
+            .insert(schema_name_for_events.clone(), schema_for_cache);
+
         // Dispatch AfterCollectionCreate event
         let request_context = oxide_core::event::context::RequestContext::anonymous();
         self.event_bus
@@ -172,6 +178,10 @@ impl SqliteDb {
         &self,
         collection: &str,
     ) -> Result<CollectionSchema, AppError> {
+        if let Some(schema) = self.schema_cache.read().await.get(collection).cloned() {
+            return Ok(schema);
+        }
+
         let collection_name = collection.to_string();
         let connection = self.connection.clone();
 
@@ -181,7 +191,7 @@ impl SqliteDb {
                 .map_err(|_| AppError::database("Failed to acquire database lock"))?;
 
             let mut stmt = conn
-                .prepare("SELECT schema FROM collections WHERE name = ?1")
+                .prepare_cached("SELECT schema FROM collections WHERE name = ?1")
                 .map_err(|e| AppError::database(format!("Failed to prepare statement: {}", e)))?;
 
             let schema_json: String = stmt
@@ -200,6 +210,11 @@ impl SqliteDb {
         })
         .await
         .map_err(|e| AppError::internal(format!("Task join error: {}", e)))??;
+
+        self.schema_cache
+            .write()
+            .await
+            .insert(collection.to_string(), schema.clone());
 
         Ok(schema)
     }
@@ -253,6 +268,7 @@ impl SqliteDb {
 
         let schema_json = serde_json::to_string(&schema)
             .map_err(|e| AppError::database(format!("Failed to serialize schema: {}", e)))?;
+        let schema_type = schema.collection_type.to_string();
 
         // Generate migration SQL using schema adapter
         let schema_adapter = super::schema_adapter::SqliteSchemaAdapter::new();
@@ -281,8 +297,9 @@ impl SqliteDb {
             // Update the schema metadata
             let rows_affected = tx
                 .execute(
-                    "UPDATE collections SET schema = ?1, updated_at = ?2 WHERE name = ?3",
+                    "UPDATE collections SET type = ?1, schema = ?2, updated_at = ?3 WHERE name = ?4",
                     [
+                        &schema_type,
                         &schema_json,
                         &schema.updated_at.to_string(),
                         &collection_name,
@@ -305,6 +322,11 @@ impl SqliteDb {
         })
         .await
         .map_err(|e| AppError::internal(format!("Task join error: {}", e)))??;
+
+        self.schema_cache
+            .write()
+            .await
+            .insert(collection.to_string(), schema.clone());
 
         // Dispatch AfterCollectionUpdated event
         let request_context = oxide_core::event::context::RequestContext::anonymous();
@@ -388,6 +410,8 @@ impl SqliteDb {
         .await
         .map_err(|e| AppError::internal(format!("Task join error: {}", e)))??;
 
+        self.schema_cache.write().await.remove(&collection_clone);
+
         // Dispatch AfterCollectionDelete event
         let request_context = oxide_core::event::context::RequestContext::anonymous();
         self.event_bus
@@ -419,7 +443,7 @@ impl SqliteDb {
                 .map_err(|_| AppError::database("Failed to acquire database lock"))?;
 
             let mut stmt = conn
-                .prepare("SELECT schema FROM collections ORDER BY name")
+                .prepare_cached("SELECT schema FROM collections ORDER BY name")
                 .map_err(|e| AppError::database(format!("Failed to prepare statement: {}", e)))?;
 
             let schemas: Result<Vec<CollectionSchema>, rusqlite::Error> = stmt
@@ -442,6 +466,12 @@ impl SqliteDb {
         })
         .await
         .map_err(|e| AppError::internal(format!("Task join error: {}", e)))??;
+
+        let mut schema_cache = self.schema_cache.write().await;
+        schema_cache.clear();
+        for schema in &collections {
+            schema_cache.insert(schema.name.clone(), schema.clone());
+        }
 
         debug!("Listed {} collections", collections.len());
         Ok(collections)

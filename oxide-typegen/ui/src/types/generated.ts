@@ -250,7 +250,7 @@ is_system: boolean, };
 /**
  * The type of a collection
  */
-export type CollectionType = "base" | "auth";
+export type CollectionType = "base" | "single" | "auth";
 
 /**
  * Collection management operations that can be granted to plugins.

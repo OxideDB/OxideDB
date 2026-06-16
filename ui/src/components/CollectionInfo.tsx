@@ -32,6 +32,13 @@ export const CollectionInfo: React.FC<CollectionInfoProps> = ({
   collection,
   schema,
 }) => {
+  const collectionTypeLabel =
+    schema?.collection_type === 'single'
+      ? 'Single'
+      : schema?.collection_type === 'auth'
+        ? 'Auth'
+        : 'Base';
+
   return (
     <Card>
       <CardHeader>
@@ -77,7 +84,7 @@ export const CollectionInfo: React.FC<CollectionInfoProps> = ({
           <div>
             <span className="text-muted-foreground">Type:</span>
             <div className="font-medium">
-              {schema?.collection_type || 'User Collection'}
+              {collectionTypeLabel}
             </div>
           </div>
         </div>

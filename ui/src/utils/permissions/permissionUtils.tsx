@@ -31,7 +31,7 @@ export const getPermissionLevelDisplay = (level: PermissionLevel): {
   if (typeof level === 'object' && 'rule' in level) {
     return { 
       text: 'Custom Rule', 
-      color: 'bg-purple-100 text-purple-800', 
+      color: 'bg-purple-100 text-purple-800 dark:bg-purple-950/70 dark:text-purple-200 dark:border-purple-800/70',
       icon: <Settings className="w-3 h-3" /> 
     };
   }
@@ -40,31 +40,31 @@ export const getPermissionLevelDisplay = (level: PermissionLevel): {
     case 'none':
       return { 
         text: 'None', 
-        color: 'bg-gray-100 text-gray-800', 
+        color: 'bg-gray-100 text-gray-800 dark:bg-muted dark:text-muted-foreground dark:border-border',
         icon: <Lock className="w-3 h-3" /> 
       };
     case 'public':
       return { 
         text: 'Public', 
-        color: 'bg-green-100 text-green-800', 
+        color: 'bg-green-100 text-green-800 dark:bg-green-950/70 dark:text-green-200 dark:border-green-800/70',
         icon: <Unlock className="w-3 h-3" /> 
       };
     case 'authenticatedonly':
       return { 
         text: 'Authenticated', 
-        color: 'bg-blue-100 text-blue-800', 
+        color: 'bg-blue-100 text-blue-800 dark:bg-blue-950/70 dark:text-blue-200 dark:border-blue-800/70',
         icon: <Users className="w-3 h-3" /> 
       };
     case 'superuseronly':
       return { 
         text: 'Superuser Only', 
-        color: 'bg-red-100 text-red-800', 
+        color: 'bg-red-100 text-red-800 dark:bg-red-950/70 dark:text-red-200 dark:border-red-800/70',
         icon: <Shield className="w-3 h-3" /> 
       };
     default:
       return { 
         text: 'Unknown', 
-        color: 'bg-gray-100 text-gray-800', 
+        color: 'bg-gray-100 text-gray-800 dark:bg-muted dark:text-muted-foreground dark:border-border',
         icon: <Lock className="w-3 h-3" /> 
       };
   }
@@ -98,14 +98,14 @@ export const getOperationColor = (operation: string) => {
   switch (operation) {
     case "read":
     case "list":
-      return "bg-blue-100 text-blue-800";
+      return "bg-blue-100 text-blue-800 dark:bg-blue-950/70 dark:text-blue-200 dark:border-blue-800/70";
     case "create":
     case "update":
-      return "bg-green-100 text-green-800";
+      return "bg-green-100 text-green-800 dark:bg-green-950/70 dark:text-green-200 dark:border-green-800/70";
     case "delete":
-      return "bg-red-100 text-red-800";
+      return "bg-red-100 text-red-800 dark:bg-red-950/70 dark:text-red-200 dark:border-red-800/70";
     default:
-      return "bg-gray-100 text-gray-800";
+      return "bg-gray-100 text-gray-800 dark:bg-muted dark:text-muted-foreground dark:border-border";
   }
 };
 

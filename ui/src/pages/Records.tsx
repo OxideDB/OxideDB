@@ -111,6 +111,8 @@ const Records: React.FC = () => {
 
   // Field customization hook
   const fieldCustomization = useFieldCustomization(collection || '', schema);
+  const isSingleCollection = schema?.collection_type === 'single';
+  const singleRecordExists = isSingleCollection && (stats?.record_count ?? records.length) > 0;
 
   // Helper function to format size in KB to human readable format
   const formatSize = (sizeKb: number): string => {
@@ -126,7 +128,11 @@ const Records: React.FC = () => {
   // Memoized collection info
   const collectionInfo = useMemo(() => ({
     name: collection || '',
-    description: "User account information and profiles",
+    description: schema?.collection_type === 'auth'
+      ? 'Authentication collection for user accounts and access'
+      : schema?.collection_type === 'single'
+        ? 'Single-entry collection for pages and static content'
+        : 'Data collection for application records',
     recordCount: stats?.record_count || records.length,
     size: stats ? formatSize(stats.size_kb) : "Unknown",
     created: stats?.created_at || (schema ? new Date(Number(schema.created_at) * 1000).toLocaleDateString() : "Unknown"),
@@ -196,11 +202,22 @@ const Records: React.FC = () => {
     }
   }, [collection, refetch]);
 
-  const handleCreateRecord = useCallback(() => {
-    if (collection) {
-      navigate(`/collections/${encodeURIComponent(collection)}/new`);
+  const handleCreateRecord = useCallback(async () => {
+    if (!collection) {
+      return;
     }
-  }, [collection, navigate]);
+
+    if (singleRecordExists) {
+      const singletonRecord = records[0] ?? (await apiService.getRecords(collection, { limit: 1 }))[0];
+
+      if (singletonRecord) {
+        navigate(`/collections/${encodeURIComponent(collection)}/edit/${singletonRecord.id}`);
+        return;
+      }
+    }
+
+    navigate(`/collections/${encodeURIComponent(collection)}/new`);
+  }, [collection, navigate, records, singleRecordExists]);
 
   const handleDismissError = useCallback(() => {
     clearError();
@@ -350,8 +367,10 @@ const Records: React.FC = () => {
         <CardHeader>
           <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
             <div>
-              <CardTitle>Recent Records</CardTitle>
-              <CardDescription>Latest records in this collection</CardDescription>
+              <CardTitle>{isSingleCollection ? 'Entry' : 'Recent Records'}</CardTitle>
+              <CardDescription>
+                {isSingleCollection ? 'The stored content entry for this collection' : 'Latest records in this collection'}
+              </CardDescription>
             </div>
             <div className="flex flex-col sm:flex-row gap-2">
               <Button 
@@ -372,8 +391,12 @@ const Records: React.FC = () => {
                 Import
               </Button>
               <Button onClick={handleCreateRecord} size="sm" className="w-full sm:w-auto">
-                <Plus className="h-4 w-4 mr-2" />
-                Add Record
+                {singleRecordExists ? (
+                  <Settings className="h-4 w-4 mr-2" />
+                ) : (
+                  <Plus className="h-4 w-4 mr-2" />
+                )}
+                {singleRecordExists ? 'Edit Entry' : isSingleCollection ? 'Create Entry' : 'Add Record'}
               </Button>
             </div>
           </div>
@@ -465,7 +488,7 @@ const Records: React.FC = () => {
                 ) : (
                   <Button onClick={handleCreateRecord}>
                     <Plus className="h-4 w-4" />
-                    Create Record
+                    {isSingleCollection ? 'Create Entry' : 'Create Record'}
                   </Button>
                 )
               }

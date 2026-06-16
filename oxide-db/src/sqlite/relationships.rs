@@ -344,7 +344,7 @@ impl SqliteDb {
             );
 
             let mut stmt = conn
-                .prepare(&query)
+                .prepare_cached(&query)
                 .map_err(|e| AppError::database(format!("Failed to prepare query: {}", e)))?;
 
             // Bind the record IDs

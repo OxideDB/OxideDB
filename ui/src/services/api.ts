@@ -151,6 +151,7 @@ class ApiService {
   private token: string | null = null;
   private refreshToken: string | null = null;
   private cookieSessionActive: boolean = false;
+  private accessTokenExpiresAt: number | null = null;
   private isRefreshing: boolean = false;
   private refreshPromise: Promise<string | null> | null = null;
 
@@ -186,6 +187,10 @@ class ApiService {
       ...(options.headers as Record<string, string>),
     };
 
+    if (this.shouldRefreshBeforeRequest(endpoint)) {
+      await this.refreshIfAccessTokenExpiring();
+    }
+
     // Add authorization header if we have a token
     if (this.token) {
       headers['Authorization'] = `Bearer ${this.token}`;
@@ -198,7 +203,8 @@ class ApiService {
     });
 
     // If we get a 401, try cookie/bearer refresh once before failing.
-    if (response.status === 401 && endpoint !== '/auth/refresh' && !this.isRefreshing) {
+    // Concurrent requests share the same refresh promise and retry after it settles.
+    if (response.status === 401 && this.shouldRefreshAfterUnauthorized(endpoint)) {
       try {
         const newAccessToken = await this.performTokenRefresh();
         
@@ -256,6 +262,54 @@ class ApiService {
     }
   }
 
+  private shouldRefreshAfterUnauthorized(endpoint: string): boolean {
+    const path = this.endpointPath(endpoint);
+
+    if (
+      path === '/health' ||
+      path === '/settings/public' ||
+      path === '/auth/refresh' ||
+      path === '/auth/logout' ||
+      path === '/auth/validate' ||
+      path === '/auth/collections'
+    ) {
+      return false;
+    }
+
+    return !/^\/auth\/[^/]+\/(?:login|register)$/.test(path);
+  }
+
+  private shouldRefreshBeforeRequest(endpoint: string): boolean {
+    return this.shouldRefreshAfterUnauthorized(endpoint) && this.hasRefreshToken();
+  }
+
+  private endpointPath(endpoint: string): string {
+    return endpoint.split('?')[0];
+  }
+
+  private async refreshIfAccessTokenExpiring(): Promise<void> {
+    if (!this.accessTokenExpiresAt) {
+      return;
+    }
+
+    const refreshBufferMs = 30_000;
+    if (Date.now() < this.accessTokenExpiresAt - refreshBufferMs) {
+      return;
+    }
+
+    await this.performTokenRefresh();
+  }
+
+  private setAccessTokenExpiry(expiresInSeconds?: number | null) {
+    this.accessTokenExpiresAt = expiresInSeconds
+      ? Date.now() + expiresInSeconds * 1000
+      : null;
+  }
+
+  private setAccessTokenExpiryFromUnix(expiresAtSeconds?: number | null) {
+    this.accessTokenExpiresAt = expiresAtSeconds ? expiresAtSeconds * 1000 : null;
+  }
+
   private async performTokenRefresh(): Promise<string | null> {
     // If already refreshing, wait for the existing refresh
     if (this.isRefreshing && this.refreshPromise) {
@@ -297,6 +351,7 @@ class ApiService {
     this.token = data.data.access_token || null;
     this.refreshToken = data.data.refresh_token || null;
     this.cookieSessionActive = true;
+    this.setAccessTokenExpiry(data.data.expires_in);
 
     return this.token;
   }
@@ -336,9 +391,10 @@ class ApiService {
   }
 
   // Auth methods
-  setTokens(accessToken: string, refreshToken?: string) {
+  setTokens(accessToken: string, refreshToken?: string, expiresIn?: number) {
     this.token = accessToken;
     this.cookieSessionActive = true;
+    this.setAccessTokenExpiry(expiresIn);
     this.clearPersistedAuthTokens();
     
     if (refreshToken) {
@@ -350,6 +406,7 @@ class ApiService {
     this.token = null;
     this.refreshToken = null;
     this.cookieSessionActive = false;
+    this.accessTokenExpiresAt = null;
     this.clearPersistedAuthTokens();
   }
 
@@ -375,11 +432,16 @@ class ApiService {
     });
     
     if (response.data.token) {
-      this.setTokens(response.data.token, response.data.refresh_token || undefined);
+      this.setTokens(
+        response.data.token,
+        response.data.refresh_token || undefined,
+        response.data.expires_in
+      );
     } else {
       this.token = null;
       this.refreshToken = null;
       this.cookieSessionActive = true;
+      this.setAccessTokenExpiry(response.data.expires_in);
       this.clearPersistedAuthTokens();
     }
     return response.data;
@@ -432,6 +494,7 @@ class ApiService {
       custom_claims?: unknown;
     }>>('/auth/me');
     this.cookieSessionActive = true;
+    this.setAccessTokenExpiryFromUnix(response.data.expires_at);
     
     // Map the backend response to frontend User interface
     return {
@@ -589,17 +652,17 @@ class ApiService {
 
   // API key rule methods
   async getApiKeyRules(): Promise<ApiKeyRulesResponse> {
-    const response = await this.get<ApiResponse<ApiKeyRulesResponse>>('/admin/api-keys');
+    const response = await this.get<ApiResponse<ApiKeyRulesResponse>>('/api/admin/api-keys');
     return response.data;
   }
 
   async upsertApiKeyRule(request: UpsertApiKeyRuleRequest): Promise<UpsertApiKeyRuleResponse> {
-    const response = await this.post<ApiResponse<UpsertApiKeyRuleResponse>>('/admin/api-keys', request);
+    const response = await this.post<ApiResponse<UpsertApiKeyRuleResponse>>('/api/admin/api-keys', request);
     return response.data;
   }
 
   async revokeApiKeyRule(request: RevokeApiKeyRuleRequest): Promise<ApiKeyRulesResponse> {
-    const response = await this.post<ApiResponse<ApiKeyRulesResponse>>('/admin/api-keys/revoke', request);
+    const response = await this.post<ApiResponse<ApiKeyRulesResponse>>('/api/admin/api-keys/revoke', request);
     return response.data;
   }
 
@@ -625,21 +688,21 @@ class ApiService {
 
   async getBackupManifest(options?: BackupQueryOptions): Promise<BackupManifestResponse> {
     const response = await this.get<ApiResponse<BackupManifestResponse>>(
-      `/admin/backups/manifest${this.buildBackupQuery(options)}`
+      `/api/admin/backups/manifest${this.buildBackupQuery(options)}`
     );
     return response.data;
   }
 
   async exportBackup(options?: BackupQueryOptions): Promise<BackupExportResponse> {
     const response = await this.get<ApiResponse<BackupExportResponse>>(
-      `/admin/backups/export${this.buildBackupQuery(options)}`
+      `/api/admin/backups/export${this.buildBackupQuery(options)}`
     );
     return response.data;
   }
 
   async downloadBackup(options?: BackupQueryOptions): Promise<Blob> {
     const response = await fetch(
-      `${this.baseUrl}/admin/backups/export/stream${this.buildBackupQuery(options)}`,
+      `${this.baseUrl}/api/admin/backups/export/stream${this.buildBackupQuery(options)}`,
       {
         method: 'GET',
         headers: this.token ? { 'Authorization': `Bearer ${this.token}` } : {},
@@ -656,7 +719,7 @@ class ApiService {
 
   async restoreBackup(request: BackupRestoreRequest): Promise<BackupRestoreResponse> {
     const response = await this.post<ApiResponse<BackupRestoreResponse>>(
-      '/admin/backups/restore',
+      '/api/admin/backups/restore',
       request
     );
     return response.data;
@@ -802,7 +865,7 @@ class ApiService {
   }
 
   async getPluginAdminPages(): Promise<PluginAdminPage[]> {
-    const response = await this.get<ApiResponse<PluginAdminPage[]>>('/admin/plugin-pages');
+    const response = await this.get<ApiResponse<PluginAdminPage[]>>('/api/admin/plugin-pages');
     return response.data || [];
   }
 
@@ -1147,7 +1210,7 @@ class ApiService {
    */
   async getSiteSettings(includeHealth?: boolean): Promise<SiteSettings> {
     const params = includeHealth ? '?include_health=true' : '';
-    const response = await this.get<ApiResponse<SiteSettingsResponse>>(`/admin/settings${params}`);
+    const response = await this.get<ApiResponse<SiteSettingsResponse>>(`/api/admin/settings${params}`);
     return response.data.settings!;
   }
 
@@ -1155,21 +1218,21 @@ class ApiService {
    * Update site settings (partial update)
    */
   async updateSiteSettings(request: UpdateSiteSettingsRequest): Promise<void> {
-    await this.put<ApiResponse<SiteSettingsResponse>>('/admin/settings', request);
+    await this.put<ApiResponse<SiteSettingsResponse>>('/api/admin/settings', request);
   }
 
   /**
    * Reset site settings to defaults
    */
   async resetSiteSettings(): Promise<void> {
-    await this.post<ApiResponse<SiteSettingsResponse>>('/admin/settings/reset');
+    await this.post<ApiResponse<SiteSettingsResponse>>('/api/admin/settings/reset');
   }
 
   /**
    * Get a specific settings section
    */
   async getSettingsSection(section: string): Promise<unknown> {
-    const response = await this.get<ApiResponse<unknown>>(`/admin/settings/${encodeURIComponent(section)}`);
+    const response = await this.get<ApiResponse<unknown>>(`/api/admin/settings/${encodeURIComponent(section)}`);
     return response.data;
   }
 
@@ -1177,14 +1240,14 @@ class ApiService {
    * Update a specific settings section
    */
   async updateSettingsSection(section: string, data: unknown): Promise<void> {
-    await this.put<ApiResponse<SiteSettingsResponse>>(`/admin/settings/${encodeURIComponent(section)}`, data);
+    await this.put<ApiResponse<SiteSettingsResponse>>(`/api/admin/settings/${encodeURIComponent(section)}`, data);
   }
 
   /**
    * Test email configuration
    */
   async testEmailConfiguration(): Promise<boolean> {
-    const response = await this.post<ApiResponse<SiteSettingsResponse>>('/admin/settings/email/test');
+    const response = await this.post<ApiResponse<SiteSettingsResponse>>('/api/admin/settings/email/test');
     return response.data.success;
   }
 
@@ -1192,7 +1255,7 @@ class ApiService {
    * Get settings health status
    */
   async getSettingsHealth(): Promise<SettingsHealthStatus> {
-    const response = await this.get<ApiResponse<SettingsHealthStatus>>('/admin/settings/health');
+    const response = await this.get<ApiResponse<SettingsHealthStatus>>('/api/admin/settings/health');
     return response.data;
   }
 }

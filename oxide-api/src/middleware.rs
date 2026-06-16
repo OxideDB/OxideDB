@@ -228,6 +228,10 @@ fn enforce_session_timeout(
     request: &Request,
     security: &SecuritySettings,
 ) -> Result<(), ApiError> {
+    if public_endpoint_access(request.uri().path()).is_some() {
+        return Ok(());
+    }
+
     let Some(claims) = extract_user_claims(request.headers(), &state.auth_service) else {
         return Ok(());
     };
@@ -1311,9 +1315,20 @@ mod tests {
             public_endpoint_access("/admin/assets/app.js"),
             Some(PublicEndpointAccess::BypassAuthorization)
         );
-        assert_eq!(public_endpoint_access("/admin/api-keys"), None);
-        assert_eq!(public_endpoint_access("/admin/settings/security"), None);
-        assert_eq!(public_endpoint_access("/admin/plugin-pages"), None);
+        assert_eq!(
+            public_endpoint_access("/admin/api-keys"),
+            Some(PublicEndpointAccess::BypassAuthorization)
+        );
+        assert_eq!(
+            public_endpoint_access("/admin/settings/security"),
+            Some(PublicEndpointAccess::BypassAuthorization)
+        );
+        assert_eq!(
+            public_endpoint_access("/admin/plugin-pages"),
+            Some(PublicEndpointAccess::BypassAuthorization)
+        );
+        assert_eq!(public_endpoint_access("/api/admin/api-keys"), None);
+        assert_eq!(public_endpoint_access("/api/admin/settings/security"), None);
         assert_eq!(
             public_endpoint_access("/admin/plugin-pages/assets/hello-plugin/index.html"),
             None
@@ -1323,6 +1338,66 @@ mod tests {
             Some(PublicEndpointAccess::BypassAuthorization)
         );
         assert_eq!(public_endpoint_access("/adminish"), None);
+    }
+
+    #[test]
+    fn session_timeout_does_not_block_public_admin_ui() {
+        let event_bus = Arc::new(InMemoryEventBus::new());
+        let state = test_state(event_bus);
+        let token = stale_access_token(&state);
+        let request = Request::builder()
+            .uri("/admin")
+            .header(header::COOKIE, format!("{}={}", ACCESS_TOKEN_COOKIE, token))
+            .body(Body::empty())
+            .expect("test request should build");
+        let security = one_minute_session_security();
+
+        assert!(enforce_session_timeout(&state, &request, &security).is_ok());
+    }
+
+    #[test]
+    fn session_timeout_still_blocks_protected_admin_api() {
+        let event_bus = Arc::new(InMemoryEventBus::new());
+        let state = test_state(event_bus);
+        let token = stale_access_token(&state);
+        let request = Request::builder()
+            .uri("/api/admin/settings")
+            .header(header::COOKIE, format!("{}={}", ACCESS_TOKEN_COOKIE, token))
+            .body(Body::empty())
+            .expect("test request should build");
+        let security = one_minute_session_security();
+
+        let result = enforce_session_timeout(&state, &request, &security);
+
+        assert!(matches!(
+            result,
+            Err(ApiError::Core(AppError::Auth { message })) if message == "Session timed out"
+        ));
+    }
+
+    fn stale_access_token(state: &AppState) -> String {
+        let now = current_unix_timestamp();
+        let mut claims = Claims::new(
+            "user-123".to_string(),
+            "user@example.com".to_string(),
+            "user".to_string(),
+            "_users".to_string(),
+            24,
+        );
+        claims.iat = now - 120;
+        claims.exp = now + 3_600;
+
+        state
+            .auth_service
+            .generate_token_with_claims(claims)
+            .expect("stale test token should be generated")
+    }
+
+    fn one_minute_session_security() -> SecuritySettings {
+        SecuritySettings {
+            session_timeout_minutes: 1,
+            ..SecuritySettings::default()
+        }
     }
 
     #[tokio::test]

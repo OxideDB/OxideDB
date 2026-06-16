@@ -3,4 +3,4 @@
 /**
  * The type of a collection
  */
-export type CollectionType = "base" | "auth";
+export type CollectionType = "base" | "single" | "auth";

@@ -34,17 +34,7 @@ impl RecordHandlers {
     ) -> Result<Record, ApiError> {
         debug!("Creating record in collection: {}", collection);
 
-        // Validate collection exists
-        let exists = db.collection_exists(&collection).await?;
-        if !exists {
-            return Err(ApiError::not_found(format!("Collection '{}'", collection)));
-        }
-
-        // Apply default values for missing fields
-        Self::apply_record_defaults(&db, &collection, &mut data).await?;
-
-        // Validate record data against schema (including new validation rules)
-        Self::validate_record_data(&db, &collection, &data).await?;
+        Self::prepare_record_data(&db, &collection, &mut data).await?;
 
         let record = db.create_record(&collection, data).await?;
 
@@ -63,11 +53,7 @@ impl RecordHandlers {
             record_id, collection
         );
 
-        // Validate collection exists
-        let exists = db.collection_exists(&collection).await?;
-        if !exists {
-            return Err(ApiError::not_found(format!("Collection '{}'", collection)));
-        }
+        Self::ensure_collection_exists(&db, &collection).await?;
 
         let record = db.read_record(&collection, &record_id).await?;
 
@@ -87,20 +73,7 @@ impl RecordHandlers {
     ) -> Result<Record, ApiError> {
         debug!("Updating record {} in collection {}", record_id, collection);
 
-        // Validate collection exists
-        let exists = db.collection_exists(&collection).await?;
-        if !exists {
-            return Err(ApiError::not_found(format!("Collection '{}'", collection)));
-        }
-
-        // Validate record exists
-        let _existing_record = db.read_record(&collection, &record_id).await?;
-
-        // Apply default values for missing fields (partial updates)
-        Self::apply_record_defaults(&db, &collection, &mut data).await?;
-
-        // Validate record data against schema (including new validation rules)
-        Self::validate_record_data(&db, &collection, &data).await?;
+        Self::prepare_record_data(&db, &collection, &mut data).await?;
 
         let record = db.update_record(&collection, &record_id, data).await?;
 
@@ -119,11 +92,7 @@ impl RecordHandlers {
             record_id, collection
         );
 
-        // Validate collection exists
-        let exists = db.collection_exists(&collection).await?;
-        if !exists {
-            return Err(ApiError::not_found(format!("Collection '{}'", collection)));
-        }
+        Self::ensure_collection_exists(&db, &collection).await?;
 
         let record = db.delete_record(&collection, &record_id).await?;
 
@@ -142,11 +111,7 @@ impl RecordHandlers {
     ) -> Result<(Vec<Record>, u64), ApiError> {
         debug!("Listing records in collection: {}", collection);
 
-        // Validate collection exists
-        let exists = db.collection_exists(&collection).await?;
-        if !exists {
-            return Err(ApiError::not_found(format!("Collection '{}'", collection)));
-        }
+        Self::ensure_collection_exists(&db, &collection).await?;
 
         let mut records = db.list_records(&collection, params.clone()).await?;
         let total_count = db
@@ -193,17 +158,20 @@ impl RecordHandlers {
         Ok((records, total_count))
     }
 
-    /// Validate record data against collection schema
-    async fn validate_record_data(
+    async fn ensure_collection_exists(db: &Arc<dyn Db>, collection: &str) -> Result<(), ApiError> {
+        db.get_collection_schema(collection).await?;
+        Ok(())
+    }
+
+    /// Apply defaults and validate record data against the collection schema.
+    async fn prepare_record_data(
         db: &Arc<dyn Db>,
         collection: &str,
-        data: &RecordData,
+        data: &mut RecordData,
     ) -> Result<(), ApiError> {
-        // Get collection schema
         let schema = db.get_collection_schema(collection).await?;
 
-        // Use the comprehensive validation system from oxide-core
-        match schema.validate_data(data) {
+        match schema.prepare_data(data) {
             Ok(()) => {
                 debug!("Record validation passed for collection: {}", collection);
                 Ok(())
@@ -216,34 +184,6 @@ impl RecordHandlers {
                 Err(ApiError::bad_request(validation_error))
             }
         }
-    }
-
-    /// Apply default values to record data (when available)
-    async fn apply_record_defaults(
-        db: &Arc<dyn Db>,
-        collection: &str,
-        data: &mut RecordData,
-    ) -> Result<(), ApiError> {
-        // Get collection schema
-        let schema = db.get_collection_schema(collection).await?;
-
-        // Apply default values to missing fields
-        if let serde_json::Value::Object(data_obj) = data {
-            for (field_name, field_def) in &schema.fields {
-                // Apply default value if field is missing and has a default
-                if !data_obj.contains_key(field_name) {
-                    if let Some(default_value) = &field_def.default {
-                        data_obj.insert(field_name.clone(), default_value.clone());
-                        debug!(
-                            "Applied default value for field '{}' in collection '{}'",
-                            field_name, collection
-                        );
-                    }
-                }
-            }
-        }
-
-        Ok(())
     }
 }
 

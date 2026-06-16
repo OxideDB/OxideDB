@@ -36,7 +36,7 @@ const RelationshipConfig: React.FC<RelationshipConfigProps> = ({
             <option value="">Choose a collection to link to...</option>
             {collections.map((col) => (
               <option key={col.id} value={col.name}>
-                {col.name} {col.collection_type === 'auth' && '(Auth)'}
+                {col.name} {col.collection_type === 'auth' ? '(Auth)' : col.collection_type === 'single' ? '(Single)' : ''}
               </option>
             ))}
           </select>
@@ -103,4 +103,4 @@ const RelationshipConfig: React.FC<RelationshipConfigProps> = ({
   );
 };
 
-export default RelationshipConfig; 
+export default RelationshipConfig;

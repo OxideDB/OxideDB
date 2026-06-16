@@ -4,12 +4,15 @@ use super::schema_adapter::{quote_identifier, SqliteSchemaAdapter};
 use crate::db::SchemaAdapter;
 use chrono::{Datelike, TimeZone, Utc};
 use oxide_core::{
-    event::types::RecordId, AppError, AuthService, EventBus, FieldType, UserActivity, UserStats,
+    event::types::RecordId, AppError, AuthService, CollectionSchema, EventBus, FieldType,
+    UserActivity, UserStats,
 };
 use rusqlite::Connection;
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use tokio::sync::RwLock;
 use tokio::task::spawn_blocking;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
@@ -24,6 +27,7 @@ pub struct SqliteDb {
     pub(super) event_bus: Arc<dyn EventBus>,
     pub(super) auth_service: Arc<AuthService>,
     pub(super) schema_adapter: SqliteSchemaAdapter,
+    pub(super) schema_cache: Arc<RwLock<HashMap<String, CollectionSchema>>>,
     database_path: String,
 }
 
@@ -48,6 +52,7 @@ impl SqliteDb {
             event_bus,
             auth_service,
             schema_adapter: SqliteSchemaAdapter::new(),
+            schema_cache: Arc::new(RwLock::new(HashMap::new())),
             database_path: database_path.to_string(),
         })
     }
@@ -101,7 +106,7 @@ impl SqliteDb {
                 CREATE TABLE IF NOT EXISTS collections (
                     id TEXT PRIMARY KEY,
                     name TEXT UNIQUE NOT NULL,
-                    type TEXT NOT NULL CHECK (type IN ('base', 'auth')),
+                    type TEXT NOT NULL CHECK (type IN ('base', 'single', 'auth')),
                     schema TEXT NOT NULL,
                     created_at INTEGER NOT NULL,
                     updated_at INTEGER NOT NULL
@@ -112,6 +117,88 @@ impl SqliteDb {
             .map_err(|e| {
                 AppError::database(format!("Failed to create collections table: {}", e))
             })?;
+
+            let collections_table_sql: String = conn
+                .query_row(
+                    "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'collections'",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(|e| {
+                    AppError::database(format!("Failed to inspect collections table: {}", e))
+                })?;
+
+            if collections_table_sql.contains("type IN ('base', 'auth')") {
+                let tx = conn.unchecked_transaction().map_err(|e| {
+                    AppError::database(format!(
+                        "Failed to start collections type migration: {}",
+                        e
+                    ))
+                })?;
+
+                tx.execute(
+                    "ALTER TABLE collections RENAME TO collections_old_type_check",
+                    [],
+                )
+                .map_err(|e| {
+                    AppError::database(format!(
+                        "Failed to rename collections table for type migration: {}",
+                        e
+                    ))
+                })?;
+
+                tx.execute(
+                    r#"
+                    CREATE TABLE collections (
+                        id TEXT PRIMARY KEY,
+                        name TEXT UNIQUE NOT NULL,
+                        type TEXT NOT NULL CHECK (type IN ('base', 'single', 'auth')),
+                        schema TEXT NOT NULL,
+                        created_at INTEGER NOT NULL,
+                        updated_at INTEGER NOT NULL
+                    )
+                    "#,
+                    [],
+                )
+                .map_err(|e| {
+                    AppError::database(format!(
+                        "Failed to recreate collections table for type migration: {}",
+                        e
+                    ))
+                })?;
+
+                tx.execute(
+                    r#"
+                    INSERT INTO collections (id, name, type, schema, created_at, updated_at)
+                    SELECT id, name, type, schema, created_at, updated_at
+                    FROM collections_old_type_check
+                    "#,
+                    [],
+                )
+                .map_err(|e| {
+                    AppError::database(format!(
+                        "Failed to copy collections during type migration: {}",
+                        e
+                    ))
+                })?;
+
+                tx.execute("DROP TABLE collections_old_type_check", [])
+                    .map_err(|e| {
+                        AppError::database(format!(
+                            "Failed to drop old collections table after type migration: {}",
+                            e
+                        ))
+                    })?;
+
+                tx.commit().map_err(|e| {
+                    AppError::database(format!(
+                        "Failed to commit collections type migration: {}",
+                        e
+                    ))
+                })?;
+
+                info!("Updated collections table to support single collection type");
+            }
 
             // Create the permissions table
             conn.execute(
@@ -402,7 +489,7 @@ impl SqliteDb {
                 .map_err(|_| AppError::database("Failed to acquire database lock"))?;
 
             // Use prepare and query_row for SELECT statements instead of execute
-            let mut stmt = conn.prepare("SELECT 1").map_err(|e| {
+            let mut stmt = conn.prepare_cached("SELECT 1").map_err(|e| {
                 AppError::database(format!("Failed to prepare health check query: {}", e))
             })?;
 
@@ -444,6 +531,10 @@ impl SqliteDb {
 
     /// Check if a collection exists
     pub async fn collection_exists(&self, collection: &str) -> Result<bool, AppError> {
+        if self.schema_cache.read().await.contains_key(collection) {
+            return Ok(true);
+        }
+
         let collection_name = collection.to_string();
         let connection = self.connection.clone();
 
@@ -453,7 +544,7 @@ impl SqliteDb {
                 .map_err(|_| AppError::database("Failed to acquire database lock"))?;
 
             let mut stmt = conn
-                .prepare("SELECT COUNT(*) FROM collections WHERE name = ?1")
+                .prepare_cached("SELECT EXISTS(SELECT 1 FROM collections WHERE name = ?1)")
                 .map_err(|e| AppError::database(format!("Failed to prepare statement: {}", e)))?;
 
             let count: i64 = stmt
@@ -486,7 +577,7 @@ impl SqliteDb {
 
             let count_sql = format!("SELECT COUNT(*) FROM {}", quote_identifier(&table_name));
             let mut stmt = conn
-                .prepare(&count_sql)
+                .prepare_cached(&count_sql)
                 .map_err(|e| AppError::database(format!("Failed to prepare statement: {}", e)))?;
 
             let count: i64 = stmt

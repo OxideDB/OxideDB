@@ -266,15 +266,15 @@ export const AccessRulesTab: React.FC<AccessRulesTabProps> = ({
                           <h3 className="text-xl font-bold">{info.collection_name}</h3>
                           <div className="flex gap-2">
                             <Badge
-                              variant={info.collection_type === 'auth' ? 'secondary' : 'default'}
+                              variant={info.collection_type === 'auth' ? 'secondary' : info.collection_type === 'single' ? 'outline' : 'default'}
                               className="text-xs font-medium px-2.5 py-1"
                             >
-                              {info.collection_type === 'auth' ? '🔐 Auth' : '📊 Data'}
+                              {info.collection_type === 'auth' ? '🔐 Auth' : info.collection_type === 'single' ? 'Single' : '📊 Data'}
                             </Badge>
                             {info.has_custom_rules && (
                               <Badge
                                 variant="outline"
-                                className="text-xs border-orange-300 text-orange-700 bg-orange-50 font-medium px-2.5 py-1"
+                                className="text-xs border-orange-300 text-orange-700 bg-orange-50 font-medium px-2.5 py-1 dark:border-orange-800/70 dark:bg-orange-950/60 dark:text-orange-200"
                               >
                                 ⚙️ Custom Rules
                               </Badge>
@@ -356,8 +356,8 @@ export const AccessRulesTab: React.FC<AccessRulesTabProps> = ({
                               const display = getPermissionLevelDisplay(rule.permission);
                               return (
                                 <div key={operation} className="group relative">
-                                  <div className="flex items-center space-x-3 p-3 rounded-lg bg-gradient-to-r from-purple-50 to-blue-50 border border-purple-200/50 hover:border-purple-300 transition-all duration-200">
-                                    <div className="flex-shrink-0 p-1.5 bg-white rounded-md shadow-sm">
+                                  <div className="flex items-center space-x-3 p-3 rounded-lg bg-gradient-to-r from-purple-50 to-blue-50 border border-purple-200/50 hover:border-purple-300 transition-all duration-200 dark:from-purple-950/40 dark:to-sky-950/30 dark:border-purple-800/50 dark:hover:border-purple-600/70">
+                                    <div className="flex-shrink-0 p-1.5 bg-white rounded-md shadow-sm text-purple-700 dark:bg-background/80 dark:text-purple-200 dark:border dark:border-purple-800/50">
                                       {getAuthOperationIcon(operation)}
                                     </div>
                                     <div className="min-w-0 flex-1">

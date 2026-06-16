@@ -1,7 +1,7 @@
 import React from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
-import { Database, Shield, Users } from 'lucide-react';
+import { Database, FileText, Shield, Users } from 'lucide-react';
 import type { CollectionPermissionsInfo } from '@/types/api';
 import { 
   getPermissionLevelDisplay, 
@@ -66,18 +66,20 @@ export const CollectionRulesTab: React.FC<CollectionRulesTabProps> = ({
                           <div className="flex items-center gap-3 flex-wrap">
                             <h4 className="font-bold text-xl">{info.collection_name}</h4>
                             <div className="flex gap-2">
-                              <Badge 
-                                variant={info.collection_type === 'auth' ? 'secondary' : 'default'} 
+                              <Badge
+                                variant={info.collection_type === 'auth' ? 'secondary' : info.collection_type === 'single' ? 'outline' : 'default'}
                                 className="font-medium px-2.5 py-1"
                               >
                                 {info.collection_type === 'auth' ? (
                                   <><Users className="w-3 h-3 mr-1" /> Auth Collection</>
+                                ) : info.collection_type === 'single' ? (
+                                  <><FileText className="w-3 h-3 mr-1" /> Single Collection</>
                                 ) : (
                                   <><Database className="w-3 h-3 mr-1" /> Data Collection</>
                                 )}
                               </Badge>
                               {info.has_custom_rules && (
-                                <Badge variant="outline" className="border-orange-300 text-orange-700 bg-orange-50 font-medium px-2.5 py-1">
+                                <Badge variant="outline" className="border-orange-300 text-orange-700 bg-orange-50 font-medium px-2.5 py-1 dark:border-orange-800/70 dark:bg-orange-950/60 dark:text-orange-200">
                                   <Shield className="w-3 h-3 mr-1" />
                                   Custom Rules
                                 </Badge>
@@ -141,8 +143,8 @@ export const CollectionRulesTab: React.FC<CollectionRulesTabProps> = ({
                               {sortAuthOperations(info.permissions.auth_rules).map(([operation, rule]) => {
                                 const display = getPermissionLevelDisplay(rule.permission);
                                 return (
-                                  <div key={operation} className="flex items-center gap-2 px-3 py-2 rounded-lg border-2 bg-gradient-to-r from-purple-50/50 to-purple-50/70 hover:border-purple-300 transition-colors">
-                                    <div className="flex-shrink-0">
+                                  <div key={operation} className="flex items-center gap-2 px-3 py-2 rounded-lg border-2 border-purple-200/60 bg-gradient-to-r from-purple-50/50 to-purple-50/70 hover:border-purple-300 transition-colors dark:border-purple-800/50 dark:from-purple-950/40 dark:to-sky-950/25 dark:hover:border-purple-600/70">
+                                    <div className="flex-shrink-0 text-purple-700 dark:text-purple-200">
                                       {getAuthOperationIcon(operation)}
                                     </div>
                                     <div className="flex items-center gap-2">
