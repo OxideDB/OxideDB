@@ -3,6 +3,7 @@
 //! This module contains all the host functions that plugins can call,
 //! organized by functionality for better maintainability.
 
+pub mod bridge;
 pub mod database;
 pub mod event;
 pub mod http;

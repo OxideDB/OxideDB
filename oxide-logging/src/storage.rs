@@ -214,6 +214,13 @@ impl SqliteLogStorage {
                     "CREATE INDEX IF NOT EXISTS idx_log_entries_level ON log_entries(level)",
                     [],
                 )?;
+                // Composite index for time-windowed level filters used by the
+                // dashboard error-rate query and retention cleanup
+                // (e.g. WHERE level = 0 AND timestamp >= ?).
+                tx.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_log_entries_level_timestamp ON log_entries(level, timestamp)",
+                    [],
+                )?;
                 tx.execute(
                     "CREATE INDEX IF NOT EXISTS idx_log_entries_correlation ON log_entries(correlation_id)",
                     [],

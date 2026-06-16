@@ -15,13 +15,9 @@ use oxide_core::plugin_api::{host_functions, PluginError};
 use oxide_core::plugin_security::CollectionOperation;
 use oxide_db::{db::ListParams, Db};
 use serde::Serialize;
-use std::future::Future;
-use std::sync::{Arc, OnceLock};
-use tokio::runtime::RuntimeFlavor;
+use std::sync::Arc;
 use tracing::{debug, error, info};
 use wasmtime::{Caller, Linker};
-
-static DATABASE_HOST_RUNTIME: OnceLock<Result<tokio::runtime::Runtime, String>> = OnceLock::new();
 
 /// Define database-related host functions in the linker.
 ///
@@ -619,37 +615,6 @@ fn can_perform_database_operations(
     can_perform
 }
 
-fn run_database_operation<F, T>(operation: F) -> Result<T, String>
-where
-    F: Future<Output = T> + Send + 'static,
-    T: Send + 'static,
-{
-    match tokio::runtime::Handle::try_current() {
-        Ok(handle) if handle.runtime_flavor() == RuntimeFlavor::MultiThread => {
-            Ok(tokio::task::block_in_place(|| handle.block_on(operation)))
-        }
-        _ => {
-            let runtime = database_host_runtime()?;
-            std::thread::spawn(move || runtime.block_on(operation))
-                .join()
-                .map_err(|_| "Database operation thread panicked".to_string())
-        }
-    }
-}
-
-fn database_host_runtime() -> Result<&'static tokio::runtime::Runtime, String> {
-    DATABASE_HOST_RUNTIME
-        .get_or_init(|| {
-            tokio::runtime::Builder::new_multi_thread()
-                .enable_all()
-                .thread_name("oxide-plugin-db-host")
-                .build()
-                .map_err(|e| format!("failed to initialize plugin database host runtime: {}", e))
-        })
-        .as_ref()
-        .map_err(Clone::clone)
-}
-
 /// Handle create_record host function call.
 fn handle_create_record(
     caller: &mut Caller<'_, PluginStoreData>,
@@ -706,10 +671,9 @@ fn handle_create_record(
     }
 
     let collection_clone = collection.clone();
-    let result =
-        run_database_operation(
-            async move { db.create_record(&collection_clone, record_data).await },
-        );
+    let result = super::bridge::run_host_operation(async move {
+        db.create_record(&collection_clone, record_data).await
+    });
 
     // Mark that we're exiting the database operation
     exit_database_operation(caller);
@@ -804,10 +768,9 @@ fn handle_read_records(
     }
 
     let collection_clone = collection.clone();
-    let result =
-        run_database_operation(
-            async move { db.list_records(&collection_clone, list_params).await },
-        );
+    let result = super::bridge::run_host_operation(async move {
+        db.list_records(&collection_clone, list_params).await
+    });
 
     exit_database_operation(caller);
 
@@ -918,7 +881,7 @@ fn handle_update_record(
 
     let collection_clone = collection.clone();
     let record_id_clone = record_id.clone();
-    let result = run_database_operation(async move {
+    let result = super::bridge::run_host_operation(async move {
         db.update_record(
             &collection_clone,
             &RecordId::from(record_id_clone),
@@ -1011,7 +974,7 @@ fn handle_delete_record(
 
     let collection_clone = collection.clone();
     let record_id_clone = record_id.clone();
-    let result = run_database_operation(async move {
+    let result = super::bridge::run_host_operation(async move {
         db.delete_record(&collection_clone, &RecordId::from(record_id_clone))
             .await
     });
@@ -1101,7 +1064,8 @@ fn handle_create_collection(
 
     let schema_name = schema.name.clone();
     let response_schema = schema.clone();
-    let result = run_database_operation(async move { db.create_collection(schema).await });
+    let result =
+        super::bridge::run_host_operation(async move { db.create_collection(schema).await });
 
     exit_database_operation(caller);
 
@@ -1148,7 +1112,7 @@ fn handle_list_collections(caller: &mut Caller<'_, PluginStoreData>, db: &Arc<dy
         return -1;
     }
 
-    let result = run_database_operation(async move { db.list_collections().await });
+    let result = super::bridge::run_host_operation(async move { db.list_collections().await });
 
     exit_database_operation(caller);
 
@@ -1235,8 +1199,9 @@ fn handle_get_collection_schema(
     }
 
     let collection_clone = collection.clone();
-    let result =
-        run_database_operation(async move { db.get_collection_schema(&collection_clone).await });
+    let result = super::bridge::run_host_operation(async move {
+        db.get_collection_schema(&collection_clone).await
+    });
 
     exit_database_operation(caller);
 
@@ -1330,7 +1295,7 @@ fn handle_update_collection_schema(
 
     let collection_clone = collection.clone();
     let response_schema = schema.clone();
-    let result = run_database_operation(async move {
+    let result = super::bridge::run_host_operation(async move {
         db.update_collection_schema(&collection_clone, schema).await
     });
 
@@ -1406,7 +1371,9 @@ fn handle_delete_collection(
 
     let collection_clone = collection.clone();
     let result =
-        run_database_operation(async move { db.delete_collection(&collection_clone).await });
+        super::bridge::run_host_operation(
+            async move { db.delete_collection(&collection_clone).await },
+        );
 
     exit_database_operation(caller);
 
@@ -1472,7 +1439,9 @@ fn handle_collection_exists(
 
     let collection_clone = collection.clone();
     let result =
-        run_database_operation(async move { db.collection_exists(&collection_clone).await });
+        super::bridge::run_host_operation(
+            async move { db.collection_exists(&collection_clone).await },
+        );
 
     exit_database_operation(caller);
 
@@ -1540,7 +1509,7 @@ fn handle_get_collection_stats(
     }
 
     let collection_clone = collection.clone();
-    let result = run_database_operation(async move {
+    let result = super::bridge::run_host_operation(async move {
         let exists = db.collection_exists(&collection_clone).await?;
         if !exists {
             return Ok::<CollectionStatsResponse, oxide_core::AppError>(

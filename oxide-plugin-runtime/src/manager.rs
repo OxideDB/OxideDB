@@ -38,7 +38,26 @@ type AfterHandler = Arc<
         + Sync,
 >;
 
-/// High-level plugin manager that orchestrates plugin operations
+/// High-level plugin manager that orchestrates plugin operations.
+///
+/// # Concurrency model (architectural note)
+///
+/// All plugin execution currently serializes on a single
+/// `Arc<Mutex<WasmtimePluginRuntime>>`. This is required because
+/// [`WasmtimePluginRuntime`] holds a *single shared `Store`* that owns every
+/// loaded plugin instance's memory and fuel; Wasmtime forbids mutating one
+/// `Store` from two threads concurrently. True per-plugin isolation would
+/// require restructuring the runtime to give each plugin instance its own
+/// `Store` (one engine/linker, N stores) — a major change left as future work.
+///
+/// To avoid deadlock when a plugin's HTTP handler (which holds this lock)
+/// triggers a DB write that fires a hook needing the lock, hook dispatch uses
+/// `try_lock`: if the runtime is busy, before-hooks currently *fail closed*
+/// (reject the write) unless the caller is the same plugin recursing, and
+/// after-hooks *fail soft* (skip). This preserves validation-hook safety but
+/// means a slow plugin can block or reject unrelated plugin work. With the
+/// SQLite global mutex removed (DB host calls no longer serialize behind it),
+/// the main remaining contention is the WASM execution itself.
 pub struct PluginManager {
     pub runtime: Arc<Mutex<WasmtimePluginRuntime>>,
     bridge: PluginEventBridge,

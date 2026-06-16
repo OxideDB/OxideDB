@@ -11,12 +11,8 @@ use oxide_core::{
     plugin_security::VfsOperation, FileIdentifier, FileListRequest, FileMoveRequest,
     FileReadRequest, FileWriteRequest,
 };
-use std::{future::Future, sync::OnceLock};
-use tokio::runtime::RuntimeFlavor;
 use tracing::warn;
 use wasmtime::{Caller, Linker};
-
-static VFS_HOST_RUNTIME: OnceLock<Result<tokio::runtime::Runtime, String>> = OnceLock::new();
 
 fn begin_vfs_call(state: &HostStateRef, function_name: &str, action: &str) -> bool {
     if !record_host_call(state, action) {
@@ -55,37 +51,6 @@ fn ensure_vfs_capability(
     warn!("{}", message);
     state_guard.store_error(function_name, &message);
     false
-}
-
-fn run_vfs_operation<F, T>(operation: F) -> Result<T, String>
-where
-    F: Future<Output = T> + Send + 'static,
-    T: Send + 'static,
-{
-    match tokio::runtime::Handle::try_current() {
-        Ok(handle) if handle.runtime_flavor() == RuntimeFlavor::MultiThread => {
-            Ok(tokio::task::block_in_place(|| handle.block_on(operation)))
-        }
-        _ => {
-            let runtime = vfs_host_runtime()?;
-            std::thread::spawn(move || runtime.block_on(operation))
-                .join()
-                .map_err(|_| "VFS operation thread panicked".to_string())
-        }
-    }
-}
-
-fn vfs_host_runtime() -> Result<&'static tokio::runtime::Runtime, String> {
-    VFS_HOST_RUNTIME
-        .get_or_init(|| {
-            tokio::runtime::Builder::new_multi_thread()
-                .enable_all()
-                .thread_name("oxide-plugin-vfs-host")
-                .build()
-                .map_err(|e| format!("failed to initialize plugin VFS host runtime: {}", e))
-        })
-        .as_ref()
-        .map_err(Clone::clone)
 }
 
 fn store_vfs_result(
@@ -161,7 +126,7 @@ pub fn vfs_write_file(
 
     // Execute VFS operation
     let operation_state = state.clone();
-    let result = run_vfs_operation(async move {
+    let result = super::bridge::run_host_operation(async move {
         let vfs_bridge = {
             let Some(state_guard) =
                 lock_host_state(&operation_state, "reading VFS bridge for write")
@@ -248,7 +213,7 @@ pub fn vfs_read_file(
 
     // Execute VFS operation
     let operation_state = state.clone();
-    let result = run_vfs_operation(async move {
+    let result = super::bridge::run_host_operation(async move {
         let vfs_bridge = {
             let Some(state_guard) =
                 lock_host_state(&operation_state, "reading VFS bridge for read")
@@ -332,7 +297,7 @@ pub fn vfs_move_file(
         .map_err(|e| wasmtime::Error::msg(format!("failed to parse request: {}", e)))?;
 
     let operation_state = state.clone();
-    let result = run_vfs_operation(async move {
+    let result = super::bridge::run_host_operation(async move {
         let vfs_bridge = {
             let Some(state_guard) =
                 lock_host_state(&operation_state, "reading VFS bridge for move")
@@ -418,7 +383,7 @@ pub fn vfs_delete_file(
 
     // Execute VFS operation
     let operation_state = state.clone();
-    let result = run_vfs_operation(async move {
+    let result = super::bridge::run_host_operation(async move {
         let vfs_bridge = {
             let Some(state_guard) =
                 lock_host_state(&operation_state, "reading VFS bridge for delete")
@@ -499,7 +464,7 @@ pub fn vfs_list_files(
 
     // Execute VFS operation
     let operation_state = state.clone();
-    let result = run_vfs_operation(async move {
+    let result = super::bridge::run_host_operation(async move {
         let vfs_bridge = {
             let Some(state_guard) =
                 lock_host_state(&operation_state, "reading VFS bridge for list")
@@ -576,7 +541,7 @@ pub fn vfs_get_usage_stats(
 
     // Execute VFS operation
     let operation_state = state.clone();
-    let result = run_vfs_operation(async move {
+    let result = super::bridge::run_host_operation(async move {
         let vfs_bridge = {
             let Some(state_guard) =
                 lock_host_state(&operation_state, "reading VFS bridge for usage stats")
