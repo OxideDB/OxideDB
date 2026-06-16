@@ -91,6 +91,17 @@ interface PluginSecurityInfo {
   };
 }
 
+interface PluginAnalysisResult {
+  is_valid: boolean;
+  plugin_info?: PluginInfo;
+  declared_capabilities: string[];
+  recommended_trust_level?: string;
+  security_info: PluginSecurityInfo;
+  size_bytes: number;
+  warnings: string[];
+  errors: string[];
+}
+
 interface PluginInstallNotice {
   severity: 'Info' | 'Warning';
   message: string;
@@ -119,6 +130,7 @@ const Plugins: React.FC = () => {
   const [installForm, setInstallForm] = useState({
     zipFile: null as File | null
   });
+  const [installReview, setInstallReview] = useState<PluginAnalysisResult | null>(null);
   const [installResult, setInstallResult] = useState<PluginInstallResult | null>(null);
   const [isInstalling, setIsInstalling] = useState(false);
 
@@ -157,7 +169,39 @@ const Plugins: React.FC = () => {
     }
   };
 
-  const handleInstallPlugin = async () => {
+  const analysisTrustLevel = (analysis: PluginAnalysisResult) => {
+    const recommendedTrust = analysis.recommended_trust_level || analysis.plugin_info?.trust_level || 'Untrusted';
+    return recommendedTrust === 'System' ? 'FullyTrusted' : recommendedTrust;
+  };
+
+  const reviewReasonsForAnalysis = (analysis: PluginAnalysisResult): PluginInstallNotice[] => {
+    const notices: PluginInstallNotice[] = [];
+    const trustLevel = analysisTrustLevel(analysis);
+    const requestedTrust = analysis.recommended_trust_level || analysis.plugin_info?.trust_level;
+
+    if (!analysis.security_info.signature_valid) {
+      notices.push({
+        severity: 'Warning',
+        message: 'Package signature is not verified. Review the source before installing.',
+      });
+    }
+
+    if (requestedTrust === 'System') {
+      notices.push({
+        severity: 'Warning',
+        message: 'Package requested System trust. OxideDB will install it as FullyTrusted, which should be reviewed before install.',
+      });
+    } else if (trustLevel === 'FullyTrusted') {
+      notices.push({
+        severity: 'Warning',
+        message: 'Package will install with FullyTrusted scope. Review the requested capabilities before installing.',
+      });
+    }
+
+    return notices;
+  };
+
+  const handleInstallPlugin = async (reviewAccepted = false) => {
     if (!installForm.zipFile) {
       toast({
         title: "Validation Error",
@@ -171,8 +215,28 @@ const Plugins: React.FC = () => {
     setInstallResult(null);
 
     try {
+      if (!reviewAccepted) {
+        const analysis = await apiService.analyzePlugin(installForm.zipFile);
+        const reviewReasons = reviewReasonsForAnalysis(analysis);
+
+        if (!analysis.is_valid) {
+          toast({
+            title: "Package Review Failed",
+            description: analysis.errors[0] || 'Plugin package is not valid for installation',
+            variant: "destructive"
+          });
+          return;
+        }
+
+        if (reviewReasons.length > 0) {
+          setInstallReview(analysis);
+          return;
+        }
+      }
+
       const result = await apiService.installPlugin(installForm.zipFile);
       setInstallResult(result);
+      setInstallReview(null);
       toast({
         title: "Plugin Installed",
         description: `${result.plugin_info.name} installed with ${result.applied_trust_level} trust`
@@ -193,6 +257,7 @@ const Plugins: React.FC = () => {
 
   const resetInstallDialog = () => {
     setInstallForm({ zipFile: null });
+    setInstallReview(null);
     setInstallResult(null);
     setIsInstalling(false);
   };
@@ -327,11 +392,19 @@ const Plugins: React.FC = () => {
         </DialogTrigger>
         <DialogContent className="max-w-2xl">
           <DialogHeader>
-            <DialogTitle>{installResult ? "Plugin Installed" : "Install New Plugin"}</DialogTitle>
+            <DialogTitle>
+              {installResult
+                ? "Plugin Installed"
+                : installReview
+                  ? "Review Plugin Install"
+                  : "Install New Plugin"}
+            </DialogTitle>
             <DialogDescription>
               {installResult
                 ? "Review the trust scope and package notices from the automatic installation"
-                : "Upload a ZIP plugin package containing plugin.toml and WASM file"}
+                : installReview
+                  ? "This package needs your review before installation continues"
+                  : "Upload a ZIP plugin package containing plugin.toml and WASM file"}
             </DialogDescription>
           </DialogHeader>
           
@@ -416,6 +489,107 @@ const Plugins: React.FC = () => {
                 Done
               </Button>
             </div>
+          ) : installReview ? (
+            <div className="space-y-4">
+              <div className="rounded-md border border-yellow-500/50 p-4">
+                <div className="flex gap-3">
+                  <AlertTriangle className="h-5 w-5 text-yellow-600 mt-0.5 flex-shrink-0" />
+                  <div className="space-y-2">
+                    <div className="font-medium">Review before installing</div>
+                    <div className="space-y-2 text-sm">
+                      {reviewReasonsForAnalysis(installReview).map((notice, index) => (
+                        <p key={index}>{notice.message}</p>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {installReview.plugin_info && (
+                <div className="rounded-md border p-4">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <div className="font-medium">{installReview.plugin_info.name}</div>
+                    <Badge variant="outline">v{installReview.plugin_info.version}</Badge>
+                    {getTrustLevelBadge(analysisTrustLevel(installReview))}
+                  </div>
+                  <div className="text-sm text-muted-foreground mt-1">
+                    by {installReview.plugin_info.author}
+                  </div>
+                  <p className="text-sm mt-2">{installReview.plugin_info.description}</p>
+                </div>
+              )}
+
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-sm">
+                <div className="rounded-md border p-3">
+                  <div className="text-muted-foreground">Trust</div>
+                  <div className="font-medium mt-1">{analysisTrustLevel(installReview)}</div>
+                </div>
+                <div className="rounded-md border p-3">
+                  <div className="text-muted-foreground">Signature</div>
+                  <div
+                    className={
+                      installReview.security_info.signature_valid
+                        ? "text-green-600 font-medium mt-1"
+                        : "text-yellow-600 font-medium mt-1"
+                    }
+                  >
+                    {installReview.security_info.signature_valid ? "Verified" : "Not verified"}
+                  </div>
+                </div>
+                <div className="rounded-md border p-3">
+                  <div className="text-muted-foreground">Package</div>
+                  <div className="font-medium mt-1">{formatBytes(installReview.size_bytes)}</div>
+                </div>
+              </div>
+
+              <div>
+                <Label>Declared Capabilities</Label>
+                <ScrollArea className="mt-2 max-h-28 rounded-md border p-3">
+                  <div className="flex flex-wrap gap-1">
+                    {installReview.declared_capabilities.length === 0 ? (
+                      <span className="text-sm text-muted-foreground">No capabilities requested</span>
+                    ) : (
+                      installReview.declared_capabilities.map((capability, index) => (
+                        <Badge key={index} variant="outline" className="text-xs">
+                          {capability}
+                        </Badge>
+                      ))
+                    )}
+                  </div>
+                </ScrollArea>
+              </div>
+
+              <div className="flex gap-2">
+                <Button
+                  variant="outline"
+                  onClick={() => setInstallReview(null)}
+                  disabled={isInstalling}
+                  className="flex-1"
+                >
+                  Back
+                </Button>
+                <Button
+                  onClick={() => handleInstallPlugin(true)}
+                  disabled={isInstalling}
+                  className="flex-1"
+                >
+                  {isInstalling ? (
+                    <>
+                      <Activity className="w-4 h-4 mr-2 animate-spin" />
+                      Installing...
+                    </>
+                  ) : (
+                    <>
+                      <Upload className="w-4 h-4 mr-2" />
+                      Install Reviewed Package
+                    </>
+                  )}
+                </Button>
+              </div>
+              <Button variant="ghost" onClick={() => handleInstallDialogOpenChange(false)} className="w-full">
+                Cancel
+              </Button>
+            </div>
           ) : (
             <div className="space-y-4">
               <div>
@@ -424,7 +598,11 @@ const Plugins: React.FC = () => {
                   id="zip-file"
                   type="file"
                   accept=".zip"
-                  onChange={(e) => setInstallForm({ zipFile: e.target.files?.[0] || null })}
+                  onChange={(e) => {
+                    setInstallForm({ zipFile: e.target.files?.[0] || null });
+                    setInstallReview(null);
+                    setInstallResult(null);
+                  }}
                 />
                 <p className="text-sm text-muted-foreground mt-1">
                   Trust and capabilities are applied from the package manifest during install.
@@ -433,7 +611,7 @@ const Plugins: React.FC = () => {
 
               <div className="flex gap-2">
                 <Button 
-                  onClick={handleInstallPlugin} 
+                  onClick={() => handleInstallPlugin()} 
                   disabled={!installForm.zipFile || isInstalling}
                   className="flex-1"
                 >
