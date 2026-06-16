@@ -1,6 +1,19 @@
-/target
+# Rust build artifacts
+/target/
+
+# Frontend dependencies and build artifacts
+/ui/node_modules/
+/ui/dist/
+/ui/dist-ssr/
+
+# Runtime data and logs
+/logs/
+*.log
+*.sqlite
+/vfs/
+
+# Local planning/editor files
 phase*.txt
 prd.txt
-.cursor
-*.sqlite
-vfs
+.DS_Store
+.cursor/
