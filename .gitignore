@@ -10,6 +10,11 @@
 /logs/
 *.log
 *.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.sqlite-journal
+/oxidedb-sqlite
+/oxidedb-sqlite-*
 /vfs/
 
 # Local planning/editor files
