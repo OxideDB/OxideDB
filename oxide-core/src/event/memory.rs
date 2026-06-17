@@ -505,7 +505,7 @@ impl EventBus for InMemoryEventBus {
         // time so dispatch can skip the per-event re-sort on the hot path.
         // Rust's sort_by is stable, so equal-priority handlers keep their
         // insertion order — matching the previous per-dispatch behavior.
-        handlers.sort_by(|a, b| b.metadata.priority.cmp(&a.metadata.priority));
+        handlers.sort_by_key(|handler| std::cmp::Reverse(handler.metadata.priority));
 
         info!(
             "Subscribed Before handler {} to event: {}",
@@ -542,7 +542,7 @@ impl EventBus for InMemoryEventBus {
 
         // Keep the stored handler list sorted by priority (desc) at insertion
         // time so dispatch can skip the per-event re-sort on the hot path.
-        handlers.sort_by(|a, b| b.metadata.priority.cmp(&a.metadata.priority));
+        handlers.sort_by_key(|handler| std::cmp::Reverse(handler.metadata.priority));
 
         info!(
             "Subscribed After handler {} to event: {}",

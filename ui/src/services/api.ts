@@ -144,6 +144,7 @@ export interface RecordQueryParams {
   filter_op?: RecordFilterOp;
   filter_value?: string;
   search?: string;
+  include_total?: boolean;
 }
 
 class ApiService {
@@ -597,7 +598,10 @@ class ApiService {
 
   // Record methods
   async getRecords(collection: string, params?: RecordQueryParams): Promise<DbRecord[]> {
-    const response = await this.getRecordsPaginated(collection, params);
+    const response = await this.getRecordsPaginated(collection, {
+      include_total: false,
+      ...params,
+    });
     return response.data;
   }
 
@@ -620,6 +624,7 @@ class ApiService {
     if (params?.filter_op) searchParams.set('filter_op', params.filter_op);
     if (params?.filter_value !== undefined) searchParams.set('filter_value', params.filter_value);
     if (params?.search) searchParams.set('search', params.search);
+    if (params?.include_total !== undefined) searchParams.set('include_total', params.include_total.toString());
 
     const query = searchParams.toString();
     const endpoint = `/collections/${encodeURIComponent(collection)}/records${query ? `?${query}` : ''}`;

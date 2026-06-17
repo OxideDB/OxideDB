@@ -9,6 +9,7 @@ members = [
     "oxide-plugin-runtime",
     "oxide-plugin-sdk",
     "oxide-typegen",
+    "oxide-benchmarks",
     "oxidedb",
     "hello-plugin"
 ]

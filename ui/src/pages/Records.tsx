@@ -69,7 +69,7 @@ const Records: React.FC = () => {
   }, [collection]);
 
   const recordQuery = useMemo<RecordQueryParams>(() => {
-    const params: RecordQueryParams = {};
+    const params: RecordQueryParams = { include_total: false };
     const search = filtersMatchCollection ? debouncedSearchText.trim() : '';
     const value = filterValue.trim();
 

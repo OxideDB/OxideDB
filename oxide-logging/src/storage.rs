@@ -26,6 +26,24 @@ use uuid::Uuid;
 
 /// Current schema version for migrations
 const SCHEMA_VERSION: i32 = 1;
+const LOG_ENTRY_INDEX_SQL: &[&str] = &[
+    "CREATE INDEX IF NOT EXISTS idx_log_entries_timestamp ON log_entries(timestamp DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_log_entries_level ON log_entries(level)",
+    // Composite index for time-windowed level filters used by the dashboard
+    // error-rate query and retention cleanup.
+    "CREATE INDEX IF NOT EXISTS idx_log_entries_level_timestamp ON log_entries(level, timestamp)",
+    "CREATE INDEX IF NOT EXISTS idx_log_entries_correlation ON log_entries(correlation_id)",
+    "CREATE INDEX IF NOT EXISTS idx_log_entries_module ON log_entries(module)",
+    "CREATE INDEX IF NOT EXISTS idx_log_entries_context_user ON log_entries(json_extract(context_json, '$.user_id'))",
+    "CREATE INDEX IF NOT EXISTS idx_log_entries_context_collection ON log_entries(json_extract(context_json, '$.collection'))",
+];
+const AUDIT_EVENT_INDEX_SQL: &[&str] = &[
+    "CREATE INDEX IF NOT EXISTS idx_audit_events_timestamp ON audit_events(timestamp DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_audit_events_type ON audit_events(event_type)",
+    "CREATE INDEX IF NOT EXISTS idx_audit_events_actor ON audit_events(actor)",
+    "CREATE INDEX IF NOT EXISTS idx_audit_events_correlation ON audit_events(correlation_id)",
+    "CREATE INDEX IF NOT EXISTS idx_audit_events_severity ON audit_events(severity)",
+];
 
 /// SQLite storage backend for logs and audit events
 pub struct SqliteLogStorage {
@@ -86,19 +104,19 @@ impl SqliteLogStorage {
     /// Initialize database schema and indexes
     async fn initialize_schema(&self) -> LoggingResult<()> {
         tracing::info!("Starting schema initialization...");
-        let conn = self.connection.lock().await;
-
-        tracing::info!("Acquired connection lock, checking schema version...");
 
         // Check current schema version
-        let current_version: i32 = conn
-            .call(|conn| {
+        let current_version: i32 = {
+            let conn = self.connection.lock().await;
+
+            tracing::info!("Acquired connection lock, checking schema version...");
+            conn.call(|conn| {
                 tracing::info!("Creating schema_version table if not exists...");
                 // Create version table if it doesn't exist
                 conn.execute(
                     "CREATE TABLE IF NOT EXISTS schema_version (
-                    version INTEGER PRIMARY KEY
-                )",
+                        version INTEGER PRIMARY KEY
+                    )",
                     [],
                 )?;
 
@@ -124,7 +142,8 @@ impl SqliteLogStorage {
                     }
                 }
             })
-            .await?;
+            .await?
+        };
 
         tracing::info!(
             "Current schema version: {}, target version: {}",
@@ -134,14 +153,31 @@ impl SqliteLogStorage {
 
         if current_version < SCHEMA_VERSION {
             tracing::info!("Schema migration needed");
-            // Drop the connection lock before calling migrate_schema to avoid deadlock
-            drop(conn);
             self.migrate_schema(current_version).await?;
         } else {
             tracing::info!("Schema is up to date, no migration needed");
         }
 
+        self.ensure_schema_indexes().await?;
+
         tracing::info!("Schema initialization completed");
+        Ok(())
+    }
+
+    async fn ensure_schema_indexes(&self) -> LoggingResult<()> {
+        let conn = self.connection.lock().await;
+        conn.call(|conn| {
+            for statement in LOG_ENTRY_INDEX_SQL
+                .iter()
+                .chain(AUDIT_EVENT_INDEX_SQL.iter())
+            {
+                conn.execute(statement, [])?;
+            }
+
+            Ok(())
+        })
+        .await?;
+
         Ok(())
     }
 
@@ -205,61 +241,15 @@ impl SqliteLogStorage {
 
                 // Create indexes for performance
                 tracing::info!("Creating log_entries indexes...");
-                // Log entries indexes
-                tx.execute(
-                    "CREATE INDEX IF NOT EXISTS idx_log_entries_timestamp ON log_entries(timestamp DESC)",
-                    [],
-                )?;
-                tx.execute(
-                    "CREATE INDEX IF NOT EXISTS idx_log_entries_level ON log_entries(level)",
-                    [],
-                )?;
-                // Composite index for time-windowed level filters used by the
-                // dashboard error-rate query and retention cleanup
-                // (e.g. WHERE level = 0 AND timestamp >= ?).
-                tx.execute(
-                    "CREATE INDEX IF NOT EXISTS idx_log_entries_level_timestamp ON log_entries(level, timestamp)",
-                    [],
-                )?;
-                tx.execute(
-                    "CREATE INDEX IF NOT EXISTS idx_log_entries_correlation ON log_entries(correlation_id)",
-                    [],
-                )?;
-                tx.execute(
-                    "CREATE INDEX IF NOT EXISTS idx_log_entries_module ON log_entries(module)",
-                    [],
-                )?;
-                tx.execute(
-                    "CREATE INDEX IF NOT EXISTS idx_log_entries_context_user ON log_entries(json_extract(context_json, '$.user_id'))",
-                    [],
-                )?;
-                tx.execute(
-                    "CREATE INDEX IF NOT EXISTS idx_log_entries_context_collection ON log_entries(json_extract(context_json, '$.collection'))",
-                    [],
-                )?;
+                for statement in LOG_ENTRY_INDEX_SQL {
+                    tx.execute(statement, [])?;
+                }
 
                 // Audit events indexes
                 tracing::info!("Creating audit_events indexes...");
-                tx.execute(
-                    "CREATE INDEX IF NOT EXISTS idx_audit_events_timestamp ON audit_events(timestamp DESC)",
-                    [],
-                )?;
-                tx.execute(
-                    "CREATE INDEX IF NOT EXISTS idx_audit_events_type ON audit_events(event_type)",
-                    [],
-                )?;
-                tx.execute(
-                    "CREATE INDEX IF NOT EXISTS idx_audit_events_actor ON audit_events(actor)",
-                    [],
-                )?;
-                tx.execute(
-                    "CREATE INDEX IF NOT EXISTS idx_audit_events_correlation ON audit_events(correlation_id)",
-                    [],
-                )?;
-                tx.execute(
-                    "CREATE INDEX IF NOT EXISTS idx_audit_events_severity ON audit_events(severity)",
-                    [],
-                )?;
+                for statement in AUDIT_EVENT_INDEX_SQL {
+                    tx.execute(statement, [])?;
+                }
 
                 // Create metrics cache table
                 tracing::info!("Creating log_metrics_cache table...");
@@ -286,7 +276,8 @@ impl SqliteLogStorage {
             tx.commit()?;
             tracing::info!("Migration transaction committed successfully");
             Ok(())
-        }).await?;
+        })
+        .await?;
 
         info!(
             "Schema migration completed successfully from version {} to {}",
@@ -1092,5 +1083,81 @@ fn str_to_audit_event_type(event_type: &str) -> Option<AuditEventType> {
         "plugin_event" => Some(AuditEventType::PluginEvent),
         "system_event" => Some(AuditEventType::SystemEvent),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[tokio::test]
+    async fn initialization_ensures_indexes_for_existing_v1_schema() -> LoggingResult<()> {
+        let temp_dir = tempdir()?;
+        let db_path = temp_dir.path().join("legacy-v1.sqlite");
+
+        {
+            let conn = rusqlite::Connection::open(&db_path)?;
+            conn.execute_batch(
+                r#"
+                CREATE TABLE schema_version (version INTEGER PRIMARY KEY);
+                INSERT INTO schema_version (version) VALUES (1);
+
+                CREATE TABLE log_entries (
+                    id TEXT PRIMARY KEY,
+                    correlation_id TEXT NOT NULL,
+                    timestamp INTEGER NOT NULL,
+                    level INTEGER NOT NULL,
+                    message TEXT NOT NULL,
+                    module TEXT NOT NULL,
+                    location TEXT,
+                    context_json TEXT NOT NULL,
+                    error_info TEXT,
+                    stack_trace TEXT,
+                    metrics_json TEXT,
+                    created_at INTEGER NOT NULL DEFAULT (unixepoch())
+                );
+
+                CREATE TABLE audit_events (
+                    id TEXT PRIMARY KEY,
+                    correlation_id TEXT NOT NULL,
+                    timestamp INTEGER NOT NULL,
+                    event_type TEXT NOT NULL,
+                    severity INTEGER NOT NULL,
+                    description TEXT NOT NULL,
+                    actor TEXT NOT NULL,
+                    target TEXT,
+                    action TEXT NOT NULL,
+                    result TEXT NOT NULL,
+                    context_json TEXT NOT NULL,
+                    risk_score INTEGER,
+                    integrity_hash TEXT,
+                    created_at INTEGER NOT NULL DEFAULT (unixepoch())
+                );
+
+                CREATE INDEX idx_log_entries_timestamp ON log_entries(timestamp DESC);
+                CREATE INDEX idx_log_entries_level ON log_entries(level);
+                CREATE INDEX idx_audit_events_timestamp ON audit_events(timestamp DESC);
+                "#,
+            )?;
+        }
+
+        let storage = SqliteLogStorage::new(&db_path).await?;
+        assert_eq!(storage.db_path(), db_path.to_string_lossy());
+
+        let conn = rusqlite::Connection::open(&db_path)?;
+        assert!(index_exists(&conn, "idx_log_entries_level_timestamp")?);
+        assert!(index_exists(&conn, "idx_log_entries_context_user")?);
+        assert!(index_exists(&conn, "idx_audit_events_severity")?);
+
+        Ok(())
+    }
+
+    fn index_exists(conn: &rusqlite::Connection, index_name: &str) -> rusqlite::Result<bool> {
+        conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ?1)",
+            [index_name],
+            |row| row.get::<_, bool>(0),
+        )
     }
 }

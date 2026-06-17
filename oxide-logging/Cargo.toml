@@ -56,3 +56,6 @@ fs2 = "0.4.3"
 [features]
 default = ["simd-json", "metrics", "compression"]
 compression = ["flate2"] 
+
+[dev-dependencies]
+tempfile = "3.27.0"
